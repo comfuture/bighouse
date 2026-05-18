@@ -182,6 +182,9 @@ async function route(request: Request, env: Env): Promise<Response> {
     if (!indexed) {
       throw new GameServerError("room_not_found", "Room not found", 404);
     }
+    if (indexed.status === "closed") {
+      throw new GameServerError("room_closed", "Room is closed", 410);
+    }
     const room = env.ROOM_DO.getByName(indexed.doName);
     const summary = await room.join({
       playerId: body.playerId,
@@ -199,6 +202,9 @@ async function route(request: Request, env: Env): Promise<Response> {
   if (request.method === "GET" && roomWsPath) {
     const roomId = routeParam(roomWsPath, "roomId");
     const indexed = await repo.getRoom(roomId);
+    if (indexed?.status === "closed") {
+      throw new GameServerError("room_closed", "Room is closed", 410);
+    }
     const doName = indexed?.doName ?? roomDoName(roomId);
     return env.ROOM_DO.getByName(doName).fetch(request);
   }

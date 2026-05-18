@@ -46,6 +46,8 @@ The frontend opens a player information modal when no saved `playerId` exists. D
 
 Per-game browser code lives in packages such as `packages/gomoku` and is loaded dynamically after entering a room, so the lobby does not download every game's bundle up front.
 
+The Worker has a cron trigger that runs every five minutes. It scans D1 room index rows for stale non-closed rooms, asks the authoritative `RoomDO` to verify that no live WebSocket clients remain, and closes abandoned rooms so they disappear from lobby lists and reject direct joins.
+
 Apply D1 migrations for a local database when using Wrangler directly:
 
 ```sh

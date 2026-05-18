@@ -240,6 +240,32 @@ export class D1Repository {
     return row ? mapRoom(row) : null;
   }
 
+  async listStaleRoomCandidates(cutoff: string, limit: number): Promise<RoomIndexRecord[]> {
+    const result = await this.db
+      .prepare(
+        `SELECT room_id, game_id, mode, status, player_count, min_players, max_players, do_name, created_at, updated_at, closed_at
+         FROM room_index
+         WHERE status IN ('open', 'matching', 'active') AND updated_at <= ?
+         ORDER BY updated_at ASC
+         LIMIT ?`
+      )
+      .bind(cutoff, limit)
+      .all<RoomDbRow>();
+    return (result.results ?? []).map(mapRoom);
+  }
+
+  async closeRoomIndex(roomId: string, closedAt: string): Promise<boolean> {
+    const result = await this.db
+      .prepare(
+        `UPDATE room_index
+         SET status = 'closed', closed_at = ?, updated_at = CURRENT_TIMESTAMP
+         WHERE room_id = ? AND status != 'closed'`
+      )
+      .bind(closedAt, roomId)
+      .run();
+    return result.meta.changes > 0;
+  }
+
   async upsertTicket(ticket: MatchTicketRecord): Promise<void> {
     await this.db
       .prepare(

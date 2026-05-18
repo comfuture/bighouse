@@ -143,4 +143,56 @@ describe("RoomDO", () => {
 
     await expect(runDurableObjectAlarm(roomStub)).resolves.toBe(true);
   });
+
+  it("closes stale rooms with no live clients", async () => {
+    const room = env.ROOM_DO.getByName("room:test-stale-room") as unknown as RoomDO;
+    await room.initialize({
+      roomId: "test-stale-room",
+      gameId: "gomoku",
+      mode: "default",
+      minPlayers: 2,
+      maxPlayers: 2
+    });
+    await room.join({ playerId: "host" });
+    await room.join({ playerId: "guest" });
+
+    await expect(room.cleanupIfStale({ now: Date.now() + 60_000 })).resolves.toMatchObject({
+      cleaned: false,
+      reason: "not_idle"
+    });
+    const result = await room.cleanupIfStale({ now: Date.now() + 5 * 60_000 + 1 });
+    expect(result).toMatchObject({
+      cleaned: true,
+      reason: "stale_no_connections",
+      summary: { phase: "closed", playerCount: 2 }
+    });
+
+    const row = await env.DB.prepare("SELECT status, closed_at FROM room_index WHERE room_id = ?")
+      .bind("test-stale-room")
+      .first<{ status: string; closed_at: string | null }>();
+    expect(row?.status).toBe("closed");
+    expect(row?.closed_at).toBeTruthy();
+  });
+
+  it("does not close stale rooms after a player reconnects", async () => {
+    const room = env.ROOM_DO.getByName("room:test-stale-reconnect") as unknown as RoomDO;
+    await room.initialize({
+      roomId: "test-stale-reconnect",
+      gameId: "gomoku",
+      mode: "default",
+      minPlayers: 2,
+      maxPlayers: 2
+    });
+    await room.join({ playerId: "host" });
+    await room.join({ playerId: "guest" });
+    await room.leave("host");
+    await room.leave("guest");
+    await room.join({ playerId: "guest" });
+
+    await expect(room.cleanupIfStale({ now: Date.now() + 60_000 })).resolves.toMatchObject({
+      cleaned: false,
+      reason: "not_idle",
+      summary: { phase: "waiting" }
+    });
+  });
 });
