@@ -1,7 +1,5 @@
 <template>
   <div class="space-y-6">
-    <IdentityPanel />
-
     <div class="flex flex-wrap items-center justify-between gap-3">
       <div class="flex items-center gap-2">
         <h1 class="text-lg font-semibold text-highlighted">{{ gameId }}</h1>
@@ -43,12 +41,11 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import IdentityPanel from "../components/IdentityPanel.vue";
 import ChatPanel from "../components/ChatPanel.vue";
 import { createLobbyRoom, joinRoom, listLobbyRooms, lobbyWebsocketUrl } from "../api";
-import { identity, persistIdentity } from "../identity";
+import { identity, identityReady } from "../identity";
 import type { ChatMessage, RoomIndex, ServerMessage } from "../types";
 
 const route = useRoute();
@@ -62,10 +59,13 @@ let ws: WebSocket | undefined;
 let pollId: number | undefined;
 
 onMounted(() => {
-  persistIdentity();
   void refreshRooms();
-  connectLobby();
+  if (identityReady.value) connectLobby();
   pollId = window.setInterval(() => void refreshRooms(), 3000);
+});
+
+watch(identityReady, (ready) => {
+  if (ready) connectLobby();
 });
 
 onBeforeUnmount(() => {

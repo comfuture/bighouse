@@ -8,13 +8,14 @@ The client flow is the same for every game.
 
 1. Call `GET /games` to list enabled games.
 2. Enter a game lobby route in the SPA: `/game/:gameId/:mode`.
-3. List waiting rooms with `GET /games/:gameId/lobbies/:mode/rooms`.
-4. Create a room or join a waiting room.
-5. Connect to the room WebSocket and render the current `snapshot`.
-6. Non-host players send `ready`.
-7. When minimum players are present and every non-host player is ready, the host sends `startGame`.
-8. Send game input as `action` messages after the room becomes `active`.
-9. Apply `ack`, `event`, `privateEvent`, `chat`, `presence`, and `error` messages from the server.
+3. If no saved `playerId` exists, collect player information in the modal before any lobby or room WebSocket is opened.
+4. List waiting rooms with `GET /games/:gameId/lobbies/:mode/rooms`.
+5. Create a room or join a waiting room.
+6. Connect to the room WebSocket and render the current `snapshot`.
+7. Non-host players send `ready`.
+8. When minimum players are present and every non-host player is ready, the host sends `startGame`.
+9. Send game input as `action` messages after the room becomes `active`.
+10. Apply `ack`, `event`, `privateEvent`, `chat`, `presence`, and `error` messages from the server.
 
 Create a lobby room:
 
@@ -71,6 +72,8 @@ wss://bighouse.comfuture.workers.dev/games/gomoku/lobbies/default/ws?playerId=p1
 ```
 
 `playerId` only needs to be a stable unique value for the player. It can be an internal account id, anonymous session id, wallet address, device-scoped id, or any other stable identifier. For UI and chat, also send a human-readable `displayName`. Do not use `displayName` as identity or authorization data; it is only a display label.
+
+The SPA stores `playerId`, `displayName`, and lobby `mode` locally after the player information modal is submitted. If a user opens a shared room URL such as `/game/gomoku/room_abc` without saved player information, the modal is shown first and the room WebSocket is not opened until `playerId` is available.
 
 ## 2. Client Message Contract
 

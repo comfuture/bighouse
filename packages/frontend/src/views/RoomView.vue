@@ -110,11 +110,11 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRoute } from "vue-router";
 import type { GomokuGameInstance, GomokuPrivateView, GomokuPublicView } from "@bighouse/gomoku";
 import ChatPanel from "../components/ChatPanel.vue";
-import { identity, persistIdentity } from "../identity";
+import { identity, identityReady } from "../identity";
 import { roomWebsocketUrl } from "../api";
 import type { ChatMessage, Player, RoomSnapshot, ServerMessage } from "../types";
 
@@ -153,8 +153,11 @@ const lobbyPath = computed(() => {
 });
 
 onMounted(() => {
-  persistIdentity();
-  connectRoom();
+  if (identityReady.value) connectRoom();
+});
+
+watch(identityReady, (ready) => {
+  if (ready && !ws) connectRoom();
 });
 
 onBeforeUnmount(() => {

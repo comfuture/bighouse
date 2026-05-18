@@ -1,4 +1,4 @@
-import { identity, persistIdentity, requirePlayerId } from "./identity";
+import { identity, requirePlayerId } from "./identity";
 import type { Game, RoomIndex, RoomJoinResponse } from "./types";
 
 export async function listGames(): Promise<Game[]> {
@@ -40,7 +40,7 @@ export async function joinRoom(roomId: string): Promise<RoomJoinResponse> {
 }
 
 export function lobbyWebsocketUrl(gameId: string, mode: string): string {
-  persistIdentity();
+  requirePlayerId();
   const url = new URL(`/games/${gameId}/lobbies/${mode}/ws`, window.location.href);
   url.protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
   url.searchParams.set("playerId", identity.playerId);
@@ -49,7 +49,7 @@ export function lobbyWebsocketUrl(gameId: string, mode: string): string {
 }
 
 export function roomWebsocketUrl(roomId: string): string {
-  persistIdentity();
+  requirePlayerId();
   const url = new URL(`/rooms/${roomId}/ws`, window.location.href);
   url.protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
   url.searchParams.set("playerId", identity.playerId);
