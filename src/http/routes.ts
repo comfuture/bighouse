@@ -70,6 +70,40 @@ async function route(request: Request, env: Env): Promise<Response> {
     });
   }
 
+  const lobbyRooms = matchPath(url.pathname, /^\/games\/([^/]+)\/lobbies\/([^/]+)\/rooms$/u, [
+    "gameId",
+    "mode"
+  ]);
+  if (request.method === "GET" && lobbyRooms) {
+    await seedBuiltInGames(repo);
+    const game = await requireGame(repo, routeParam(lobbyRooms, "gameId"));
+    const mode = routeParam(lobbyRooms, "mode");
+    const rooms = await repo.listLobbyRooms(game.gameId, mode);
+    return Response.json({ rooms });
+  }
+
+  if (request.method === "POST" && lobbyRooms) {
+    await seedBuiltInGames(repo);
+    const body = joinSchema.parse(await request.json());
+    const game = await requireGame(repo, routeParam(lobbyRooms, "gameId"));
+    const mode = routeParam(lobbyRooms, "mode");
+    const lobby = env.LOBBY_DO.getByName(lobbyDoName(game.gameId, mode));
+    const result = await lobby.createRoom({
+      gameId: game.gameId,
+      mode,
+      playerId: body.playerId,
+      ...(body.displayName ? { displayName: body.displayName } : {}),
+      ...(body.minPlayers ? { minPlayers: body.minPlayers } : {}),
+      ...(body.maxPlayers ? { maxPlayers: body.maxPlayers } : {}),
+      config: body.config ?? game.config
+    });
+    return Response.json({
+      ...result,
+      lobbyWsUrl: lobbyWebsocketUrl(url, game.gameId, mode, body.playerId, body.displayName),
+      wsUrl: websocketUrl(url, result.roomId, body.playerId)
+    });
+  }
+
   const lobbyWsPath = matchPath(url.pathname, /^\/games\/([^/]+)\/lobbies\/([^/]+)\/ws$/u, [
     "gameId",
     "mode"
@@ -138,6 +172,27 @@ async function route(request: Request, env: Env): Promise<Response> {
     const room = env.ROOM_DO.getByName(doName);
     const summary = await room.getSummary();
     return Response.json({ room: indexed, summary });
+  }
+
+  const roomJoinPath = matchPath(url.pathname, /^\/rooms\/([^/]+)\/join$/u, ["roomId"]);
+  if (request.method === "POST" && roomJoinPath) {
+    const body = joinSchema.pick({ playerId: true, displayName: true }).parse(await request.json());
+    const roomId = routeParam(roomJoinPath, "roomId");
+    const indexed = await repo.getRoom(roomId);
+    if (!indexed) {
+      throw new GameServerError("room_not_found", "Room not found", 404);
+    }
+    const room = env.ROOM_DO.getByName(indexed.doName);
+    const summary = await room.join({
+      playerId: body.playerId,
+      ...(body.displayName ? { displayName: body.displayName } : {})
+    });
+    return Response.json({
+      roomId,
+      doName: indexed.doName,
+      summary,
+      wsUrl: websocketUrl(url, roomId, body.playerId)
+    });
   }
 
   const roomWsPath = matchPath(url.pathname, /^\/rooms\/([^/]+)\/ws$/u, ["roomId"]);

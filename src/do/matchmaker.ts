@@ -109,6 +109,10 @@ export class MatchmakerDO extends DurableObject<Env> {
         skill: row.skill
       });
     }
+    for (const row of selected) {
+      await room.setReady(row.player_id, true);
+    }
+    await room.startGame(selected[0]!.player_id);
     const latestSummary = await room.getSummary();
 
     const roomRecord: RoomIndexRecord = {

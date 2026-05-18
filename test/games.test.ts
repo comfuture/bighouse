@@ -18,8 +18,8 @@ function baseState(gameId: string): RoomState {
     phase: "active",
     version: 2,
     players: [
-      { playerId: "p1", seat: 0, connected: true, joinedAt: 1 },
-      { playerId: "p2", seat: 1, connected: true, joinedAt: 1 }
+      { playerId: "p1", seat: 0, connected: true, ready: true, joinedAt: 1 },
+      { playerId: "p2", seat: 1, connected: true, ready: true, joinedAt: 1 }
     ],
     stageState: {},
     playerStates: {},

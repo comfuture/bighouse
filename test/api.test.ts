@@ -21,6 +21,31 @@ describe("HTTP API", () => {
     expect(joinBody.wsUrl).toContain(`/rooms/${joinBody.roomId}/ws`);
   });
 
+  it("creates, lists, and explicitly joins waiting lobby rooms", async () => {
+    const mode = `rooms-${crypto.randomUUID()}`;
+    const createResponse = await SELF.fetch(`https://bighouse.test/games/gomoku/lobbies/${mode}/rooms`, {
+      method: "POST",
+      body: JSON.stringify({ playerId: "owner", displayName: "Owner" })
+    });
+    expect(createResponse.status).toBe(200);
+    const createBody = (await createResponse.json()) as { roomId: string; summary: { phase: string; hostPlayerId: string } };
+    expect(createBody.summary).toMatchObject({ phase: "waiting", hostPlayerId: "owner" });
+
+    const listResponse = await SELF.fetch(`https://bighouse.test/games/gomoku/lobbies/${mode}/rooms`);
+    expect(listResponse.status).toBe(200);
+    const listBody = (await listResponse.json()) as { rooms: Array<{ roomId: string; status: string; playerCount: number }> };
+    expect(listBody.rooms).toContainEqual(expect.objectContaining({ roomId: createBody.roomId, status: "open", playerCount: 1 }));
+
+    const joinResponse = await SELF.fetch(`https://bighouse.test/rooms/${createBody.roomId}/join`, {
+      method: "POST",
+      body: JSON.stringify({ playerId: "guest", displayName: "Guest" })
+    });
+    expect(joinResponse.status).toBe(200);
+    const joinBody = (await joinResponse.json()) as { summary: { phase: string; readyCount: number; playerCount: number }; wsUrl: string };
+    expect(joinBody.summary).toMatchObject({ phase: "waiting", readyCount: 0, playerCount: 2 });
+    expect(joinBody.wsUrl).toContain(`/rooms/${createBody.roomId}/ws`);
+  });
+
   it("matches two players through matchmaking tickets", async () => {
     const first = await SELF.fetch("https://bighouse.test/games/gomoku/matchmaking/tickets", {
       method: "POST",
@@ -88,6 +113,9 @@ describe("HTTP API", () => {
     expect(secondJoin.status).toBe(200);
 
     const room = env.ROOM_DO.getByName(firstJoinBody.doName) as unknown as RoomDO;
+    await room.setReady("winner", true);
+    await room.setReady("other", true);
+    await room.startGame("winner");
     const moves = [
       ["winner", 0, 0],
       ["other", 0, 1],
@@ -99,7 +127,7 @@ describe("HTTP API", () => {
       ["other", 3, 1],
       ["winner", 4, 0]
     ] as const;
-    let version = 2;
+    let version = 5;
     for (const [playerId, x, y] of moves) {
       const result = await room.submitAction({
         playerId,

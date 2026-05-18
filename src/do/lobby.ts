@@ -28,6 +28,8 @@ export type LobbyJoinResult = {
   summary: RoomSummary;
 };
 
+export type LobbyCreateRoomInput = LobbyJoinInput;
+
 type LobbyRoomRow = {
   room_id: string;
   game_id: string;
@@ -87,15 +89,46 @@ export class LobbyDO extends DurableObject<Env> {
     });
     await this.recordRoom({
       ...roomRecord,
-      status: summary.phase === "active" ? "active" : "open",
+      status: summary.phase === "active" ? "active" : summary.playerCount >= summary.minPlayers ? "matching" : "open",
       playerCount: summary.playerCount
     });
     await repo.upsertRoom({
       ...roomRecord,
-      status: summary.phase === "active" ? "active" : "open",
+      status: summary.phase === "active" ? "active" : summary.playerCount >= summary.minPlayers ? "matching" : "open",
       playerCount: summary.playerCount
     });
 
+    return { roomId: roomRecord.roomId, doName: roomRecord.doName, summary };
+  }
+
+  async createRoom(input: LobbyCreateRoomInput): Promise<LobbyJoinResult> {
+    const repo = new D1Repository(this.env.DB);
+    const definition = getGameDefinition(input.gameId);
+    const minPlayers = input.minPlayers ?? definition.minPlayers;
+    const maxPlayers = input.maxPlayers ?? definition.maxPlayers;
+    if (minPlayers < 1 || maxPlayers < minPlayers || maxPlayers > definition.maxPlayers) {
+      throw new GameServerError("bad_request", "Invalid room player limits", 400);
+    }
+    const roomRecord = await this.createIndexedRoom(repo, {
+      roomId: createId("room"),
+      gameId: input.gameId,
+      mode: input.mode,
+      minPlayers,
+      maxPlayers,
+      config: input.config ?? {}
+    });
+    const room = this.env.ROOM_DO.getByName(roomRecord.doName);
+    const summary = await room.join({
+      playerId: input.playerId,
+      ...(input.displayName ? { displayName: input.displayName } : {})
+    });
+    const record = {
+      ...roomRecord,
+      status: summary.playerCount >= summary.minPlayers ? "matching" : "open",
+      playerCount: summary.playerCount
+    } satisfies RoomIndexRecord;
+    await this.recordRoom(record);
+    await repo.upsertRoom(record);
     return { roomId: roomRecord.roomId, doName: roomRecord.doName, summary };
   }
 

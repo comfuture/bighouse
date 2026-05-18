@@ -36,8 +36,10 @@ export type RoomSummary = {
   phase: RoomState["phase"];
   version: number;
   playerCount: number;
+  readyCount: number;
   minPlayers: number;
   maxPlayers: number;
+  hostPlayerId?: string;
 };
 
 export type ActionAck = {
@@ -47,6 +49,10 @@ export type ActionAck = {
 
 export type ActionResultEnvelope =
   | { ok: true; ack: ActionAck }
+  | { ok: false; error: { code: string; message: string; status: number; details?: unknown } };
+
+export type RoomCommandResultEnvelope =
+  | { ok: true; summary: RoomSummary }
   | { ok: false; error: { code: string; message: string; status: number; details?: unknown } };
 
 type RoomStateRow = {
@@ -116,6 +122,7 @@ export class RoomDO extends DurableObject<Env> {
     const existing = state.players.find((player) => player.playerId === input.playerId);
     if (existing) {
       existing.connected = true;
+      existing.ready = existing.ready ?? false;
       if (input.displayName) {
         existing.displayName = input.displayName;
       }
@@ -137,20 +144,23 @@ export class RoomDO extends DurableObject<Env> {
       playerId: input.playerId,
       seat: state.players.length,
       connected: true,
+      ready: false,
       joinedAt: now,
       ...(input.displayName ? { displayName: input.displayName } : {})
     };
     const definition = getGameDefinition(state.room.gameId);
+    if (state.players.length === 0) {
+      state.room.hostPlayerId = input.playerId;
+    }
     state.players.push(player);
     state.playerStates[player.playerId] = definition.initialPlayerState(player, { room: state.room, now });
-    if (state.players.length >= state.room.minPlayers && state.phase === "waiting") {
-      state.phase = "active";
-    }
     state.updatedAt = now;
     state.version += 1;
     this.saveState(state);
+    await this.persistRoomIndex(state);
     await this.rescheduleTimers(definition.nextTimers({ state, now }));
     this.broadcastPresence(state, input.playerId, true);
+    this.broadcastSnapshots(state);
     return this.toSummary(state);
   }
 
@@ -162,9 +172,76 @@ export class RoomDO extends DurableObject<Env> {
     }
 
     player.connected = false;
+    if (state.phase === "waiting") {
+      player.ready = false;
+    }
     state.updatedAt = Date.now();
+    state.version += 1;
     this.saveState(state);
+    await this.persistRoomIndex(state);
     this.broadcastPresence(state, playerId, false);
+    this.broadcastSnapshots(state);
+    return this.toSummary(state);
+  }
+
+  async setReady(playerId: string, ready: boolean): Promise<RoomSummary> {
+    const state = this.requireState();
+    if (state.phase !== "waiting") {
+      throw new GameServerError("invalid_room_phase", "Ready state can only change while waiting", 409);
+    }
+    const player = state.players.find((candidate) => candidate.playerId === playerId);
+    if (!player) {
+      throw new GameServerError("player_not_found", "Player is not in this room", 404);
+    }
+    player.ready = ready;
+    state.updatedAt = Date.now();
+    state.version += 1;
+    this.saveState(state);
+    await this.persistRoomIndex(state);
+    this.broadcastSnapshots(state);
+    return this.toSummary(state);
+  }
+
+  async transferHost(playerId: string, targetPlayerId: string): Promise<RoomSummary> {
+    const state = this.requireState();
+    if (state.room.hostPlayerId !== playerId) {
+      throw new GameServerError("forbidden", "Only the host can transfer host authority", 403);
+    }
+    if (!state.players.some((candidate) => candidate.playerId === targetPlayerId)) {
+      throw new GameServerError("player_not_found", "Target player is not in this room", 404);
+    }
+    state.room.hostPlayerId = targetPlayerId;
+    state.updatedAt = Date.now();
+    state.version += 1;
+    this.saveState(state);
+    this.broadcastSnapshots(state);
+    return this.toSummary(state);
+  }
+
+  async startGame(playerId: string): Promise<RoomSummary> {
+    const state = this.requireState();
+    if (state.room.hostPlayerId !== playerId) {
+      throw new GameServerError("forbidden", "Only the host can start the game", 403);
+    }
+    if (state.phase !== "waiting") {
+      throw new GameServerError("invalid_room_phase", "Room is not waiting", 409);
+    }
+    if (state.players.length < state.room.minPlayers) {
+      throw new GameServerError("not_enough_players", "Not enough players to start", 409);
+    }
+    if (!state.players.every((candidate) => candidate.ready)) {
+      throw new GameServerError("players_not_ready", "All players must be ready before starting", 409);
+    }
+
+    const now = Date.now();
+    state.phase = "active";
+    state.updatedAt = now;
+    state.version += 1;
+    this.saveState(state);
+    await this.persistRoomIndex(state);
+    const definition = getGameDefinition(state.room.gameId);
+    await this.rescheduleTimers(definition.nextTimers({ state, now }));
+    this.broadcastSnapshots(state);
     return this.toSummary(state);
   }
 
@@ -287,6 +364,22 @@ export class RoomDO extends DurableObject<Env> {
     }
   }
 
+  async tryStartGame(playerId: string): Promise<RoomCommandResultEnvelope> {
+    try {
+      return { ok: true, summary: await this.startGame(playerId) };
+    } catch (error) {
+      return this.toCommandError(error);
+    }
+  }
+
+  async tryTransferHost(playerId: string, targetPlayerId: string): Promise<RoomCommandResultEnvelope> {
+    try {
+      return { ok: true, summary: await this.transferHost(playerId, targetPlayerId) };
+    } catch (error) {
+      return this.toCommandError(error);
+    }
+  }
+
   async fetch(request: Request): Promise<Response> {
     if (request.headers.get("Upgrade") !== "websocket") {
       return Response.json({ error: "Expected WebSocket upgrade" }, { status: 426 });
@@ -398,6 +491,21 @@ export class RoomDO extends DurableObject<Env> {
         ...(message.targetPlayerId ? { targetPlayerId: message.targetPlayerId } : {})
       });
       this.sendToSocket(ws, this.message(this.requireState(), "ack", { command: "chat", result: { chatId: chat.id } }));
+      return;
+    }
+    if (message.type === "ready") {
+      const summary = await this.setReady(message.playerId, message.ready);
+      this.sendToSocket(ws, this.message(this.requireState(), "ack", { command: "ready", result: { summary } }));
+      return;
+    }
+    if (message.type === "transferHost") {
+      const summary = await this.transferHost(message.playerId, message.targetPlayerId);
+      this.sendToSocket(ws, this.message(this.requireState(), "ack", { command: "transferHost", result: { summary } }));
+      return;
+    }
+    if (message.type === "startGame") {
+      const summary = await this.startGame(message.playerId);
+      this.sendToSocket(ws, this.message(this.requireState(), "ack", { command: "startGame", result: { summary } }));
       return;
     }
     if (message.type === "leaveRoom") {
@@ -546,6 +654,7 @@ export class RoomDO extends DurableObject<Env> {
       mode: state.room.mode,
       phase: state.phase,
       version: state.version,
+      ...(state.room.hostPlayerId ? { hostPlayerId: state.room.hostPlayerId } : {}),
       players: state.players,
       publicView: definition.getPublicView(context),
       privateView: definition.getPrivateView(context, playerId)
@@ -560,8 +669,10 @@ export class RoomDO extends DurableObject<Env> {
       phase: state.phase,
       version: state.version,
       playerCount: state.players.length,
+      readyCount: state.players.filter((player) => player.ready).length,
       minPlayers: state.room.minPlayers,
-      maxPlayers: state.room.maxPlayers
+      maxPlayers: state.room.maxPlayers,
+      ...(state.room.hostPlayerId ? { hostPlayerId: state.room.hostPlayerId } : {})
     };
   }
 
@@ -606,6 +717,47 @@ export class RoomDO extends DurableObject<Env> {
     this.broadcast(this.message(state, "presence", { playerId, connected }));
   }
 
+  private broadcastSnapshots(state: RoomState): void {
+    for (const player of state.players) {
+      for (const ws of this.ctx.getWebSockets(`player:${player.playerId}`)) {
+        this.sendToSocket(ws, this.message(state, "snapshot", this.createSnapshot(state, player.playerId)));
+      }
+    }
+  }
+
+  private async persistRoomIndex(state: RoomState): Promise<void> {
+    const definition = getGameDefinition(state.room.gameId);
+    const repo = new D1Repository(this.env.DB);
+    await repo.upsertGame({
+      gameId: definition.gameId,
+      adapterKey: definition.adapterKey,
+      displayName: definition.displayName,
+      enabled: true,
+      minPlayers: definition.minPlayers,
+      maxPlayers: definition.maxPlayers,
+      config: {}
+    });
+    const status =
+      state.phase === "closed"
+        ? "closed"
+        : state.phase === "active"
+          ? "active"
+          : state.players.length >= state.room.minPlayers
+            ? "matching"
+            : "open";
+    await repo.upsertRoom({
+      roomId: state.room.roomId,
+      gameId: state.room.gameId,
+      mode: state.room.mode,
+      status,
+      playerCount: state.players.length,
+      minPlayers: state.room.minPlayers,
+      maxPlayers: state.room.maxPlayers,
+      doName: roomDoName(state.room.roomId),
+      ...(state.closedAt ? { closedAt: new Date(state.closedAt).toISOString() } : {})
+    });
+  }
+
   private broadcast(message: ServerMessage): void {
     for (const ws of this.ctx.getWebSockets()) {
       this.sendToSocket(ws, message);
@@ -616,6 +768,21 @@ export class RoomDO extends DurableObject<Env> {
     for (const ws of this.ctx.getWebSockets(`player:${playerId}`)) {
       this.sendToSocket(ws, message);
     }
+  }
+
+  private toCommandError(error: unknown): RoomCommandResultEnvelope {
+    if (error instanceof GameServerError) {
+      return {
+        ok: false,
+        error: {
+          code: error.code,
+          message: error.message,
+          status: error.status,
+          ...(error.details === undefined ? {} : { details: error.details })
+        }
+      };
+    }
+    throw error;
   }
 
   private sendToSocket(ws: WebSocket, message: ServerMessage): void {
