@@ -42,6 +42,8 @@ The frontend package lives in `packages/frontend`. It is a Vue SPA built with Nu
 - `/game/:gameId/:mode`: game lobby with waiting room cards and lobby chat
 - `/game/:gameId/:roomId`: room waiting/play screen with non-host ready controls, host start/delegation controls, chat, and the lazy-loaded game module. Room ids currently use the `room_` prefix, which keeps the room route distinct from lobby modes such as `default`.
 
+The frontend opens a player information modal when no saved `playerId` exists. Direct room URLs do not open the room WebSocket or send `joinRoom` until the player submits that modal, which keeps shared room links from joining anonymous empty identities.
+
 Per-game browser code lives in packages such as `packages/gomoku` and is loaded dynamically after entering a room, so the lobby does not download every game's bundle up front.
 
 Apply D1 migrations for a local database when using Wrangler directly:

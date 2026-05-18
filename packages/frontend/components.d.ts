@@ -12,7 +12,7 @@ export {}
 declare module 'vue' {
   export interface GlobalComponents {
     ChatPanel: typeof import('./src/components/ChatPanel.vue')['default']
-    IdentityPanel: typeof import('./src/components/IdentityPanel.vue')['default']
+    IdentityModal: typeof import('./src/components/IdentityModal.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']
     UAlert: typeof import('./../../node_modules/.pnpm/@nuxt+ui@4.7.1_@internationalized+date@3.12.1_@internationalized+number@3.6.6_@tiptap+e_e5caac97160406e5c81d2580db300bd4/node_modules/@nuxt/ui/dist/runtime/components/Alert.vue')['default']
@@ -23,6 +23,7 @@ declare module 'vue' {
     UContainer: typeof import('./../../node_modules/.pnpm/@nuxt+ui@4.7.1_@internationalized+date@3.12.1_@internationalized+number@3.6.6_@tiptap+e_e5caac97160406e5c81d2580db300bd4/node_modules/@nuxt/ui/dist/runtime/components/Container.vue')['default']
     UFormField: typeof import('./../../node_modules/.pnpm/@nuxt+ui@4.7.1_@internationalized+date@3.12.1_@internationalized+number@3.6.6_@tiptap+e_e5caac97160406e5c81d2580db300bd4/node_modules/@nuxt/ui/dist/runtime/components/FormField.vue')['default']
     UInput: typeof import('./../../node_modules/.pnpm/@nuxt+ui@4.7.1_@internationalized+date@3.12.1_@internationalized+number@3.6.6_@tiptap+e_e5caac97160406e5c81d2580db300bd4/node_modules/@nuxt/ui/dist/runtime/components/Input.vue')['default']
+    UModal: typeof import('./../../node_modules/.pnpm/@nuxt+ui@4.7.1_@internationalized+date@3.12.1_@internationalized+number@3.6.6_@tiptap+e_e5caac97160406e5c81d2580db300bd4/node_modules/@nuxt/ui/dist/runtime/components/Modal.vue')['default']
     UPageCard: typeof import('./../../node_modules/.pnpm/@nuxt+ui@4.7.1_@internationalized+date@3.12.1_@internationalized+number@3.6.6_@tiptap+e_e5caac97160406e5c81d2580db300bd4/node_modules/@nuxt/ui/dist/runtime/components/PageCard.vue')['default']
     UPageGrid: typeof import('./../../node_modules/.pnpm/@nuxt+ui@4.7.1_@internationalized+date@3.12.1_@internationalized+number@3.6.6_@tiptap+e_e5caac97160406e5c81d2580db300bd4/node_modules/@nuxt/ui/dist/runtime/components/PageGrid.vue')['default']
     UPageHeader: typeof import('./../../node_modules/.pnpm/@nuxt+ui@4.7.1_@internationalized+date@3.12.1_@internationalized+number@3.6.6_@tiptap+e_e5caac97160406e5c81d2580db300bd4/node_modules/@nuxt/ui/dist/runtime/components/PageHeader.vue')['default']

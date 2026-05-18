@@ -1,7 +1,5 @@
 <template>
   <div class="space-y-6">
-    <IdentityPanel />
-
     <UPageHeader title="Games" description="Choose a game." />
 
     <UPageGrid>
@@ -24,9 +22,8 @@
 
 <script setup lang="ts">
 import { onMounted, ref } from "vue";
-import IdentityPanel from "../components/IdentityPanel.vue";
 import { listGames } from "../api";
-import { identity, persistIdentity } from "../identity";
+import { identity } from "../identity";
 import type { Game } from "../types";
 
 const games = ref<Game[]>([]);
@@ -41,7 +38,6 @@ onMounted(async () => {
 });
 
 function lobbyPath(gameId: string): string {
-  persistIdentity();
   return `/game/${encodeURIComponent(gameId)}/${encodeURIComponent(identity.mode)}`;
 }
 </script>
