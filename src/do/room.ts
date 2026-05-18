@@ -1,8 +1,510 @@
 import { DurableObject } from "cloudflare:workers";
+import { GameServerError } from "../core/errors";
+import type { ClientGameAction, GameEvent, JsonObject, PlayerSeat, RoomState, TimerIntent } from "../core/game";
+import { cloneState, privateEventsFor, publicEvents } from "../core/game";
+import { createId } from "../core/ids";
+import {
+  decodeClientMessage,
+  encodeServerMessage,
+  type ClientMessage,
+  type ServerMessage,
+  type SnapshotPayload
+} from "../core/protocol";
+import { getGameDefinition } from "../games/registry";
 import type { Env } from "../types";
+
+export type InitializeRoomInput = {
+  roomId: string;
+  gameId: string;
+  mode: string;
+  minPlayers: number;
+  maxPlayers: number;
+  config?: JsonObject;
+};
+
+export type JoinRoomInput = {
+  playerId: string;
+  displayName?: string;
+};
+
+export type RoomSummary = {
+  roomId: string;
+  gameId: string;
+  mode: string;
+  phase: RoomState["phase"];
+  version: number;
+  playerCount: number;
+  minPlayers: number;
+  maxPlayers: number;
+};
+
+export type ActionAck = {
+  version: number;
+  events: GameEvent[];
+};
+
+type RoomStateRow = {
+  id: number;
+  state_json: string;
+};
+
+type ProcessedActionRow = {
+  ack_json: string;
+};
+
+type TimerRow = {
+  id: string;
+  kind: TimerIntent["kind"];
+  run_at: number;
+  payload_json: string | null;
+};
+
+type SocketAttachment = {
+  playerId?: string;
+};
 
 export class RoomDO extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
+    ctx.blockConcurrencyWhile(async () => {
+      this.migrate();
+      this.ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair("ping", "pong"));
+    });
+  }
+
+  async initialize(input: InitializeRoomInput): Promise<RoomSummary> {
+    const existing = this.loadState();
+    if (existing) {
+      return this.toSummary(existing);
+    }
+
+    const now = Date.now();
+    const room = {
+      roomId: input.roomId,
+      gameId: input.gameId,
+      mode: input.mode,
+      minPlayers: input.minPlayers,
+      maxPlayers: input.maxPlayers,
+      config: input.config ?? {},
+      createdAt: now
+    };
+    const definition = getGameDefinition(input.gameId);
+    const state: RoomState = {
+      room,
+      phase: "waiting",
+      version: 0,
+      players: [],
+      stageState: definition.initialStageState({ room, players: [], now }),
+      playerStates: {},
+      updatedAt: now
+    };
+
+    this.saveState(state);
+    await this.rescheduleTimers(definition.nextTimers({ state, now }));
+    return this.toSummary(state);
+  }
+
+  async join(input: JoinRoomInput): Promise<RoomSummary> {
+    const state = this.requireState();
+    const existing = state.players.find((player) => player.playerId === input.playerId);
+    if (existing) {
+      existing.connected = true;
+      if (input.displayName) {
+        existing.displayName = input.displayName;
+      }
+      state.updatedAt = Date.now();
+      this.saveState(state);
+      this.broadcastPresence(state, input.playerId, true);
+      return this.toSummary(state);
+    }
+
+    if (state.phase === "closed") {
+      throw new GameServerError("room_closed", "Room is closed", 409);
+    }
+    if (state.players.length >= state.room.maxPlayers) {
+      throw new GameServerError("room_full", "Room is full", 409);
+    }
+
+    const now = Date.now();
+    const player: PlayerSeat = {
+      playerId: input.playerId,
+      seat: state.players.length,
+      connected: true,
+      joinedAt: now,
+      ...(input.displayName ? { displayName: input.displayName } : {})
+    };
+    const definition = getGameDefinition(state.room.gameId);
+    state.players.push(player);
+    state.playerStates[player.playerId] = definition.initialPlayerState(player, { room: state.room, now });
+    if (state.players.length >= state.room.minPlayers && state.phase === "waiting") {
+      state.phase = "active";
+    }
+    state.updatedAt = now;
+    state.version += 1;
+    this.saveState(state);
+    await this.rescheduleTimers(definition.nextTimers({ state, now }));
+    this.broadcastPresence(state, input.playerId, true);
+    return this.toSummary(state);
+  }
+
+  async leave(playerId: string): Promise<RoomSummary> {
+    const state = this.requireState();
+    const player = state.players.find((candidate) => candidate.playerId === playerId);
+    if (!player) {
+      throw new GameServerError("player_not_found", "Player is not in this room", 404);
+    }
+
+    player.connected = false;
+    state.updatedAt = Date.now();
+    this.saveState(state);
+    this.broadcastPresence(state, playerId, false);
+    return this.toSummary(state);
+  }
+
+  async getSummary(): Promise<RoomSummary> {
+    return this.toSummary(this.requireState());
+  }
+
+  async getSnapshot(playerId: string): Promise<SnapshotPayload> {
+    const state = this.requireState();
+    return this.createSnapshot(state, playerId);
+  }
+
+  async submitAction(action: ClientGameAction): Promise<ActionAck> {
+    const state = this.requireState();
+    const processed = this.ctx.storage.sql
+      .exec<ProcessedActionRow>(
+        "SELECT ack_json FROM processed_actions WHERE player_id = ? AND client_action_id = ?",
+        action.playerId,
+        action.clientActionId
+      )
+      .toArray()[0];
+    if (processed) {
+      return JSON.parse(processed.ack_json) as ActionAck;
+    }
+
+    if (action.expectedVersion !== state.version) {
+      throw new GameServerError("stale_action", "Action expectedVersion does not match room version", 409, {
+        expectedVersion: action.expectedVersion,
+        currentVersion: state.version
+      });
+    }
+
+    const player = state.players.find((candidate) => candidate.playerId === action.playerId);
+    if (!player) {
+      throw new GameServerError("player_not_found", "Player is not in this room", 404);
+    }
+    if (state.phase !== "active") {
+      throw new GameServerError("invalid_action", "Room is not active", 409);
+    }
+
+    const now = Date.now();
+    const definition = getGameDefinition(state.room.gameId);
+    const validation = definition.validateAction({ state: cloneState(state), now }, action);
+    if (!validation.ok) {
+      throw new GameServerError(
+        validation.code === "invalid_turn" ? "invalid_turn" : "invalid_action",
+        validation.message,
+        409
+      );
+    }
+
+    const applied = definition.applyAction({ state: cloneState(state), now }, action);
+    applied.state.version = state.version + 1;
+    applied.state.updatedAt = now;
+    this.saveState(applied.state);
+    for (const event of applied.events) {
+      this.insertEvent(applied.state.version, event);
+    }
+    const timers = definition.nextTimers({ state: applied.state, now });
+    await this.rescheduleTimers(timers);
+
+    const ack: ActionAck = { version: applied.state.version, events: applied.events };
+    this.ctx.storage.sql.exec(
+      "INSERT INTO processed_actions (player_id, client_action_id, ack_json, created_at) VALUES (?, ?, ?, ?)",
+      action.playerId,
+      action.clientActionId,
+      JSON.stringify(ack),
+      now
+    );
+    this.deliverEvents(applied.state, applied.events);
+    return ack;
+  }
+
+  async fetch(request: Request): Promise<Response> {
+    if (request.headers.get("Upgrade") !== "websocket") {
+      return Response.json({ error: "Expected WebSocket upgrade" }, { status: 426 });
+    }
+
+    const pair = new WebSocketPair();
+    const client = pair[0];
+    const server = pair[1];
+    const url = new URL(request.url);
+    const playerId = url.searchParams.get("playerId") ?? undefined;
+    server.serializeAttachment((playerId ? { playerId } : {}) satisfies SocketAttachment);
+    this.ctx.acceptWebSocket(server, playerId ? [`player:${playerId}`] : undefined);
+    if (playerId) {
+      const state = this.loadState();
+      if (state) {
+        this.sendToSocket(server, this.message(state, "snapshot", this.createSnapshot(state, playerId)));
+      }
+    }
+    return new Response(null, { status: 101, webSocket: client });
+  }
+
+  async webSocketMessage(ws: WebSocket, raw: string | ArrayBuffer): Promise<void> {
+    try {
+      const message = decodeClientMessage(raw);
+      await this.handleClientMessage(ws, message);
+    } catch (error) {
+      const state = this.loadState();
+      const roomId = state?.room.roomId ?? "unknown";
+      const version = state?.version ?? 0;
+      this.sendToSocket(ws, {
+        type: "error",
+        roomId,
+        version,
+        serverTime: Date.now(),
+        payload: { code: "bad_request", message: error instanceof Error ? error.message : "Bad request" }
+      });
+    }
+  }
+
+  async webSocketClose(ws: WebSocket): Promise<void> {
+    const attachment = ws.deserializeAttachment() as SocketAttachment | undefined;
+    if (attachment?.playerId) {
+      await this.leave(attachment.playerId);
+    }
+  }
+
+  async alarm(): Promise<void> {
+    const state = this.loadState();
+    if (!state) {
+      await this.ctx.storage.deleteAlarm();
+      return;
+    }
+
+    const now = Date.now();
+    const due = this.ctx.storage.sql
+      .exec<TimerRow>("SELECT id, kind, run_at, payload_json FROM timers WHERE run_at <= ? ORDER BY run_at ASC", now)
+      .toArray();
+    for (const timer of due) {
+      if (timer.kind === "room_cleanup" && state.phase === "closed") {
+        this.ctx.storage.sql.exec("DELETE FROM timers WHERE id = ?", timer.id);
+      }
+      if (timer.kind === "turn_timeout" && state.phase === "active") {
+        const event: GameEvent = {
+          id: createId("evt"),
+          type: "turn.timeout",
+          visibility: "system",
+          payload: timer.payload_json ? JSON.parse(timer.payload_json) : {},
+          createdAt: now
+        };
+        this.insertEvent(state.version, event);
+        this.deliverEvents(state, [event]);
+        this.ctx.storage.sql.exec("DELETE FROM timers WHERE id = ?", timer.id);
+      }
+    }
+    await this.scheduleNextAlarm();
+  }
+
+  private async handleClientMessage(ws: WebSocket, message: ClientMessage): Promise<void> {
+    const state = this.requireState();
+    if (message.type === "ping") {
+      this.sendToSocket(ws, this.message(state, "pong", message.nonce ? { nonce: message.nonce } : {}));
+      return;
+    }
+    if (message.type === "hello" || message.type === "joinRoom") {
+      ws.serializeAttachment({ playerId: message.playerId } satisfies SocketAttachment);
+      await this.join({
+        playerId: message.playerId,
+        ...(message.displayName ? { displayName: message.displayName } : {})
+      });
+      const latest = this.requireState();
+      this.sendToSocket(ws, this.message(latest, "snapshot", this.createSnapshot(latest, message.playerId)));
+      this.sendToSocket(ws, this.message(latest, "ack", { command: message.type }));
+      return;
+    }
+    if (message.type === "leaveRoom") {
+      await this.leave(message.playerId);
+      this.sendToSocket(ws, this.message(this.requireState(), "ack", { command: "leaveRoom" }));
+      return;
+    }
+    if (message.type === "action") {
+      const ack = await this.submitAction({
+        playerId: message.playerId,
+        clientActionId: message.clientActionId,
+        expectedVersion: message.expectedVersion,
+        type: message.action.type,
+        payload: message.action.payload
+      });
+      this.sendToSocket(
+        ws,
+        this.message(this.requireState(), "ack", {
+          command: "action",
+          clientActionId: message.clientActionId,
+          result: { version: ack.version }
+        })
+      );
+    }
+  }
+
+  private migrate(): void {
+    this.ctx.storage.sql.exec(`
+      CREATE TABLE IF NOT EXISTS room_state (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        state_json TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS processed_actions (
+        player_id TEXT NOT NULL,
+        client_action_id TEXT NOT NULL,
+        ack_json TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY (player_id, client_action_id)
+      );
+      CREATE TABLE IF NOT EXISTS event_log (
+        id TEXT PRIMARY KEY,
+        version INTEGER NOT NULL,
+        event_json TEXT NOT NULL,
+        created_at INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS timers (
+        id TEXT PRIMARY KEY,
+        kind TEXT NOT NULL,
+        run_at INTEGER NOT NULL,
+        payload_json TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_timers_run_at ON timers (run_at);
+    `);
+  }
+
+  private loadState(): RoomState | null {
+    const row = this.ctx.storage.sql.exec<RoomStateRow>("SELECT id, state_json FROM room_state WHERE id = 1").toArray()[0];
+    return row ? (JSON.parse(row.state_json) as RoomState) : null;
+  }
+
+  private requireState(): RoomState {
+    const state = this.loadState();
+    if (!state) {
+      throw new GameServerError("room_not_found", "Room is not initialized", 404);
+    }
+    return state;
+  }
+
+  private saveState(state: RoomState): void {
+    this.ctx.storage.sql.exec(
+      "INSERT INTO room_state (id, state_json) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET state_json = excluded.state_json",
+      JSON.stringify(state)
+    );
+  }
+
+  private insertEvent(version: number, event: GameEvent): void {
+    this.ctx.storage.sql.exec(
+      "INSERT INTO event_log (id, version, event_json, created_at) VALUES (?, ?, ?, ?)",
+      event.id,
+      version,
+      JSON.stringify(event),
+      event.createdAt
+    );
+  }
+
+  private async rescheduleTimers(timers: TimerIntent[]): Promise<void> {
+    this.ctx.storage.sql.exec("DELETE FROM timers");
+    for (const timer of timers) {
+      this.ctx.storage.sql.exec(
+        "INSERT INTO timers (id, kind, run_at, payload_json) VALUES (?, ?, ?, ?)",
+        timer.id,
+        timer.kind,
+        timer.runAt,
+        timer.payload ? JSON.stringify(timer.payload) : null
+      );
+    }
+    await this.scheduleNextAlarm();
+  }
+
+  private async scheduleNextAlarm(): Promise<void> {
+    const next = this.ctx.storage.sql
+      .exec<{ run_at: number | null }>("SELECT MIN(run_at) AS run_at FROM timers")
+      .one();
+    if (next.run_at) {
+      await this.ctx.storage.setAlarm(next.run_at);
+    } else {
+      await this.ctx.storage.deleteAlarm();
+    }
+  }
+
+  private createSnapshot(state: RoomState, playerId: string): SnapshotPayload {
+    const definition = getGameDefinition(state.room.gameId);
+    const context = { state, now: Date.now() };
+    return {
+      roomId: state.room.roomId,
+      gameId: state.room.gameId,
+      mode: state.room.mode,
+      phase: state.phase,
+      version: state.version,
+      players: state.players,
+      publicView: definition.getPublicView(context),
+      privateView: definition.getPrivateView(context, playerId)
+    };
+  }
+
+  private toSummary(state: RoomState): RoomSummary {
+    return {
+      roomId: state.room.roomId,
+      gameId: state.room.gameId,
+      mode: state.room.mode,
+      phase: state.phase,
+      version: state.version,
+      playerCount: state.players.length,
+      minPlayers: state.room.minPlayers,
+      maxPlayers: state.room.maxPlayers
+    };
+  }
+
+  private message<TType extends ServerMessage["type"]>(
+    state: RoomState,
+    type: TType,
+    payload: Extract<ServerMessage, { type: TType }>["payload"]
+  ): Extract<ServerMessage, { type: TType }> {
+    return {
+      type,
+      roomId: state.room.roomId,
+      version: state.version,
+      serverTime: Date.now(),
+      payload
+    } as Extract<ServerMessage, { type: TType }>;
+  }
+
+  private deliverEvents(state: RoomState, events: GameEvent[]): void {
+    for (const event of publicEvents(events)) {
+      this.broadcast(this.message(state, "event", { event }));
+    }
+    for (const player of state.players) {
+      for (const event of privateEventsFor(events, player.playerId)) {
+        this.broadcastToPlayer(player.playerId, this.message(state, "privateEvent", { event }));
+      }
+    }
+  }
+
+  private broadcastPresence(state: RoomState, playerId: string, connected: boolean): void {
+    this.broadcast(this.message(state, "presence", { playerId, connected }));
+  }
+
+  private broadcast(message: ServerMessage): void {
+    for (const ws of this.ctx.getWebSockets()) {
+      this.sendToSocket(ws, message);
+    }
+  }
+
+  private broadcastToPlayer(playerId: string, message: ServerMessage): void {
+    for (const ws of this.ctx.getWebSockets(`player:${playerId}`)) {
+      this.sendToSocket(ws, message);
+    }
+  }
+
+  private sendToSocket(ws: WebSocket, message: ServerMessage): void {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(encodeServerMessage(message));
+    }
   }
 }
