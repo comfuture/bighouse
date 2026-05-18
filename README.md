@@ -156,5 +156,5 @@ pnpm wrangler d1 migrations apply bighouse --remote
 3. Deploy:
 
 ```sh
-pnpm deploy
+pnpm run deploy
 ```
