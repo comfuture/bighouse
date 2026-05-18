@@ -101,6 +101,77 @@ describe("HTTP API", () => {
     wsResponse.webSocket?.close();
   });
 
+  it("does not broadcast presence for duplicate room joins", async () => {
+    const mode = `presence-${crypto.randomUUID()}`;
+    const createResponse = await SELF.fetch(`https://bighouse.test/games/gomoku/lobbies/${mode}/rooms`, {
+      method: "POST",
+      body: JSON.stringify({ playerId: "presence-host", displayName: "Host" })
+    });
+    const createBody = (await createResponse.json()) as { wsUrl: string };
+    const wsResponse = await SELF.fetch(createBody.wsUrl.replace("wss://", "https://").replace("ws://", "http://"), {
+      headers: { Upgrade: "websocket" }
+    });
+    expect(wsResponse.status).toBe(101);
+    const ws = wsResponse.webSocket;
+    expect(ws).toBeDefined();
+    const messages: Array<{ type: string }> = [];
+    ws!.accept();
+    ws!.addEventListener("message", (event) => {
+      messages.push(JSON.parse(String(event.data)) as { type: string });
+    });
+
+    ws!.send(JSON.stringify({ type: "joinRoom", playerId: "presence-host", displayName: "Host" }));
+    ws!.send(JSON.stringify({ type: "joinRoom", playerId: "presence-host", displayName: "Host" }));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(messages.filter((message) => message.type === "presence")).toHaveLength(0);
+    expect(messages.filter((message) => message.type === "snapshot").length).toBeGreaterThanOrEqual(1);
+    ws!.close();
+  });
+
+  it("does not mark a player offline immediately after a transient room socket close", async () => {
+    const mode = `disconnect-${crypto.randomUUID()}`;
+    const createResponse = await SELF.fetch(`https://bighouse.test/games/gomoku/lobbies/${mode}/rooms`, {
+      method: "POST",
+      body: JSON.stringify({ playerId: "disconnect-host", displayName: "Host" })
+    });
+    const createBody = (await createResponse.json()) as { roomId: string; wsUrl: string };
+    const joinResponse = await SELF.fetch(`https://bighouse.test/rooms/${createBody.roomId}/join`, {
+      method: "POST",
+      body: JSON.stringify({ playerId: "disconnect-guest", displayName: "Guest" })
+    });
+    const joinBody = (await joinResponse.json()) as { wsUrl: string };
+    const hostResponse = await SELF.fetch(createBody.wsUrl.replace("wss://", "https://").replace("ws://", "http://"), {
+      headers: { Upgrade: "websocket" }
+    });
+    const guestResponse = await SELF.fetch(joinBody.wsUrl.replace("wss://", "https://").replace("ws://", "http://"), {
+      headers: { Upgrade: "websocket" }
+    });
+    const host = hostResponse.webSocket;
+    const guest = guestResponse.webSocket;
+    expect(host).toBeDefined();
+    expect(guest).toBeDefined();
+    const messages: Array<{ type: string; payload?: { playerId?: string; connected?: boolean } }> = [];
+    host!.accept();
+    guest!.accept();
+    host!.addEventListener("message", (event) => {
+      messages.push(JSON.parse(String(event.data)) as { type: string; payload?: { playerId?: string; connected?: boolean } });
+    });
+
+    guest!.close();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(
+      messages.some(
+        (message) =>
+          message.type === "presence" &&
+          message.payload?.playerId === "disconnect-guest" &&
+          message.payload.connected === false
+      )
+    ).toBe(false);
+    host!.close();
+  });
+
   it("synchronizes closed gomoku rooms and match results into D1", async () => {
     const firstJoin = await SELF.fetch("https://bighouse.test/games/gomoku/lobbies/win/join", {
       method: "POST",
