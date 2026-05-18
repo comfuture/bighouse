@@ -374,11 +374,12 @@ async function mountOrUpdateGame(): Promise<void> {
     return;
   }
   const module = await loader();
+  const publicView = { ...state.room.publicView, roomPhase: state.room.phase } as GomokuPublicView;
   if (!state.gameInstance) {
     state.gameInstance = module.createGomokuGame(els.gameHost, {
       playerId: state.playerId,
       version: state.room.version,
-      publicView: state.room.publicView as GomokuPublicView,
+      publicView,
       privateView: state.room.privateView as GomokuPrivateView,
       sendAction(action) {
         state.roomWs?.send(
@@ -396,7 +397,7 @@ async function mountOrUpdateGame(): Promise<void> {
     state.gameInstance.update({
       playerId: state.playerId,
       version: state.room.version,
-      publicView: state.room.publicView as GomokuPublicView,
+      publicView,
       privateView: state.room.privateView as GomokuPrivateView
     });
   }
