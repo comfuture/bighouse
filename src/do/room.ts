@@ -2,7 +2,7 @@ import { DurableObject } from "cloudflare:workers";
 import { GameServerError } from "../core/errors";
 import type { ClientGameAction, GameEvent, JsonObject, PlayerSeat, RoomState, TimerIntent } from "../core/game";
 import { cloneState, privateEventsFor, publicEvents } from "../core/game";
-import { createId } from "../core/ids";
+import { createId, roomDoName } from "../core/ids";
 import {
   decodeClientMessage,
   encodeServerMessage,
@@ -11,6 +11,7 @@ import {
   type SnapshotPayload
 } from "../core/protocol";
 import { getGameDefinition } from "../games/registry";
+import { D1Repository } from "../storage/d1";
 import type { Env } from "../types";
 
 export type InitializeRoomInput = {
@@ -222,6 +223,9 @@ export class RoomDO extends DurableObject<Env> {
     }
     const timers = definition.nextTimers({ state: applied.state, now });
     await this.rescheduleTimers(timers);
+    if (applied.state.phase === "closed") {
+      await this.persistClosedRoom(applied.state, applied.events);
+    }
 
     const ack: ActionAck = { version: applied.state.version, events: applied.events };
     this.ctx.storage.sql.exec(
@@ -530,4 +534,43 @@ export class RoomDO extends DurableObject<Env> {
       ws.send(encodeServerMessage(message));
     }
   }
+
+  private async persistClosedRoom(state: RoomState, events: GameEvent[]): Promise<void> {
+    const repo = new D1Repository(this.env.DB);
+    const closedAt = new Date(state.closedAt ?? Date.now()).toISOString();
+    await repo.upsertRoom({
+      roomId: state.room.roomId,
+      gameId: state.room.gameId,
+      mode: state.room.mode,
+      status: "closed",
+      playerCount: state.players.length,
+      minPlayers: state.room.minPlayers,
+      maxPlayers: state.room.maxPlayers,
+      doName: roomDoName(state.room.roomId),
+      closedAt
+    });
+    const winnerPlayerId = findWinnerPlayerId(events);
+    await repo.insertMatchResult({
+      roomId: state.room.roomId,
+      gameId: state.room.gameId,
+      mode: state.room.mode,
+      status: "closed",
+      winnerPlayerId,
+      result: {
+        version: state.version,
+        winnerPlayerId,
+        closedAt
+      }
+    });
+  }
+}
+
+function findWinnerPlayerId(events: GameEvent[]): string | null {
+  for (const event of events) {
+    const winnerPlayerId = event.payload.winnerPlayerId;
+    if (typeof winnerPlayerId === "string") {
+      return winnerPlayerId;
+    }
+  }
+  return null;
 }

@@ -86,7 +86,7 @@ export class MatchmakerDO extends DurableObject<Env> {
       minPlayers: definition.minPlayers,
       maxPlayers: definition.maxPlayers
     };
-    const summary = await room.initialize(initializeInput);
+    await room.initialize(initializeInput);
     for (const row of selected) {
       await room.join({
         playerId: row.player_id,
@@ -104,16 +104,19 @@ export class MatchmakerDO extends DurableObject<Env> {
         playerId: row.player_id,
         ...(row.display_name ? { displayName: row.display_name } : {}),
         status: "matched",
-        matchedRoomId: roomId
+        matchedRoomId: roomId,
+        region: row.region,
+        skill: row.skill
       });
     }
+    const latestSummary = await room.getSummary();
 
     const roomRecord: RoomIndexRecord = {
       roomId,
       gameId: input.gameId,
       mode: input.mode,
-      status: summary.phase === "active" ? "active" : "matching",
-      playerCount: selected.length,
+      status: latestSummary.phase === "active" ? "active" : "matching",
+      playerCount: latestSummary.playerCount,
       minPlayers: definition.minPlayers,
       maxPlayers: definition.maxPlayers,
       doName
