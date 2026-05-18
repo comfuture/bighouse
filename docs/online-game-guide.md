@@ -9,9 +9,10 @@
 1. `GET /games`로 서버가 제공하는 게임 목록을 가져온다.
 2. 로비 즉시 입장 또는 매치메이킹 티켓 생성 중 하나를 선택한다.
 3. 응답으로 받은 `roomId`와 `wsUrl`을 사용해 WebSocket에 연결한다.
-4. 서버의 `snapshot` 메시지로 현재 룸 상태를 렌더링한다.
-5. 플레이어 입력을 `action` 메시지로 보낸다.
-6. 서버의 `ack`, `event`, `privateEvent`, `presence`, `error` 메시지를 반영한다.
+4. 로비 채팅이 필요하면 `lobbyWsUrl` 또는 로비 WebSocket URL에 연결한다.
+5. 서버의 `snapshot` 메시지로 현재 룸 상태를 렌더링한다.
+6. 플레이어 입력을 `action` 메시지로 보낸다.
+7. 서버의 `ack`, `event`, `privateEvent`, `chat`, `presence`, `error` 메시지를 반영한다.
 
 로비 입장 예시:
 
@@ -34,6 +35,14 @@ curl -X POST https://bighouse.comfuture.workers.dev/games/gomoku/matchmaking/tic
 ```text
 wss://bighouse.comfuture.workers.dev/rooms/room_id/ws?playerId=p1
 ```
+
+로비 WebSocket은 다음과 같은 형태다.
+
+```text
+wss://bighouse.comfuture.workers.dev/games/gomoku/lobbies/default/ws?playerId=p1&displayName=Alice
+```
+
+`playerId`는 서버가 플레이어를 구분하기 위한 안정적인 고유 값이면 된다. 내부 회원 id, 익명 세션 id, 지갑 주소, 디바이스별 임시 id처럼 어떤 값이어도 상관없다. 다만 UI와 채팅 표시에는 `playerId`를 그대로 노출하지 않는 편이 좋으므로, 사람이 읽을 수 있는 `displayName`을 함께 보내는 것을 권장한다. `displayName`은 표시 이름일 뿐 신뢰할 수 있는 식별자나 권한 판단 기준으로 쓰면 안 된다.
 
 ## 2. 클라이언트 메시지 계약
 
@@ -64,16 +73,85 @@ WebSocket 연결 후 클라이언트는 JSON 메시지를 보낸다.
 }
 ```
 
+public 채팅:
+
+```json
+{
+  "type": "chat",
+  "playerId": "p1",
+  "body": "안녕하세요"
+}
+```
+
+private 채팅:
+
+```json
+{
+  "type": "chat",
+  "playerId": "p1",
+  "targetPlayerId": "p2",
+  "body": "이번 턴 끝나고 나갈게요"
+}
+```
+
 중요한 필드:
 
 - `clientActionId`: 같은 플레이어가 같은 액션을 재전송해도 한 번만 적용하기 위한 id다.
 - `expectedVersion`: 클라이언트가 기준으로 삼은 룸 버전이다. 서버의 현재 버전과 다르면 stale action으로 거부된다.
 - `action.type`: 게임 어댑터가 해석하는 게임별 명령이다.
 - `action.payload`: 게임별 명령 데이터다.
+- `targetPlayerId`: 채팅에서만 사용한다. 없으면 public chat, 있으면 해당 player에게 보내는 private chat이다.
 
 서버 메시지는 항상 `roomId`, `version`, `serverTime`을 포함한다. 클라이언트는 `snapshot`으로 전체 화면을 갱신하고, 이후 `event` / `privateEvent`를 누적 반영하면 된다.
 
-## 3. 공개 상태와 비공개 상태
+## 3. 로비 채팅과 룸 채팅
+
+Bighouse에는 두 종류의 채팅 공간이 있다.
+
+`lobby` 채팅
+
+- URL: `/games/:gameId/lobbies/:mode/ws`
+- 아직 특정 룸에 고정되지 않은 플레이어들이 같은 게임/mode 로비에서 대화할 때 사용한다.
+- 같은 `gameId`와 `mode`의 `LobbyDO`가 WebSocket 연결과 채팅 broadcast를 담당한다.
+- public chat은 로비에 연결된 모든 socket에 전달된다.
+- private chat은 `targetPlayerId`와 발신자의 socket에만 전달된다.
+
+`room` 채팅
+
+- URL: `/rooms/:roomId/ws`
+- 실제 게임룸 안에서 게임 진행 중 대화할 때 사용한다.
+- `RoomDO`가 게임 액션과 같은 WebSocket에서 채팅도 처리한다.
+- public chat은 룸 참여자 전체에게 전달된다.
+- private chat은 같은 룸에 있는 `targetPlayerId`와 발신자에게만 전달된다.
+- 룸 private chat의 target은 해당 룸의 player 목록에 있어야 한다.
+
+채팅 서버 메시지 예시:
+
+```json
+{
+  "type": "chat",
+  "roomId": "room_abc",
+  "version": 2,
+  "serverTime": 1779090000000,
+  "payload": {
+    "message": {
+      "id": "chat_abc",
+      "scope": "room",
+      "scopeId": "room_abc",
+      "visibility": "private",
+      "playerId": "p1",
+      "displayName": "Alice",
+      "targetPlayerId": "p2",
+      "body": "비공개 메시지",
+      "createdAt": 1779090000000
+    }
+  }
+}
+```
+
+채팅과 게임 이벤트는 분리해서 다루는 것이 좋다. `event` / `privateEvent`는 게임 규칙의 결과이고, `chat`은 플레이어 커뮤니케이션이다. 예를 들어 카드게임에서 `"AS"`를 내는 행동은 `card.played` public event이고, "AS 낼게요"라는 말은 `chat` 메시지다.
+
+## 4. 공개 상태와 비공개 상태
 
 Bighouse의 룸 상태는 크게 세 층으로 나뉜다.
 
@@ -97,7 +175,7 @@ Bighouse의 룸 상태는 크게 세 층으로 나뉜다.
 
 이 구분을 지키는 것이 온라인 게임 구현에서 가장 중요하다. 서버 내부에는 전체 권위 상태가 있어도, 클라이언트에 보내는 view와 event는 게임 규칙에 맞게 필터링해야 한다.
 
-## 4. Gomoku: 전역 게임 상태가 공개되는 게임
+## 5. Gomoku: 전역 게임 상태가 공개되는 게임
 
 오목/바둑/체스처럼 모든 플레이어가 같은 판을 보는 게임은 대부분의 `stageState`를 공개해도 된다.
 
@@ -166,7 +244,7 @@ Bighouse의 룸 상태는 크게 세 층으로 나뉜다.
 
 클라이언트 구현은 단순하다. `snapshot.payload.publicView.board`를 렌더링하고, `gomoku.stonePlaced` 이벤트가 오면 해당 좌표를 갱신하면 된다.
 
-## 5. Card Demo: 플레이어 상태를 숨겨야 하는 게임
+## 6. Card Demo: 플레이어 상태를 숨겨야 하는 게임
 
 포커, 원카드, 훌라, 보드게임의 비밀 목표처럼 각 플레이어가 감춰진 정보를 갖는 게임은 `stageState`와 `playerStates`를 엄격히 나눠야 한다.
 
@@ -257,7 +335,7 @@ Bighouse의 룸 상태는 크게 세 층으로 나뉜다.
 
 클라이언트는 public view로 공용 보드를 그리고, 자기 손패 UI는 `snapshot.payload.privateView`와 `privateEvent`만 사용해서 갱신해야 한다.
 
-## 6. 새 게임을 추가하는 방법
+## 7. 새 게임을 추가하는 방법
 
 새 게임은 `src/games/<game>.ts`에 `GameDefinition`을 추가하고 `src/games/index.ts`에서 등록한다.
 
@@ -305,7 +383,7 @@ registerGame(myGameDefinition);
 
 `GET /games`는 등록된 built-in adapter를 D1 `games` 테이블에 seed한다. 따라서 새 adapter를 등록하면 게임 목록에도 나타난다.
 
-## 7. 어댑터 설계 체크리스트
+## 8. 어댑터 설계 체크리스트
 
 새 게임을 만들 때 먼저 아래 질문에 답해야 한다.
 
@@ -327,7 +405,7 @@ registerGame(myGameDefinition);
 | 착수, 공개 카드 제출, 승리 선언 | `GameEvent` | `visibility: "public"` 또는 `"system"` |
 | 카드 드로우 결과, 개인 보상 | `GameEvent` | `visibility: "private"` + `playerId` |
 
-## 8. 클라이언트 구현 권장 구조
+## 9. 클라이언트 구현 권장 구조
 
 클라이언트는 서버 상태를 다음처럼 분리해서 보관하는 것이 좋다.
 
@@ -338,6 +416,14 @@ type ClientRoomModel = {
   players: Array<{ playerId: string; seat: number; connected: boolean }>;
   publicView: Record<string, unknown>;
   privateView: Record<string, unknown>;
+  chat: Array<{
+    scope: "lobby" | "room";
+    visibility: "public" | "private";
+    playerId: string;
+    displayName?: string;
+    targetPlayerId?: string;
+    body: string;
+  }>;
 };
 ```
 
@@ -346,13 +432,14 @@ type ClientRoomModel = {
 - `snapshot`: 전체 모델을 교체한다.
 - `event`: public view에 반영하거나 event log에 추가한다.
 - `privateEvent`: 자기 private view에만 반영한다.
+- `chat`: scope와 visibility를 확인해 로비/룸 채팅 UI에 추가한다.
 - `ack`: optimistic UI를 확정한다.
 - `error`가 `stale_action`이면 최신 snapshot을 기다리거나 다시 요청한다.
 - `presence`: 접속 상태만 갱신한다.
 
 서버의 `version`은 클라이언트 동기화 기준이다. 액션을 보낼 때 항상 현재 렌더링 기준의 `version`을 `expectedVersion`으로 넣어야 한다.
 
-## 9. 실전 테스트 방법
+## 10. 실전 테스트 방법
 
 배포된 서버에서 게임 목록을 확인한다.
 
@@ -370,3 +457,10 @@ curl https://bighouse.comfuture.workers.dev/games
 - `p1`이 `playCard`로 `"AS"`를 내면 `"AS"`는 public event에 포함된다.
 
 이 차이를 기준으로 새 게임이 공개 상태형인지, 비공개 플레이어 상태형인지 판단하면 된다.
+
+채팅은 다음 기준으로 확인한다.
+
+- 로비 WebSocket에 같은 `gameId`/`mode`로 여러 플레이어를 연결한다.
+- `targetPlayerId`가 없는 `chat`은 모든 로비 연결에 도착해야 한다.
+- `targetPlayerId`가 있는 `chat`은 발신자와 대상 플레이어에게만 도착해야 한다.
+- 룸 WebSocket에서도 같은 방식으로 확인하되, room private chat target은 같은 룸의 플레이어여야 한다.

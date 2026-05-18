@@ -54,6 +54,12 @@ curl -X POST http://localhost:8787/games/gomoku/lobbies/default/join \
   -d '{"playerId":"p1","displayName":"Alice"}'
 ```
 
+Connect to a lobby WebSocket for lobby chat:
+
+```text
+ws://localhost:8787/games/gomoku/lobbies/default/ws?playerId=p1&displayName=Alice
+```
+
 Create a matchmaking ticket:
 
 ```sh
@@ -88,6 +94,8 @@ Client messages:
 - `joinRoom`: `{ "type": "joinRoom", "playerId": "p1" }`
 - `leaveRoom`: `{ "type": "leaveRoom", "playerId": "p1" }`
 - `action`: `{ "type": "action", "playerId": "p1", "clientActionId": "a1", "expectedVersion": 2, "action": { "type": "placeStone", "payload": { "x": 0, "y": 0 } } }`
+- `chat`: `{ "type": "chat", "playerId": "p1", "body": "hello" }`
+- `chat` private: `{ "type": "chat", "playerId": "p1", "targetPlayerId": "p2", "body": "secret" }`
 - `ping`: `{ "type": "ping", "nonce": "n1" }`
 
 Server messages include `roomId`, `version`, and `serverTime` and use these types:
@@ -95,11 +103,14 @@ Server messages include `roomId`, `version`, and `serverTime` and use these type
 - `snapshot`
 - `event`
 - `privateEvent`
+- `chat`
 - `ack`
 - `error`
 - `presence`
 - `roomClosed`
 - `pong`
+
+`playerId` can be any stable unique value for the player. A human-readable `displayName` is recommended so chat messages and presence UI can show a friendly label without treating it as identity.
 
 ## Built-In Games
 
