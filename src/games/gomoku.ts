@@ -87,8 +87,8 @@ export const gomokuDefinition: GameDefinition = {
     const winnerPlayerId = hasFive(stage.board, x, y, stone) ? action.playerId : undefined;
     if (winnerPlayerId) {
       stage.winnerPlayerId = winnerPlayerId;
-      state.phase = "closed";
-      state.closedAt = context.now;
+      delete stage.turnDeadline;
+      state.phase = "finished";
     } else {
       const next = nextPlayer(state.players, action.playerId);
       if (next) {

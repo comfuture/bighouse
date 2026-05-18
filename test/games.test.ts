@@ -74,7 +74,7 @@ describe("game adapters", () => {
     ).toMatchObject({ ok: false, code: "invalid_action", message: "Move violates double-three rule" });
   });
 
-  it("closes gomoku when a player reaches five stones", () => {
+  it("finishes gomoku when a player reaches five stones", () => {
     const state = baseState("gomoku");
     state.stageState = gomokuDefinition.initialStageState({ room: state.room, players: state.players, now: 1 });
     state.playerStates.p1 = gomokuDefinition.initialPlayerState(state.players[0]!, { room: state.room, now: 1 });
@@ -90,7 +90,7 @@ describe("game adapters", () => {
       { playerId: "p1", clientActionId: "win", expectedVersion: 2, type: "placeStone", payload: { x: 4, y: 0 } }
     );
 
-    expect(result.state).toMatchObject({ phase: "closed", closedAt: 10 });
+    expect(result.state).toMatchObject({ phase: "finished" });
     expect(result.events).toContainEqual(expect.objectContaining({
       type: "gomoku.gameWon",
       visibility: "system",

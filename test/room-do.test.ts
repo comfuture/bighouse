@@ -19,7 +19,7 @@ describe("RoomDO", () => {
     expect(joined).toMatchObject({ phase: "waiting", playerCount: 2, readyCount: 0, hostPlayerId: "p1", version: 2 });
     await room.setReady("p2", true);
     const started = await room.startGame("p1");
-    expect(started).toMatchObject({ phase: "active", playerCount: 2, readyCount: 1, version: 4 });
+    expect(started).toMatchObject({ phase: "active", playerCount: 2, readyCount: 0, version: 4 });
 
     const ack = await room.submitAction({
       playerId: "p1",
@@ -84,7 +84,7 @@ describe("RoomDO", () => {
     await expect(room.startGame("guest")).resolves.toMatchObject({
       phase: "active",
       hostPlayerId: "guest",
-      readyCount: 1
+      readyCount: 0
     });
   });
 
@@ -142,6 +142,101 @@ describe("RoomDO", () => {
     });
 
     await expect(runDurableObjectAlarm(roomStub)).resolves.toBe(true);
+  });
+
+  it("supports rematch requests and finished-game leaves", async () => {
+    const room = env.ROOM_DO.getByName("room:test-rematch") as unknown as RoomDO;
+    await room.initialize({
+      roomId: "test-rematch",
+      gameId: "gomoku",
+      mode: "default",
+      minPlayers: 2,
+      maxPlayers: 2
+    });
+    await room.join({ playerId: "host" });
+    await room.join({ playerId: "guest" });
+    await room.setReady("guest", true);
+    await room.startGame("host");
+
+    const winningMoves = [
+      ["host", 0, 0],
+      ["guest", 0, 1],
+      ["host", 1, 0],
+      ["guest", 1, 1],
+      ["host", 2, 0],
+      ["guest", 2, 1],
+      ["host", 3, 0],
+      ["guest", 3, 1],
+      ["host", 4, 0]
+    ] as const;
+    let version = 4;
+    for (const [playerId, x, y] of winningMoves) {
+      const result = await room.submitAction({
+        playerId,
+        clientActionId: `${playerId}-${x}-${y}`,
+        expectedVersion: version,
+        type: "placeStone",
+        payload: { x, y }
+      });
+      version = result.version;
+    }
+
+    const finished = await room.getSnapshot("host");
+    expect(finished.phase).toBe("finished");
+    expect(finished.publicView).toMatchObject({ winnerPlayerId: "host" });
+
+    await room.requestPlayAgain("host");
+    await expect(room.getSnapshot("guest")).resolves.toMatchObject({ rematchRequests: ["host"] });
+    const rematched = await room.requestPlayAgain("guest");
+    expect(rematched).toMatchObject({ phase: "active", playerCount: 2, readyCount: 0 });
+    const resetSnapshot = await room.getSnapshot("host");
+    expect(resetSnapshot).toMatchObject({ phase: "active", rematchRequests: [] });
+    expect(resetSnapshot.publicView).toMatchObject({ moveCount: 0 });
+  });
+
+  it("resets to waiting and transfers host when the finished-game host leaves", async () => {
+    const room = env.ROOM_DO.getByName("room:test-finished-leave") as unknown as RoomDO;
+    await room.initialize({
+      roomId: "test-finished-leave",
+      gameId: "gomoku",
+      mode: "default",
+      minPlayers: 2,
+      maxPlayers: 2
+    });
+    await room.join({ playerId: "host" });
+    await room.join({ playerId: "guest" });
+    await room.setReady("guest", true);
+    await room.startGame("host");
+
+    const winningMoves = [
+      ["host", 0, 0],
+      ["guest", 0, 1],
+      ["host", 1, 0],
+      ["guest", 1, 1],
+      ["host", 2, 0],
+      ["guest", 2, 1],
+      ["host", 3, 0],
+      ["guest", 3, 1],
+      ["host", 4, 0]
+    ] as const;
+    let version = 4;
+    for (const [playerId, x, y] of winningMoves) {
+      const result = await room.submitAction({
+        playerId,
+        clientActionId: `leave-${playerId}-${x}-${y}`,
+        expectedVersion: version,
+        type: "placeStone",
+        payload: { x, y }
+      });
+      version = result.version;
+    }
+
+    const waiting = await room.leaveFinishedGame("host");
+    expect(waiting).toMatchObject({ phase: "waiting", playerCount: 1, readyCount: 0, hostPlayerId: "guest" });
+    const snapshot = await room.getSnapshot("guest");
+    expect(snapshot.players).toHaveLength(1);
+    expect(snapshot.players[0]).toMatchObject({ playerId: "guest", seat: 0, ready: false });
+    expect(snapshot.publicView).toMatchObject({ moveCount: 0 });
   });
 
   it("closes stale rooms with no live clients", async () => {
