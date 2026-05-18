@@ -43,6 +43,10 @@ export type ActionAck = {
   events: GameEvent[];
 };
 
+export type ActionResultEnvelope =
+  | { ok: true; ack: ActionAck }
+  | { ok: false; error: { code: string; message: string; status: number; details?: unknown } };
+
 type RoomStateRow = {
   id: number;
   state_json: string;
@@ -229,6 +233,25 @@ export class RoomDO extends DurableObject<Env> {
     );
     this.deliverEvents(applied.state, applied.events);
     return ack;
+  }
+
+  async trySubmitAction(action: ClientGameAction): Promise<ActionResultEnvelope> {
+    try {
+      return { ok: true, ack: await this.submitAction(action) };
+    } catch (error) {
+      if (error instanceof GameServerError) {
+        return {
+          ok: false,
+          error: {
+            code: error.code,
+            message: error.message,
+            status: error.status,
+            ...(error.details === undefined ? {} : { details: error.details })
+          }
+        };
+      }
+      throw error;
+    }
   }
 
   async fetch(request: Request): Promise<Response> {
