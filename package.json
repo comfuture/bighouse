@@ -4,11 +4,11 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "wrangler dev",
+    "dev": "pnpm build:frontend && wrangler dev",
     "dev:frontend": "pnpm --filter @bighouse/frontend dev",
     "build:frontend": "pnpm --filter @bighouse/frontend build",
     "build": "pnpm build:frontend",
-    "deploy": "wrangler deploy",
+    "deploy": "pnpm build:frontend && wrangler deploy",
     "typecheck": "tsc --noEmit && pnpm --filter @bighouse/gomoku typecheck && pnpm --filter @bighouse/frontend typecheck",
     "test": "vitest run"
   },

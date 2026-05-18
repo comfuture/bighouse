@@ -30,6 +30,12 @@ curl -X POST https://bighouse.comfuture.workers.dev/games/gomoku/matchmaking/tic
   -d '{"playerId":"p1","mode":"ranked","region":"apac","skill":"beginner"}'
 ```
 
+If the first player is queued, poll the ticket until `ticket.status` becomes `matched`. The response includes `wsUrl` after the room is ready:
+
+```sh
+curl https://bighouse.comfuture.workers.dev/matchmaking/tickets/ticket_id
+```
+
 Room WebSocket URL:
 
 ```text
@@ -104,7 +110,37 @@ Important fields:
 
 Every server message includes `roomId`, `version`, and `serverTime`. Clients should replace their local room model on `snapshot`, then incrementally apply `event`, `privateEvent`, and `chat`.
 
-## 3. Lobby Chat and Room Chat
+## 3. Frontend Package Layout
+
+The browser frontend is split by responsibility.
+
+`packages/frontend`
+
+- Owns the game list, identity inputs, lobby join, matchmaking, lobby chat, room chat, and room WebSocket lifecycle.
+- It should not import every game package statically.
+- It maps `gameId` to a dynamic import and loads a game bundle only after the player enters a matching room.
+
+`packages/gomoku`
+
+- Owns the gomoku board renderer and client-side move blocking.
+- It consumes `snapshot.payload.publicView` and `snapshot.payload.privateView`.
+- It sends user input back as `action` messages; it never mutates authoritative state directly.
+
+The deployment uses Worker static assets from `packages/frontend/dist`, while API and WebSocket paths still run through the Worker first:
+
+```jsonc
+{
+  "assets": {
+    "directory": "./packages/frontend/dist",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/games/*", "/rooms/*", "/matchmaking/*"]
+  }
+}
+```
+
+Use this pattern for new games: create a package under `packages/<game-id>`, export a small mount/update API, and add a dynamic loader entry in `packages/frontend/src/main.ts`.
+
+## 4. Lobby Chat and Room Chat
 
 Bighouse has two chat scopes.
 
@@ -151,7 +187,7 @@ Server chat message:
 
 Keep chat separate from game events. `event` and `privateEvent` are consequences of game rules. `chat` is player communication. For example, playing `"AS"` in a card game is a `card.played` public event; saying "I will play AS" is a chat message.
 
-## 4. Public State and Private State
+## 5. Public State and Private State
 
 Bighouse room state has three major layers.
 
@@ -175,7 +211,7 @@ Bighouse room state has three major layers.
 
 This separation is the most important rule when implementing online games. The server may hold complete authoritative state internally, but every view and event sent to clients must be filtered according to the game rules.
 
-## 5. Gomoku: Public Global State
+## 6. Gomoku: Public Global State
 
 Games like gomoku, go, chess, and checkers usually show the same board to every player. Most of their `stageState` can be public.
 
@@ -188,6 +224,12 @@ Current `gomoku` public view:
   "currentPlayerId": "p2",
   "turnDeadline": 1779089650000,
   "moveCount": 1,
+  "lastMove": {
+    "playerId": "p1",
+    "x": 7,
+    "y": 7,
+    "stone": "black"
+  },
   "winnerPlayerId": null
 }
 ```
@@ -206,6 +248,10 @@ Use these rules for this game type:
 - Include board, current turn, deadline, and winner in `getPublicView()`.
 - Store only player-specific labels, seat-derived roles, or personal settings in `playerStates`.
 - Broadcast moves, captures, score changes, and winner declarations as public or system events.
+- Validate occupied cells, turn ownership, stale versions, and double-three moves on the server before applying a move.
+- Mirror safe validation in the browser to disable blocked cells immediately, but treat this only as UX. The server remains authoritative.
+- Expose `lastMove` in the public view so both players can see the latest stone highlight.
+- Compute the winner on the server by scanning horizontal, vertical, and diagonal five-in-a-row lines after every accepted move.
 
 Gomoku action:
 
@@ -242,9 +288,9 @@ Public event:
 }
 ```
 
-The client implementation can be simple: render `snapshot.payload.publicView.board`, then update the target coordinate when a `gomoku.stonePlaced` event arrives.
+The client implementation can be simple: render `snapshot.payload.publicView.board`, disable illegal empty cells, highlight `snapshot.payload.publicView.lastMove`, then update from the next `snapshot` or `gomoku.stonePlaced` event.
 
-## 6. Card Games: Hidden Player State
+## 7. Card Games: Hidden Player State
 
 Games like poker, one-card, rummy, or board games with secret objectives must strictly separate `stageState` and `playerStates`.
 
@@ -335,7 +381,7 @@ A draw-card action should use `privateEvent` for the actual card value:
 
 The client should render shared table UI from `publicView`, and update the player's hand UI only from `snapshot.payload.privateView` and `privateEvent`.
 
-## 7. Adding a New Game
+## 8. Adding a New Game
 
 Add a new game in `src/games/<game>.ts`, then register it in `src/games/index.ts`.
 
@@ -383,7 +429,7 @@ registerGame(myGameDefinition);
 
 `GET /games` seeds registered built-in adapters into the D1 `games` table, so a registered adapter appears in the game list.
 
-## 8. Adapter Design Checklist
+## 9. Adapter Design Checklist
 
 Answer these questions before implementing a game:
 
@@ -405,7 +451,7 @@ State placement:
 | Move, visible card play, winner declaration | `GameEvent` | `visibility: "public"` or `"system"` |
 | Drawn card value, private reward | `GameEvent` | `visibility: "private"` plus `playerId` |
 
-## 9. Recommended Client Model
+## 10. Recommended Client Model
 
 Keep room state split on the client:
 
@@ -439,7 +485,7 @@ Handling rules:
 
 Use server `version` as the synchronization point. When sending an action, set `expectedVersion` to the version that the player actually saw when choosing the action.
 
-## 10. Practical Test Scenarios
+## 11. Practical Test Scenarios
 
 Check the deployed game list:
 
