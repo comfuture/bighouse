@@ -12,22 +12,37 @@
 }
 
 .gomoku-board {
-  --cell-size: min(36px, calc((100vw - 2rem) / var(--board-size)));
+  --point-size: min(36px, calc((100vw - 3rem) / var(--board-size)));
+  --line-color: rgb(111 83 36 / 0.72);
+  position: relative;
   display: grid;
-  grid-template-columns: repeat(var(--board-size), var(--cell-size));
+  grid-template-columns: repeat(var(--board-size), var(--point-size));
   inline-size: fit-content;
   max-inline-size: 100%;
   overflow: auto;
   border: 2px solid #6f5324;
+  padding: calc(var(--point-size) / 2);
   background: #d8ad5f;
+}
+
+.gomoku-board::before {
+  content: "";
+  position: absolute;
+  inset: var(--point-size) calc(var(--point-size) - 1px) calc(var(--point-size) - 1px) var(--point-size);
+  pointer-events: none;
+  background:
+    repeating-linear-gradient(90deg, var(--line-color) 0 1px, transparent 1px var(--point-size)),
+    repeating-linear-gradient(var(--line-color) 0 1px, transparent 1px var(--point-size));
 }
 
 .gomoku-cell {
   position: relative;
-  inline-size: var(--cell-size);
-  block-size: var(--cell-size);
-  border: 1px solid rgb(111 83 36 / 0.5);
+  z-index: 1;
+  inline-size: var(--point-size);
+  block-size: var(--point-size);
+  border: 0;
   background: transparent;
+  border-radius: 9999px;
 }
 
 .gomoku-cell:disabled {
@@ -39,14 +54,14 @@
 }
 
 .gomoku-cell.is-legal:hover {
-  background: rgb(255 255 255 / 0.18);
+  background: rgb(255 255 255 / 0.22);
 }
 
 .gomoku-cell.is-black::before,
 .gomoku-cell.is-white::before {
   content: "";
   position: absolute;
-  inset: 15%;
+  inset: 10%;
   border-radius: 9999px;
   box-shadow: 0 2px 6px rgb(0 0 0 / 0.3);
 }
