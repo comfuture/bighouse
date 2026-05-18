@@ -129,7 +129,7 @@ const isHost = computed(() => room.value?.hostPlayerId === identity.playerId);
 const canStart = computed(() => {
   const snapshot = room.value;
   if (!snapshot || !isHost.value || snapshot.phase !== "waiting") return false;
-  return snapshot.players.length > 0 && snapshot.players.every((player) => player.ready);
+  return snapshot.players.length >= snapshot.minPlayers && snapshot.players.every((player) => player.ready);
 });
 const delegatablePlayers = computed<Player[]>(() => {
   if (!room.value || !isHost.value) return [];

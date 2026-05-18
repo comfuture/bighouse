@@ -30,6 +30,8 @@ export type RoomSnapshot = {
   mode: string;
   phase: "waiting" | "active" | "closed";
   version: number;
+  minPlayers: number;
+  maxPlayers: number;
   hostPlayerId?: string;
   players: Player[];
   publicView: Record<string, unknown>;

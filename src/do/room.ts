@@ -654,6 +654,8 @@ export class RoomDO extends DurableObject<Env> {
       mode: state.room.mode,
       phase: state.phase,
       version: state.version,
+      minPlayers: state.room.minPlayers,
+      maxPlayers: state.room.maxPlayers,
       ...(state.room.hostPlayerId ? { hostPlayerId: state.room.hostPlayerId } : {}),
       players: state.players,
       publicView: definition.getPublicView(context),
