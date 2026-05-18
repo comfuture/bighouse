@@ -5,7 +5,7 @@
   "assets": {
     "directory": "./packages/frontend/dist",
     "not_found_handling": "single-page-application",
-    "run_worker_first": ["/games/*", "/rooms/*", "/matchmaking/*"]
+    "run_worker_first": ["/games", "/games/*", "/rooms/*", "/matchmaking/*"]
   },
   "compatibility_date": "2026-05-18",
   "compatibility_flags": ["nodejs_compat"],
