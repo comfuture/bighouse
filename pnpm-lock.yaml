@@ -8,6 +8,9 @@ importers:
 
   .:
     dependencies:
+      '@bighouse/gomoku':
+        specifier: workspace:*
+        version: link:packages/gomoku
       zod:
         specifier: ^3.25.76
         version: 3.25.76
@@ -21,12 +24,34 @@ importers:
       typescript:
         specifier: ^5.9.3
         version: 5.9.3
+      vite:
+        specifier: ^7.3.3
+        version: 7.3.3
       vitest:
         specifier: ^4.1.6
         version: 4.1.6(vite@7.3.3)
       wrangler:
         specifier: ^4.16.1
         version: 4.92.0(@cloudflare/workers-types@4.20260518.1)
+
+  packages/frontend:
+    dependencies:
+      '@bighouse/gomoku':
+        specifier: workspace:*
+        version: link:../gomoku
+    devDependencies:
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vite:
+        specifier: ^7.3.3
+        version: 7.3.3
+
+  packages/gomoku:
+    devDependencies:
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
 
 packages:
 

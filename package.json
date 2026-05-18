@@ -5,17 +5,22 @@
   "type": "module",
   "scripts": {
     "dev": "wrangler dev",
+    "dev:frontend": "pnpm --filter @bighouse/frontend dev",
+    "build:frontend": "pnpm --filter @bighouse/frontend build",
+    "build": "pnpm build:frontend",
     "deploy": "wrangler deploy",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && pnpm --filter @bighouse/gomoku typecheck && pnpm --filter @bighouse/frontend typecheck",
     "test": "vitest run"
   },
   "dependencies": {
+    "@bighouse/gomoku": "workspace:*",
     "zod": "^3.25.76"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.16.6",
     "@cloudflare/workers-types": "^4.20260510.0",
     "typescript": "^5.9.3",
+    "vite": "^7.3.3",
     "vitest": "^4.1.6",
     "wrangler": "^4.16.1"
   }
