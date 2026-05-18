@@ -97,10 +97,27 @@ async function route(request: Request, env: Env): Promise<Response> {
       region: body.region,
       skill: body.skill
     });
-    return Response.json(result, { status: result.matchedRoomId ? 201 : 202 });
+    return Response.json(
+      {
+        ...result,
+        ...(result.matchedRoomId ? { wsUrl: websocketUrl(url, result.matchedRoomId, body.playerId) } : {})
+      },
+      { status: result.matchedRoomId ? 201 : 202 }
+    );
   }
 
   const ticketCancel = matchPath(url.pathname, /^\/matchmaking\/tickets\/([^/]+)$/u, ["ticketId"]);
+  if (request.method === "GET" && ticketCancel) {
+    const ticket = await repo.getTicket(routeParam(ticketCancel, "ticketId"));
+    if (!ticket) {
+      throw new GameServerError("bad_request", "Ticket not found", 404);
+    }
+    return Response.json({
+      ticket,
+      ...(ticket.matchedRoomId ? { wsUrl: websocketUrl(url, ticket.matchedRoomId, ticket.playerId) } : {})
+    });
+  }
+
   if (request.method === "DELETE" && ticketCancel) {
     const ticket = await repo.getTicket(routeParam(ticketCancel, "ticketId"));
     if (!ticket) {

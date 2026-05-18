@@ -37,6 +37,15 @@ describe("HTTP API", () => {
     const body = (await second.json()) as { matchedRoomId: string };
     expect(body.matchedRoomId).toMatch(/^room_/u);
 
+    const ticketResponse = await SELF.fetch(`https://bighouse.test/matchmaking/tickets/${firstBody.ticket.ticketId}`);
+    expect(ticketResponse.status).toBe(200);
+    const ticketBody = (await ticketResponse.json()) as {
+      ticket: { status: string; matchedRoomId: string };
+      wsUrl: string;
+    };
+    expect(ticketBody.ticket).toMatchObject({ status: "matched", matchedRoomId: body.matchedRoomId });
+    expect(ticketBody.wsUrl).toContain(`/rooms/${body.matchedRoomId}/ws`);
+
     const roomResponse = await SELF.fetch(`https://bighouse.test/rooms/${body.matchedRoomId}`);
     const roomBody = (await roomResponse.json()) as {
       room: { status: string; playerCount: number };
