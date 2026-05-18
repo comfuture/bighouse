@@ -1,20 +1,20 @@
-# Bighouse로 온라인 게임 만들기
+# Building Online Games with Bighouse
 
-이 문서는 Bighouse 게임 서버를 이용해 온라인 멀티플레이어 게임을 만드는 방법을 설명한다. 핵심은 모든 게임을 같은 네트워크 흐름으로 다루되, 게임별 규칙과 공개/비공개 상태 정책은 `GameDefinition` 어댑터에 맡기는 것이다.
+This guide explains how to build online multiplayer games on top of Bighouse. Bighouse keeps the network flow consistent across games, while each game implements its own rules, state visibility, validation, and winner logic through a `GameDefinition` adapter.
 
-## 1. 기본 흐름
+## 1. Basic Flow
 
-클라이언트가 게임에 참가하는 흐름은 모든 게임에서 같다.
+The client flow is the same for every game.
 
-1. `GET /games`로 서버가 제공하는 게임 목록을 가져온다.
-2. 로비 즉시 입장 또는 매치메이킹 티켓 생성 중 하나를 선택한다.
-3. 응답으로 받은 `roomId`와 `wsUrl`을 사용해 WebSocket에 연결한다.
-4. 로비 채팅이 필요하면 `lobbyWsUrl` 또는 로비 WebSocket URL에 연결한다.
-5. 서버의 `snapshot` 메시지로 현재 룸 상태를 렌더링한다.
-6. 플레이어 입력을 `action` 메시지로 보낸다.
-7. 서버의 `ack`, `event`, `privateEvent`, `chat`, `presence`, `error` 메시지를 반영한다.
+1. Call `GET /games` to list enabled games.
+2. Choose either direct lobby join or matchmaking ticket creation.
+3. Use the returned `roomId` and `wsUrl` to connect to the room WebSocket.
+4. If lobby chat is needed, connect to `lobbyWsUrl` or the lobby WebSocket URL.
+5. Render the current room from the server `snapshot` message.
+6. Send player input as `action` messages.
+7. Apply `ack`, `event`, `privateEvent`, `chat`, `presence`, and `error` messages from the server.
 
-로비 입장 예시:
+Direct lobby join:
 
 ```sh
 curl -X POST https://bighouse.comfuture.workers.dev/games/gomoku/lobbies/default/join \
@@ -22,7 +22,7 @@ curl -X POST https://bighouse.comfuture.workers.dev/games/gomoku/lobbies/default
   -d '{"playerId":"p1","displayName":"Alice"}'
 ```
 
-매치메이킹 예시:
+Matchmaking ticket:
 
 ```sh
 curl -X POST https://bighouse.comfuture.workers.dev/games/gomoku/matchmaking/tickets \
@@ -30,25 +30,25 @@ curl -X POST https://bighouse.comfuture.workers.dev/games/gomoku/matchmaking/tic
   -d '{"playerId":"p1","mode":"ranked","region":"apac","skill":"beginner"}'
 ```
 
-응답의 `wsUrl`은 다음과 같은 형태다.
+Room WebSocket URL:
 
 ```text
 wss://bighouse.comfuture.workers.dev/rooms/room_id/ws?playerId=p1
 ```
 
-로비 WebSocket은 다음과 같은 형태다.
+Lobby WebSocket URL:
 
 ```text
 wss://bighouse.comfuture.workers.dev/games/gomoku/lobbies/default/ws?playerId=p1&displayName=Alice
 ```
 
-`playerId`는 서버가 플레이어를 구분하기 위한 안정적인 고유 값이면 된다. 내부 회원 id, 익명 세션 id, 지갑 주소, 디바이스별 임시 id처럼 어떤 값이어도 상관없다. 다만 UI와 채팅 표시에는 `playerId`를 그대로 노출하지 않는 편이 좋으므로, 사람이 읽을 수 있는 `displayName`을 함께 보내는 것을 권장한다. `displayName`은 표시 이름일 뿐 신뢰할 수 있는 식별자나 권한 판단 기준으로 쓰면 안 된다.
+`playerId` only needs to be a stable unique value for the player. It can be an internal account id, anonymous session id, wallet address, device-scoped id, or any other stable identifier. For UI and chat, also send a human-readable `displayName`. Do not use `displayName` as identity or authorization data; it is only a display label.
 
-## 2. 클라이언트 메시지 계약
+## 2. Client Message Contract
 
-WebSocket 연결 후 클라이언트는 JSON 메시지를 보낸다.
+Clients send JSON messages after opening a WebSocket.
 
-초기 식별 또는 재접속:
+Initial identity or reconnect:
 
 ```json
 {
@@ -58,7 +58,7 @@ WebSocket 연결 후 클라이언트는 JSON 메시지를 보낸다.
 }
 ```
 
-게임 액션:
+Game action:
 
 ```json
 {
@@ -73,59 +73,59 @@ WebSocket 연결 후 클라이언트는 JSON 메시지를 보낸다.
 }
 ```
 
-public 채팅:
+Public chat:
 
 ```json
 {
   "type": "chat",
   "playerId": "p1",
-  "body": "안녕하세요"
+  "body": "hello"
 }
 ```
 
-private 채팅:
+Private chat:
 
 ```json
 {
   "type": "chat",
   "playerId": "p1",
   "targetPlayerId": "p2",
-  "body": "이번 턴 끝나고 나갈게요"
+  "body": "I will leave after this turn"
 }
 ```
 
-중요한 필드:
+Important fields:
 
-- `clientActionId`: 같은 플레이어가 같은 액션을 재전송해도 한 번만 적용하기 위한 id다.
-- `expectedVersion`: 클라이언트가 기준으로 삼은 룸 버전이다. 서버의 현재 버전과 다르면 stale action으로 거부된다.
-- `action.type`: 게임 어댑터가 해석하는 게임별 명령이다.
-- `action.payload`: 게임별 명령 데이터다.
-- `targetPlayerId`: 채팅에서만 사용한다. 없으면 public chat, 있으면 해당 player에게 보내는 private chat이다.
+- `clientActionId`: makes retries idempotent for the same player.
+- `expectedVersion`: the room version the client based the action on. If it does not match the current server version, the server rejects the action as stale.
+- `action.type`: the game-specific command interpreted by the adapter.
+- `action.payload`: the game-specific command data.
+- `targetPlayerId`: used only for chat. If omitted, the chat is public. If present, the chat is private to that player and the sender.
 
-서버 메시지는 항상 `roomId`, `version`, `serverTime`을 포함한다. 클라이언트는 `snapshot`으로 전체 화면을 갱신하고, 이후 `event` / `privateEvent`를 누적 반영하면 된다.
+Every server message includes `roomId`, `version`, and `serverTime`. Clients should replace their local room model on `snapshot`, then incrementally apply `event`, `privateEvent`, and `chat`.
 
-## 3. 로비 채팅과 룸 채팅
+## 3. Lobby Chat and Room Chat
 
-Bighouse에는 두 종류의 채팅 공간이 있다.
+Bighouse has two chat scopes.
 
-`lobby` 채팅
+`lobby` chat:
 
 - URL: `/games/:gameId/lobbies/:mode/ws`
-- 아직 특정 룸에 고정되지 않은 플레이어들이 같은 게임/mode 로비에서 대화할 때 사용한다.
-- 같은 `gameId`와 `mode`의 `LobbyDO`가 WebSocket 연결과 채팅 broadcast를 담당한다.
-- public chat은 로비에 연결된 모든 socket에 전달된다.
-- private chat은 `targetPlayerId`와 발신자의 socket에만 전달된다.
+- Use this when players are in the same game/mode lobby but not necessarily in the same room.
+- `LobbyDO` owns the WebSocket connections and chat broadcast for that `gameId` and `mode`.
+- Public chat is delivered to every connected socket in the lobby.
+- Private chat is delivered only to `targetPlayerId` and the sender.
 
-`room` 채팅
+`room` chat:
 
 - URL: `/rooms/:roomId/ws`
-- 실제 게임룸 안에서 게임 진행 중 대화할 때 사용한다.
-- `RoomDO`가 게임 액션과 같은 WebSocket에서 채팅도 처리한다.
-- public chat은 룸 참여자 전체에게 전달된다.
-- private chat은 같은 룸에 있는 `targetPlayerId`와 발신자에게만 전달된다.
-- 룸 private chat의 target은 해당 룸의 player 목록에 있어야 한다.
+- Use this during actual gameplay inside a room.
+- `RoomDO` handles chat on the same WebSocket as game actions.
+- Public chat is delivered to every room participant.
+- Private chat is delivered only to `targetPlayerId` and the sender.
+- A room private chat target must be a player in the same room.
 
-채팅 서버 메시지 예시:
+Server chat message:
 
 ```json
 {
@@ -142,44 +142,44 @@ Bighouse에는 두 종류의 채팅 공간이 있다.
       "playerId": "p1",
       "displayName": "Alice",
       "targetPlayerId": "p2",
-      "body": "비공개 메시지",
+      "body": "private message",
       "createdAt": 1779090000000
     }
   }
 }
 ```
 
-채팅과 게임 이벤트는 분리해서 다루는 것이 좋다. `event` / `privateEvent`는 게임 규칙의 결과이고, `chat`은 플레이어 커뮤니케이션이다. 예를 들어 카드게임에서 `"AS"`를 내는 행동은 `card.played` public event이고, "AS 낼게요"라는 말은 `chat` 메시지다.
+Keep chat separate from game events. `event` and `privateEvent` are consequences of game rules. `chat` is player communication. For example, playing `"AS"` in a card game is a `card.played` public event; saying "I will play AS" is a chat message.
 
-## 4. 공개 상태와 비공개 상태
+## 4. Public State and Private State
 
-Bighouse의 룸 상태는 크게 세 층으로 나뉜다.
+Bighouse room state has three major layers.
 
 `stageState`
 
-- 게임판, 현재 턴, 라운드, 제한시간처럼 방 전체에 속한 상태다.
-- 반드시 전부 공개할 필요는 없다.
-- `getPublicView()`가 공개 가능한 부분만 골라 클라이언트에 보낸다.
+- Room-level state such as board, current turn, round, timer, deck count, or discard pile.
+- It does not have to be fully public.
+- `getPublicView()` selects the safe public projection sent to clients.
 
 `playerStates`
 
-- 플레이어별 상태다.
-- 손패, 비밀 목표, 숨겨진 자원, 개인 버프처럼 다른 플레이어에게 보이면 안 되는 정보를 둔다.
-- `getPrivateView(context, playerId)`가 해당 플레이어에게만 보낼 상태를 만든다.
+- Per-player state.
+- Use this for hands, secret objectives, hidden resources, private buffs, or anything other players must not see.
+- `getPrivateView(context, playerId)` returns only that player's private projection.
 
 `events`
 
-- 상태 변화의 결과를 클라이언트에 알리는 메시지다.
-- `visibility`가 `public`, `private`, `system` 중 하나다.
-- `public`과 `system` 이벤트는 모든 플레이어에게 가고, `private` 이벤트는 지정된 `playerId`에게만 간다.
+- Messages that tell clients what changed.
+- Each event has `visibility: "public" | "private" | "system"`.
+- `public` and `system` events go to all players. `private` events go only to the specified `playerId`.
 
-이 구분을 지키는 것이 온라인 게임 구현에서 가장 중요하다. 서버 내부에는 전체 권위 상태가 있어도, 클라이언트에 보내는 view와 event는 게임 규칙에 맞게 필터링해야 한다.
+This separation is the most important rule when implementing online games. The server may hold complete authoritative state internally, but every view and event sent to clients must be filtered according to the game rules.
 
-## 5. Gomoku: 전역 게임 상태가 공개되는 게임
+## 5. Gomoku: Public Global State
 
-오목/바둑/체스처럼 모든 플레이어가 같은 판을 보는 게임은 대부분의 `stageState`를 공개해도 된다.
+Games like gomoku, go, chess, and checkers usually show the same board to every player. Most of their `stageState` can be public.
 
-현재 `gomoku`의 공개 상태:
+Current `gomoku` public view:
 
 ```json
 {
@@ -192,7 +192,7 @@ Bighouse의 룸 상태는 크게 세 층으로 나뉜다.
 }
 ```
 
-플레이어별 private view는 작다.
+The player's private view is small:
 
 ```json
 {
@@ -200,14 +200,14 @@ Bighouse의 룸 상태는 크게 세 층으로 나뉜다.
 }
 ```
 
-이 유형의 게임에서는 다음 원칙을 따르면 된다.
+Use these rules for this game type:
 
-- `stageState`에 권위 있는 판 상태를 둔다.
-- `getPublicView()`는 판, 현재 턴, 제한시간, 승자 같은 전역 정보를 그대로 공개한다.
-- 플레이어 색상, 좌석, 개인 설정처럼 자기에게만 의미 있는 정보만 `playerStates`에 둔다.
-- 착수, 말 이동, 점수 변화 같은 결과는 public event로 방송한다.
+- Store the authoritative board state in `stageState`.
+- Include board, current turn, deadline, and winner in `getPublicView()`.
+- Store only player-specific labels, seat-derived roles, or personal settings in `playerStates`.
+- Broadcast moves, captures, score changes, and winner declarations as public or system events.
 
-오목 액션 예시:
+Gomoku action:
 
 ```json
 {
@@ -222,7 +222,7 @@ Bighouse의 룸 상태는 크게 세 층으로 나뉜다.
 }
 ```
 
-서버가 방송하는 public event 예시:
+Public event:
 
 ```json
 {
@@ -242,13 +242,13 @@ Bighouse의 룸 상태는 크게 세 층으로 나뉜다.
 }
 ```
 
-클라이언트 구현은 단순하다. `snapshot.payload.publicView.board`를 렌더링하고, `gomoku.stonePlaced` 이벤트가 오면 해당 좌표를 갱신하면 된다.
+The client implementation can be simple: render `snapshot.payload.publicView.board`, then update the target coordinate when a `gomoku.stonePlaced` event arrives.
 
-## 6. Card Demo: 플레이어 상태를 숨겨야 하는 게임
+## 6. Card Games: Hidden Player State
 
-포커, 원카드, 훌라, 보드게임의 비밀 목표처럼 각 플레이어가 감춰진 정보를 갖는 게임은 `stageState`와 `playerStates`를 엄격히 나눠야 한다.
+Games like poker, one-card, rummy, or board games with secret objectives must strictly separate `stageState` and `playerStates`.
 
-현재 `card-demo`의 public view:
+Current `card-demo` public view:
 
 ```json
 {
@@ -263,7 +263,7 @@ Bighouse의 룸 상태는 크게 세 층으로 나뉜다.
 }
 ```
 
-현재 플레이어 `p1`의 private view:
+Private view for player `p1`:
 
 ```json
 {
@@ -271,18 +271,18 @@ Bighouse의 룸 상태는 크게 세 층으로 나뉜다.
 }
 ```
 
-다른 플레이어는 `p1`의 실제 `hand`를 받지 않는다. public view에서는 손패 개수만 볼 수 있다.
+Other players never receive `p1`'s real `hand`. The public view exposes only hand counts.
 
-이 유형의 게임에서는 다음 원칙을 따르면 된다.
+Use these rules for this game type:
 
-- `stageState`에는 버린 카드 더미, 덱 수, 현재 턴, 라운드처럼 모두가 알아도 되는 정보만 둔다.
-- `playerStates[playerId]`에는 손패, 비밀 선택, 숨겨진 점수처럼 해당 플레이어만 알아야 하는 정보를 둔다.
-- `getPublicView()`는 private 값을 절대 그대로 반환하지 않는다.
-- `getPrivateView()`는 요청한 `playerId`의 개인 상태만 반환한다.
-- 카드를 내는 행위처럼 모두가 봐야 하는 결과는 public event로 방송한다.
-- 카드를 뽑는 행위처럼 새 카드 값이 본인에게만 보여야 하는 결과는 private event로 보낸다.
+- Put only public table state in `stageState`: discard pile, deck count, current turn, round, visible stacks, public bets, or table cards.
+- Put hidden state in `playerStates[playerId]`: hand, secret picks, hidden score, private resources, or private effects.
+- Never return raw private state from `getPublicView()`.
+- Return only the requesting player's private projection from `getPrivateView()`.
+- Broadcast actions everyone can observe, such as playing a card, as public events.
+- Send hidden outcomes, such as drawn card values, as private events.
 
-카드 제출 액션 예시:
+Play-card action:
 
 ```json
 {
@@ -297,7 +297,7 @@ Bighouse의 룸 상태는 크게 세 층으로 나뉜다.
 }
 ```
 
-서버가 방송하는 public event:
+Public event:
 
 ```json
 {
@@ -315,7 +315,7 @@ Bighouse의 룸 상태는 크게 세 층으로 나뉜다.
 }
 ```
 
-카드 뽑기처럼 비공개 결과가 생기는 액션은 `privateEvent`를 사용한다.
+A draw-card action should use `privateEvent` for the actual card value:
 
 ```json
 {
@@ -333,13 +333,13 @@ Bighouse의 룸 상태는 크게 세 층으로 나뉜다.
 }
 ```
 
-클라이언트는 public view로 공용 보드를 그리고, 자기 손패 UI는 `snapshot.payload.privateView`와 `privateEvent`만 사용해서 갱신해야 한다.
+The client should render shared table UI from `publicView`, and update the player's hand UI only from `snapshot.payload.privateView` and `privateEvent`.
 
-## 7. 새 게임을 추가하는 방법
+## 7. Adding a New Game
 
-새 게임은 `src/games/<game>.ts`에 `GameDefinition`을 추가하고 `src/games/index.ts`에서 등록한다.
+Add a new game in `src/games/<game>.ts`, then register it in `src/games/index.ts`.
 
-최소 구현 항목:
+Minimum adapter shape:
 
 ```ts
 export const myGameDefinition: GameDefinition = {
@@ -372,7 +372,7 @@ export const myGameDefinition: GameDefinition = {
 };
 ```
 
-추가 후 `src/games/index.ts`에 등록한다.
+Register it:
 
 ```ts
 import { myGameDefinition } from "./my-game";
@@ -381,33 +381,33 @@ import { registerGame } from "./registry";
 registerGame(myGameDefinition);
 ```
 
-`GET /games`는 등록된 built-in adapter를 D1 `games` 테이블에 seed한다. 따라서 새 adapter를 등록하면 게임 목록에도 나타난다.
+`GET /games` seeds registered built-in adapters into the D1 `games` table, so a registered adapter appears in the game list.
 
-## 8. 어댑터 설계 체크리스트
+## 8. Adapter Design Checklist
 
-새 게임을 만들 때 먼저 아래 질문에 답해야 한다.
+Answer these questions before implementing a game:
 
-- 모든 플레이어가 같은 전체 상태를 봐도 되는가?
-- 각 플레이어에게만 보여야 하는 상태가 있는가?
-- 공개 이벤트와 비공개 이벤트를 어떻게 나눌 것인가?
-- 액션이 적용되기 전에 확인해야 하는 턴, 자원, 손패, 위치, 타이머 조건은 무엇인가?
-- `expectedVersion`이 맞지 않을 때 클라이언트는 snapshot을 다시 받을 것인가?
-- 플레이어 재접속 시 private view만으로 개인 UI를 복구할 수 있는가?
-- 게임 종료 시 D1 `room_index`와 `match_results`에 어떤 결과를 남겨야 하는가?
+- Can every player see the complete global state?
+- Does any player have private state?
+- Which outputs are public events, private events, and system events?
+- What must be checked before applying an action: turn, resources, hand ownership, position, timer, phase, or status?
+- What should the client do when `expectedVersion` is stale?
+- Can a reconnecting player fully restore their UI from `publicView` plus their own `privateView`?
+- What result should be persisted to D1 `room_index` and `match_results` when the game ends?
 
-상태 배치 기준:
+State placement:
 
-| 정보 | 위치 | 공개 방식 |
+| Information | Location | Exposure |
 | --- | --- | --- |
-| 오목판, 현재 턴, 승자 | `stageState` | `getPublicView()`에 포함 |
-| 카드게임 버린 더미, 덱 수, 라운드 | `stageState` | `getPublicView()`에 포함 |
-| 손패, 비밀 목표, 숨겨진 자원 | `playerStates[playerId]` | `getPrivateView()`에만 포함 |
-| 착수, 공개 카드 제출, 승리 선언 | `GameEvent` | `visibility: "public"` 또는 `"system"` |
-| 카드 드로우 결과, 개인 보상 | `GameEvent` | `visibility: "private"` + `playerId` |
+| Gomoku board, current turn, winner | `stageState` | Include in `getPublicView()` |
+| Card discard pile, deck count, round | `stageState` | Include in `getPublicView()` |
+| Hand, secret objective, hidden resources | `playerStates[playerId]` | Include only in `getPrivateView()` |
+| Move, visible card play, winner declaration | `GameEvent` | `visibility: "public"` or `"system"` |
+| Drawn card value, private reward | `GameEvent` | `visibility: "private"` plus `playerId` |
 
-## 9. 클라이언트 구현 권장 구조
+## 9. Recommended Client Model
 
-클라이언트는 서버 상태를 다음처럼 분리해서 보관하는 것이 좋다.
+Keep room state split on the client:
 
 ```ts
 type ClientRoomModel = {
@@ -427,40 +427,45 @@ type ClientRoomModel = {
 };
 ```
 
-처리 규칙:
+Handling rules:
 
-- `snapshot`: 전체 모델을 교체한다.
-- `event`: public view에 반영하거나 event log에 추가한다.
-- `privateEvent`: 자기 private view에만 반영한다.
-- `chat`: scope와 visibility를 확인해 로비/룸 채팅 UI에 추가한다.
-- `ack`: optimistic UI를 확정한다.
-- `error`가 `stale_action`이면 최신 snapshot을 기다리거나 다시 요청한다.
-- `presence`: 접속 상태만 갱신한다.
+- `snapshot`: replace the local room model.
+- `event`: apply to public game UI or append to an event log.
+- `privateEvent`: apply only to the current player's private UI.
+- `chat`: append to lobby or room chat UI based on `scope` and `visibility`.
+- `ack`: confirm optimistic UI.
+- `error` with `stale_action`: wait for or request a fresh snapshot.
+- `presence`: update connected state.
 
-서버의 `version`은 클라이언트 동기화 기준이다. 액션을 보낼 때 항상 현재 렌더링 기준의 `version`을 `expectedVersion`으로 넣어야 한다.
+Use server `version` as the synchronization point. When sending an action, set `expectedVersion` to the version that the player actually saw when choosing the action.
 
-## 10. 실전 테스트 방법
+## 10. Practical Test Scenarios
 
-배포된 서버에서 게임 목록을 확인한다.
+Check the deployed game list:
 
 ```sh
 curl https://bighouse.comfuture.workers.dev/games
 ```
 
-오목은 두 플레이어가 같은 room에 들어간 뒤 `placeStone` 액션을 보내면 된다. 기대 결과는 모든 플레이어가 같은 `gomoku.stonePlaced` public event를 받는 것이다.
+For gomoku:
 
-카드 게임은 두 플레이어가 같은 room에 들어간 뒤 snapshot을 비교한다. 기대 결과는 다음과 같다.
+- Join two players into the same room.
+- Send a `placeStone` action.
+- Expect every player to receive the same `gomoku.stonePlaced` public event.
 
-- `publicView.hands.p1.count`처럼 손패 개수는 보인다.
-- `publicView`에는 `"AS"` 같은 실제 손패 값이 없어야 한다.
-- `p1`의 `privateView.hand`에는 `["AS", "7H", "3C"]`가 보인다.
-- `p1`이 `playCard`로 `"AS"`를 내면 `"AS"`는 public event에 포함된다.
+For card games:
 
-이 차이를 기준으로 새 게임이 공개 상태형인지, 비공개 플레이어 상태형인지 판단하면 된다.
+- Join two players into the same room.
+- Compare their snapshots.
+- `publicView.hands.p1.count` should be visible.
+- `publicView` must not contain real hand values like `"AS"`.
+- `p1.privateView.hand` should contain only `p1`'s hand.
+- If `p1` plays `"AS"`, the card value becomes visible through the public `card.played` event.
 
-채팅은 다음 기준으로 확인한다.
+For chat:
 
-- 로비 WebSocket에 같은 `gameId`/`mode`로 여러 플레이어를 연결한다.
-- `targetPlayerId`가 없는 `chat`은 모든 로비 연결에 도착해야 한다.
-- `targetPlayerId`가 있는 `chat`은 발신자와 대상 플레이어에게만 도착해야 한다.
-- 룸 WebSocket에서도 같은 방식으로 확인하되, room private chat target은 같은 룸의 플레이어여야 한다.
+- Connect multiple players to the same lobby WebSocket.
+- A `chat` message without `targetPlayerId` must arrive at every lobby connection.
+- A `chat` message with `targetPlayerId` must arrive only at the sender and target player.
+- Repeat the same checks on room WebSockets.
+- Room private chat targets must be players in the same room.
