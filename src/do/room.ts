@@ -89,8 +89,6 @@ type SocketAttachment = {
 };
 
 export class RoomDO extends DurableObject<Env> {
-  private readonly disconnectTimers = new Map<string, ReturnType<typeof setTimeout>>();
-
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     ctx.blockConcurrencyWhile(async () => {
@@ -154,6 +152,9 @@ export class RoomDO extends DurableObject<Env> {
 
     if (state.phase === "closed") {
       throw new GameServerError("room_closed", "Room is closed", 409);
+    }
+    if (state.phase !== "waiting") {
+      throw new GameServerError("invalid_room_phase", "New players can only join waiting rooms", 409);
     }
     if (state.players.length >= state.room.maxPlayers) {
       throw new GameServerError("room_full", "Room is full", 409);
@@ -388,7 +389,7 @@ export class RoomDO extends DurableObject<Env> {
       player.ready = false;
     }
     this.saveState(state);
-    await this.rescheduleTimers([]);
+    await this.clearAllTimers();
     await this.persistAbandonedRoom(state, "stale_no_connections");
     return { cleaned: true, reason: "stale_no_connections", summary: this.toSummary(state) };
   }
@@ -508,6 +509,14 @@ export class RoomDO extends DurableObject<Env> {
     }
   }
 
+  async tryJoin(input: JoinRoomInput): Promise<RoomCommandResultEnvelope> {
+    try {
+      return { ok: true, summary: await this.join(input) };
+    } catch (error) {
+      return this.toCommandError(error);
+    }
+  }
+
   async tryStartGame(playerId: string): Promise<RoomCommandResultEnvelope> {
     try {
       return { ok: true, summary: await this.startGame(playerId) };
@@ -575,7 +584,14 @@ export class RoomDO extends DurableObject<Env> {
         roomId,
         version,
         serverTime: Date.now(),
-        payload: { code: "bad_request", message: error instanceof Error ? error.message : "Bad request" }
+        payload:
+          error instanceof GameServerError
+            ? {
+                code: error.code,
+                message: error.message,
+                ...(error.details === undefined ? {} : { details: error.details })
+              }
+            : { code: "bad_request", message: error instanceof Error ? error.message : "Bad request" }
       });
     }
   }
@@ -589,7 +605,7 @@ export class RoomDO extends DurableObject<Env> {
       if (activeSibling) {
         return;
       }
-      this.scheduleDisconnect(attachment.playerId);
+      await this.scheduleDisconnect(attachment.playerId);
     }
   }
 
@@ -620,6 +636,13 @@ export class RoomDO extends DurableObject<Env> {
         this.deliverEvents(state, [event]);
         this.ctx.storage.sql.exec("DELETE FROM timers WHERE id = ?", timer.id);
       }
+      if (timer.kind === "disconnect_grace") {
+        this.ctx.storage.sql.exec("DELETE FROM timers WHERE id = ?", timer.id);
+        const payload = timer.payload_json ? (JSON.parse(timer.payload_json) as { playerId?: unknown }) : {};
+        if (typeof payload.playerId === "string") {
+          await this.confirmDisconnect(payload.playerId);
+        }
+      }
     }
     await this.scheduleNextAlarm();
   }
@@ -631,22 +654,24 @@ export class RoomDO extends DurableObject<Env> {
       return;
     }
     if (message.type === "hello" || message.type === "joinRoom") {
+      const requestedPlayerId = this.bindSocketPlayer(ws, message.playerId, message.displayName);
       ws.serializeAttachment({
-        playerId: message.playerId,
+        playerId: requestedPlayerId,
         ...(message.displayName ? { displayName: message.displayName } : {})
       } satisfies SocketAttachment);
       await this.join({
-        playerId: message.playerId,
+        playerId: requestedPlayerId,
         ...(message.displayName ? { displayName: message.displayName } : {})
       });
       const latest = this.requireState();
-      this.sendToSocket(ws, this.message(latest, "snapshot", this.createSnapshot(latest, message.playerId)));
+      this.sendToSocket(ws, this.message(latest, "snapshot", this.createSnapshot(latest, requestedPlayerId)));
       this.sendToSocket(ws, this.message(latest, "ack", { command: message.type }));
       return;
     }
     if (message.type === "chat") {
+      const playerId = this.requireSocketPlayer(ws, message.playerId);
       const chat = await this.sendChat({
-        playerId: message.playerId,
+        playerId,
         body: message.body,
         ...(message.targetPlayerId ? { targetPlayerId: message.targetPlayerId } : {})
       });
@@ -654,38 +679,45 @@ export class RoomDO extends DurableObject<Env> {
       return;
     }
     if (message.type === "ready") {
-      const summary = await this.setReady(message.playerId, message.ready);
+      const playerId = this.requireSocketPlayer(ws, message.playerId);
+      const summary = await this.setReady(playerId, message.ready);
       this.sendToSocket(ws, this.message(this.requireState(), "ack", { command: "ready", result: { summary } }));
       return;
     }
     if (message.type === "transferHost") {
-      const summary = await this.transferHost(message.playerId, message.targetPlayerId);
+      const playerId = this.requireSocketPlayer(ws, message.playerId);
+      const summary = await this.transferHost(playerId, message.targetPlayerId);
       this.sendToSocket(ws, this.message(this.requireState(), "ack", { command: "transferHost", result: { summary } }));
       return;
     }
     if (message.type === "startGame") {
-      const summary = await this.startGame(message.playerId);
+      const playerId = this.requireSocketPlayer(ws, message.playerId);
+      const summary = await this.startGame(playerId);
       this.sendToSocket(ws, this.message(this.requireState(), "ack", { command: "startGame", result: { summary } }));
       return;
     }
     if (message.type === "playAgain") {
-      const summary = await this.requestPlayAgain(message.playerId);
+      const playerId = this.requireSocketPlayer(ws, message.playerId);
+      const summary = await this.requestPlayAgain(playerId);
       this.sendToSocket(ws, this.message(this.requireState(), "ack", { command: "playAgain", result: { summary } }));
       return;
     }
     if (message.type === "leaveFinishedGame") {
-      const summary = await this.leaveFinishedGame(message.playerId);
+      const playerId = this.requireSocketPlayer(ws, message.playerId);
+      const summary = await this.leaveFinishedGame(playerId);
       this.sendToSocket(ws, this.message(this.requireState(), "ack", { command: "leaveFinishedGame", result: { summary } }));
       return;
     }
     if (message.type === "leaveRoom") {
-      await this.leave(message.playerId);
+      const playerId = this.requireSocketPlayer(ws, message.playerId);
+      await this.leave(playerId);
       this.sendToSocket(ws, this.message(this.requireState(), "ack", { command: "leaveRoom" }));
       return;
     }
     if (message.type === "action") {
+      const playerId = this.requireSocketPlayer(ws, message.playerId);
       const ack = await this.submitAction({
-        playerId: message.playerId,
+        playerId,
         clientActionId: message.clientActionId,
         expectedVersion: message.expectedVersion,
         type: message.action.type,
@@ -809,7 +841,7 @@ export class RoomDO extends DurableObject<Env> {
   }
 
   private async rescheduleTimers(timers: TimerIntent[]): Promise<void> {
-    this.ctx.storage.sql.exec("DELETE FROM timers");
+    this.ctx.storage.sql.exec("DELETE FROM timers WHERE kind != 'disconnect_grace'");
     for (const timer of timers) {
       this.ctx.storage.sql.exec(
         "INSERT INTO timers (id, kind, run_at, payload_json) VALUES (?, ?, ?, ?)",
@@ -819,6 +851,11 @@ export class RoomDO extends DurableObject<Env> {
         timer.payload ? JSON.stringify(timer.payload) : null
       );
     }
+    await this.scheduleNextAlarm();
+  }
+
+  private async clearAllTimers(): Promise<void> {
+    this.ctx.storage.sql.exec("DELETE FROM timers");
     await this.scheduleNextAlarm();
   }
 
@@ -961,13 +998,15 @@ export class RoomDO extends DurableObject<Env> {
     }
   }
 
-  private scheduleDisconnect(playerId: string): void {
-    this.clearDisconnectTimer(playerId);
-    const timer = setTimeout(() => {
-      this.disconnectTimers.delete(playerId);
-      void this.confirmDisconnect(playerId);
-    }, this.disconnectGraceMs());
-    this.disconnectTimers.set(playerId, timer);
+  private async scheduleDisconnect(playerId: string, delayMs = this.disconnectGraceMs()): Promise<void> {
+    this.ctx.storage.sql.exec(
+      "INSERT OR REPLACE INTO timers (id, kind, run_at, payload_json) VALUES (?, ?, ?, ?)",
+      disconnectTimerId(playerId),
+      "disconnect_grace",
+      Date.now() + delayMs,
+      JSON.stringify({ playerId })
+    );
+    await this.scheduleNextAlarm();
   }
 
   private async confirmDisconnect(playerId: string): Promise<void> {
@@ -985,15 +1024,32 @@ export class RoomDO extends DurableObject<Env> {
   }
 
   private clearDisconnectTimer(playerId: string): void {
-    const timer = this.disconnectTimers.get(playerId);
-    if (timer) {
-      clearTimeout(timer);
-      this.disconnectTimers.delete(playerId);
-    }
+    this.ctx.storage.sql.exec("DELETE FROM timers WHERE id = ?", disconnectTimerId(playerId));
   }
 
   private disconnectGraceMs(): number {
     return this.env.ENVIRONMENT === "test" ? 100 : 10_000;
+  }
+
+  private bindSocketPlayer(ws: WebSocket, playerId: string, displayName?: string): string {
+    const attachment = ws.deserializeAttachment() as SocketAttachment | undefined;
+    if (attachment?.playerId && attachment.playerId !== playerId) {
+      throw new GameServerError("forbidden", "Socket player does not match message player", 403);
+    }
+    ws.serializeAttachment({ playerId, ...(displayName ? { displayName } : {}) } satisfies SocketAttachment);
+    return playerId;
+  }
+
+  private requireSocketPlayer(ws: WebSocket, messagePlayerId?: string): string {
+    const attachment = ws.deserializeAttachment() as SocketAttachment | undefined;
+    const playerId = attachment?.playerId;
+    if (!playerId) {
+      throw new GameServerError("forbidden", "Socket is not bound to a player", 403);
+    }
+    if (messagePlayerId && messagePlayerId !== playerId) {
+      throw new GameServerError("forbidden", "Socket player does not match message player", 403);
+    }
+    return playerId;
   }
 
   private toCommandError(error: unknown): RoomCommandResultEnvelope {
@@ -1101,4 +1157,8 @@ function findWinnerPlayerId(events: GameEvent[]): string | null {
     }
   }
   return null;
+}
+
+function disconnectTimerId(playerId: string): string {
+  return `disconnect:${playerId}`;
 }

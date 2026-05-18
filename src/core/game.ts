@@ -62,7 +62,7 @@ export type ClientGameAction = GameAction & {
 
 export type TimerIntent = {
   id: string;
-  kind: "turn_timeout" | "room_cleanup";
+  kind: "turn_timeout" | "room_cleanup" | "disconnect_grace";
   runAt: number;
   payload?: JsonObject;
 };

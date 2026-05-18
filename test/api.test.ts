@@ -47,6 +47,37 @@ describe("HTTP API", () => {
     expect(joinBody.wsUrl).toContain(`/rooms/${createBody.roomId}/ws`);
   });
 
+  it("rejects new room joins after the game leaves the waiting phase", async () => {
+    const mode = `active-join-${crypto.randomUUID()}`;
+    const createResponse = await SELF.fetch(`https://bighouse.test/games/card-demo/lobbies/${mode}/rooms`, {
+      method: "POST",
+      body: JSON.stringify({ playerId: "active-host", displayName: "Host" })
+    });
+    expect(createResponse.status).toBe(200);
+    const createBody = (await createResponse.json()) as { roomId: string; doName: string };
+    const joinResponse = await SELF.fetch(`https://bighouse.test/rooms/${createBody.roomId}/join`, {
+      method: "POST",
+      body: JSON.stringify({ playerId: "active-guest", displayName: "Guest" })
+    });
+    expect(joinResponse.status).toBe(200);
+
+    const room = env.ROOM_DO.getByName(createBody.doName) as unknown as RoomDO;
+    await room.setReady("active-guest", true);
+    await room.startGame("active-host");
+
+    const lateJoin = await SELF.fetch(`https://bighouse.test/rooms/${createBody.roomId}/join`, {
+      method: "POST",
+      body: JSON.stringify({ playerId: "late-player", displayName: "Late" })
+    });
+    expect(lateJoin.status).toBe(409);
+
+    const reconnect = await SELF.fetch(`https://bighouse.test/rooms/${createBody.roomId}/join`, {
+      method: "POST",
+      body: JSON.stringify({ playerId: "active-host", displayName: "Host" })
+    });
+    expect(reconnect.status).toBe(200);
+  });
+
   it("matches two players through matchmaking tickets", async () => {
     const first = await SELF.fetch("https://bighouse.test/games/gomoku/matchmaking/tickets", {
       method: "POST",
@@ -101,6 +132,41 @@ describe("HTTP API", () => {
     wsResponse.webSocket?.close();
   });
 
+  it("rejects WebSocket room commands that spoof a different player", async () => {
+    const mode = `spoof-${crypto.randomUUID()}`;
+    const createResponse = await SELF.fetch(`https://bighouse.test/games/gomoku/lobbies/${mode}/rooms`, {
+      method: "POST",
+      body: JSON.stringify({ playerId: "spoof-host", displayName: "Host" })
+    });
+    const createBody = (await createResponse.json()) as { roomId: string };
+    const joinResponse = await SELF.fetch(`https://bighouse.test/rooms/${createBody.roomId}/join`, {
+      method: "POST",
+      body: JSON.stringify({ playerId: "spoof-guest", displayName: "Guest" })
+    });
+    const joinBody = (await joinResponse.json()) as { wsUrl: string };
+    const wsResponse = await SELF.fetch(joinBody.wsUrl.replace("wss://", "https://").replace("ws://", "http://"), {
+      headers: { Upgrade: "websocket" }
+    });
+    expect(wsResponse.status).toBe(101);
+    const ws = wsResponse.webSocket;
+    expect(ws).toBeDefined();
+    const messages: Array<{ type: string; payload?: { code?: string } }> = [];
+    ws!.accept();
+    ws!.addEventListener("message", (event) => {
+      messages.push(JSON.parse(String(event.data)) as { type: string; payload?: { code?: string } });
+    });
+
+    ws!.send(JSON.stringify({ type: "ready", playerId: "spoof-host", ready: true }));
+    ws!.send(JSON.stringify({ type: "startGame", playerId: "spoof-host" }));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(messages.filter((message) => message.type === "error" && message.payload?.code === "forbidden")).toHaveLength(2);
+    const roomResponse = await SELF.fetch(`https://bighouse.test/rooms/${createBody.roomId}`);
+    const roomBody = (await roomResponse.json()) as { summary: { phase: string; readyCount: number } };
+    expect(roomBody.summary).toMatchObject({ phase: "waiting", readyCount: 0 });
+    ws!.close();
+  });
+
   it("does not broadcast presence for duplicate room joins", async () => {
     const mode = `presence-${crypto.randomUUID()}`;
     const createResponse = await SELF.fetch(`https://bighouse.test/games/gomoku/lobbies/${mode}/rooms`, {
@@ -135,7 +201,7 @@ describe("HTTP API", () => {
       method: "POST",
       body: JSON.stringify({ playerId: "disconnect-host", displayName: "Host" })
     });
-    const createBody = (await createResponse.json()) as { roomId: string; wsUrl: string };
+    const createBody = (await createResponse.json()) as { roomId: string; doName: string; wsUrl: string };
     const joinResponse = await SELF.fetch(`https://bighouse.test/rooms/${createBody.roomId}/join`, {
       method: "POST",
       body: JSON.stringify({ playerId: "disconnect-guest", displayName: "Guest" })

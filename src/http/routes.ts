@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { GameServerError, toErrorResponse } from "../core/errors";
 import { lobbyDoName, matchmakerDoName, roomDoName } from "../core/ids";
+import type { RoomCommandResultEnvelope } from "../do/room";
 import { listGameDefinitions } from "../games/registry";
 import { D1Repository, type GameRow } from "../storage/d1";
 import type { Env } from "../types";
@@ -186,14 +187,17 @@ async function route(request: Request, env: Env): Promise<Response> {
       throw new GameServerError("room_closed", "Room is closed", 410);
     }
     const room = env.ROOM_DO.getByName(indexed.doName);
-    const summary = await room.join({
+    const result = (await room.tryJoin({
       playerId: body.playerId,
       ...(body.displayName ? { displayName: body.displayName } : {})
-    });
+    })) as RoomCommandResultEnvelope;
+    if (result.ok === false) {
+      return Response.json({ error: result.error }, { status: result.error.status });
+    }
     return Response.json({
       roomId,
       doName: indexed.doName,
-      summary,
+      summary: result.summary,
       wsUrl: websocketUrl(url, roomId, body.playerId)
     });
   }
