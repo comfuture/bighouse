@@ -172,7 +172,7 @@ describe("HTTP API", () => {
     host!.close();
   });
 
-  it("synchronizes closed gomoku rooms and match results into D1", async () => {
+  it("records finished gomoku results without closing reusable rooms", async () => {
     const firstJoin = await SELF.fetch("https://bighouse.test/games/gomoku/lobbies/win/join", {
       method: "POST",
       body: JSON.stringify({ playerId: "winner" })
@@ -215,14 +215,14 @@ describe("HTTP API", () => {
       room: { status: string; closedAt: string | null };
       summary: { phase: string };
     };
-    expect(roomBody.room.status).toBe("closed");
-    expect(roomBody.room.closedAt).toBeTruthy();
-    expect(roomBody.summary.phase).toBe("closed");
+    expect(roomBody.room.status).toBe("active");
+    expect(roomBody.room.closedAt).toBeNull();
+    expect(roomBody.summary.phase).toBe("finished");
 
     const resultRow = await env.DB.prepare("SELECT status, winner_player_id FROM match_results WHERE room_id = ?")
       .bind(firstJoinBody.roomId)
       .first<{ status: string; winner_player_id: string }>();
-    expect(resultRow).toEqual({ status: "closed", winner_player_id: "winner" });
+    expect(resultRow).toEqual({ status: "finished", winner_player_id: "winner" });
   });
 
   it("removes stale rooms from lobby lists and direct join paths", async () => {

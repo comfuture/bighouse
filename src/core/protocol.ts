@@ -27,6 +27,14 @@ export type ClientMessage =
       playerId: string;
     }
   | {
+      type: "playAgain";
+      playerId: string;
+    }
+  | {
+      type: "leaveFinishedGame";
+      playerId: string;
+    }
+  | {
       type: "transferHost";
       playerId: string;
       targetPlayerId: string;
@@ -61,6 +69,7 @@ export type SnapshotPayload = {
   minPlayers: number;
   maxPlayers: number;
   hostPlayerId?: string;
+  rematchRequests: string[];
   players: PlayerSeat[];
   publicView: JsonObject;
   privateView: JsonObject;

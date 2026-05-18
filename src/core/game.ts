@@ -23,7 +23,7 @@ export type RoomConfig = {
   hostPlayerId?: string;
 };
 
-export type RoomPhase = "waiting" | "active" | "closed";
+export type RoomPhase = "waiting" | "active" | "finished" | "closed";
 
 export type RoomState = {
   room: RoomConfig;
@@ -33,6 +33,7 @@ export type RoomState = {
   stageState: JsonObject;
   playerStates: Record<string, JsonObject>;
   updatedAt: number;
+  rematchRequests?: Record<string, number>;
   emptySince?: number;
   closedAt?: number;
 };

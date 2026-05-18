@@ -263,13 +263,87 @@ export class RoomDO extends DurableObject<Env> {
     }
 
     const now = Date.now();
+    const definition = getGameDefinition(state.room.gameId);
+    this.resetGameState(state, definition, now);
     state.phase = "active";
     state.updatedAt = now;
     state.version += 1;
     this.saveState(state);
     await this.persistRoomIndex(state);
-    const definition = getGameDefinition(state.room.gameId);
     await this.rescheduleTimers(definition.nextTimers({ state, now }));
+    this.broadcastSnapshots(state);
+    return this.toSummary(state);
+  }
+
+  async requestPlayAgain(playerId: string): Promise<RoomSummary> {
+    const state = this.requireState();
+    if (state.phase !== "finished") {
+      throw new GameServerError("invalid_room_phase", "Play again can only be requested after a game finishes", 409);
+    }
+    if (!state.players.some((player) => player.playerId === playerId)) {
+      throw new GameServerError("player_not_found", "Player is not in this room", 404);
+    }
+
+    const now = Date.now();
+    state.rematchRequests = { ...(state.rematchRequests ?? {}), [playerId]: now };
+    const everyoneRequested =
+      state.players.length >= state.room.minPlayers &&
+      state.players.every((player) => state.rematchRequests?.[player.playerId]);
+    if (everyoneRequested) {
+      const definition = getGameDefinition(state.room.gameId);
+      this.resetGameState(state, definition, now);
+      state.phase = "active";
+      state.updatedAt = now;
+      state.version += 1;
+      this.saveState(state);
+      await this.persistRoomIndex(state);
+      await this.rescheduleTimers(definition.nextTimers({ state, now }));
+      this.broadcastSnapshots(state);
+      return this.toSummary(state);
+    }
+
+    state.updatedAt = now;
+    state.version += 1;
+    this.saveState(state);
+    this.broadcastSnapshots(state);
+    return this.toSummary(state);
+  }
+
+  async leaveFinishedGame(playerId: string): Promise<RoomSummary> {
+    const state = this.requireState();
+    if (state.phase !== "finished") {
+      throw new GameServerError("invalid_room_phase", "Finished game leave can only be used after a game finishes", 409);
+    }
+    const playerIndex = state.players.findIndex((player) => player.playerId === playerId);
+    if (playerIndex < 0) {
+      throw new GameServerError("player_not_found", "Player is not in this room", 404);
+    }
+
+    const now = Date.now();
+    state.players.splice(playerIndex, 1);
+    delete state.playerStates[playerId];
+    const hostLeft = state.room.hostPlayerId === playerId;
+    this.resetSeats(state.players);
+    if (hostLeft) {
+      if (state.players[0]) {
+        state.room.hostPlayerId = state.players[0].playerId;
+      } else {
+        delete state.room.hostPlayerId;
+      }
+    }
+    const definition = getGameDefinition(state.room.gameId);
+    this.resetGameState(state, definition, now);
+    state.phase = "waiting";
+    state.updatedAt = now;
+    state.version += 1;
+    if (state.players.length === 0) {
+      state.emptySince = now;
+    } else {
+      delete state.emptySince;
+    }
+    this.saveState(state);
+    await this.persistRoomIndex(state);
+    await this.rescheduleTimers([]);
     this.broadcastSnapshots(state);
     return this.toSummary(state);
   }
@@ -295,7 +369,7 @@ export class RoomDO extends DurableObject<Env> {
     const now = input.now ?? Date.now();
     const waitingIdleMs = input.waitingIdleMs ?? 5 * 60 * 1000;
     const activeIdleMs = input.activeIdleMs ?? 30 * 60 * 1000;
-    const requiredIdleMs = state.phase === "active" ? activeIdleMs : waitingIdleMs;
+    const requiredIdleMs = state.phase === "active" || state.phase === "finished" ? activeIdleMs : waitingIdleMs;
     const hasLiveSockets = this.ctx.getWebSockets().some((ws) => ws.readyState === WebSocket.OPEN);
     if (hasLiveSockets) {
       return { cleaned: false, reason: "connected_clients", summary: this.toSummary(state) };
@@ -370,6 +444,10 @@ export class RoomDO extends DurableObject<Env> {
     if (applied.state.phase === "closed") {
       await this.persistClosedRoom(applied.state, applied.events);
     }
+    if (applied.state.phase === "finished") {
+      await this.persistFinishedResult(applied.state, applied.events);
+      await this.persistRoomIndex(applied.state);
+    }
 
     const ack: ActionAck = { version: applied.state.version, events: applied.events };
     this.ctx.storage.sql.exec(
@@ -433,6 +511,22 @@ export class RoomDO extends DurableObject<Env> {
   async tryStartGame(playerId: string): Promise<RoomCommandResultEnvelope> {
     try {
       return { ok: true, summary: await this.startGame(playerId) };
+    } catch (error) {
+      return this.toCommandError(error);
+    }
+  }
+
+  async tryRequestPlayAgain(playerId: string): Promise<RoomCommandResultEnvelope> {
+    try {
+      return { ok: true, summary: await this.requestPlayAgain(playerId) };
+    } catch (error) {
+      return this.toCommandError(error);
+    }
+  }
+
+  async tryLeaveFinishedGame(playerId: string): Promise<RoomCommandResultEnvelope> {
+    try {
+      return { ok: true, summary: await this.leaveFinishedGame(playerId) };
     } catch (error) {
       return this.toCommandError(error);
     }
@@ -574,6 +668,16 @@ export class RoomDO extends DurableObject<Env> {
       this.sendToSocket(ws, this.message(this.requireState(), "ack", { command: "startGame", result: { summary } }));
       return;
     }
+    if (message.type === "playAgain") {
+      const summary = await this.requestPlayAgain(message.playerId);
+      this.sendToSocket(ws, this.message(this.requireState(), "ack", { command: "playAgain", result: { summary } }));
+      return;
+    }
+    if (message.type === "leaveFinishedGame") {
+      const summary = await this.leaveFinishedGame(message.playerId);
+      this.sendToSocket(ws, this.message(this.requireState(), "ack", { command: "leaveFinishedGame", result: { summary } }));
+      return;
+    }
     if (message.type === "leaveRoom") {
       await this.leave(message.playerId);
       this.sendToSocket(ws, this.message(this.requireState(), "ack", { command: "leaveRoom" }));
@@ -659,6 +763,24 @@ export class RoomDO extends DurableObject<Env> {
     );
   }
 
+  private resetGameState(state: RoomState, definition = getGameDefinition(state.room.gameId), now = Date.now()): void {
+    for (const player of state.players) {
+      player.ready = false;
+    }
+    state.stageState = definition.initialStageState({ room: state.room, players: state.players, now });
+    state.playerStates = Object.fromEntries(
+      state.players.map((player) => [player.playerId, definition.initialPlayerState(player, { room: state.room, now })])
+    );
+    state.rematchRequests = {};
+    delete state.closedAt;
+  }
+
+  private resetSeats(players: PlayerSeat[]): void {
+    players.forEach((player, index) => {
+      player.seat = index;
+    });
+  }
+
   private insertEvent(version: number, event: GameEvent): void {
     this.ctx.storage.sql.exec(
       "INSERT INTO event_log (id, version, event_json, created_at) VALUES (?, ?, ?, ?)",
@@ -723,6 +845,7 @@ export class RoomDO extends DurableObject<Env> {
       minPlayers: state.room.minPlayers,
       maxPlayers: state.room.maxPlayers,
       ...(state.room.hostPlayerId ? { hostPlayerId: state.room.hostPlayerId } : {}),
+      rematchRequests: Object.keys(state.rematchRequests ?? {}),
       players: state.players,
       publicView: definition.getPublicView(context),
       privateView: definition.getPrivateView(context, playerId)
@@ -808,7 +931,7 @@ export class RoomDO extends DurableObject<Env> {
     const status =
       state.phase === "closed"
         ? "closed"
-        : state.phase === "active"
+        : state.phase === "active" || state.phase === "finished"
           ? "active"
           : state.players.length >= state.room.minPlayers
             ? "matching"
@@ -919,6 +1042,24 @@ export class RoomDO extends DurableObject<Env> {
         version: state.version,
         winnerPlayerId,
         closedAt
+      }
+    });
+  }
+
+  private async persistFinishedResult(state: RoomState, events: GameEvent[]): Promise<void> {
+    const repo = new D1Repository(this.env.DB);
+    const finishedAt = new Date(state.updatedAt).toISOString();
+    const winnerPlayerId = findWinnerPlayerId(events);
+    await repo.insertMatchResult({
+      roomId: state.room.roomId,
+      gameId: state.room.gameId,
+      mode: state.room.mode,
+      status: "finished",
+      winnerPlayerId,
+      result: {
+        version: state.version,
+        winnerPlayerId,
+        finishedAt
       }
     });
   }
