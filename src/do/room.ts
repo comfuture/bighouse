@@ -300,6 +300,12 @@ export class RoomDO extends DurableObject<Env> {
   async webSocketClose(ws: WebSocket): Promise<void> {
     const attachment = ws.deserializeAttachment() as SocketAttachment | undefined;
     if (attachment?.playerId) {
+      const activeSibling = this.ctx
+        .getWebSockets(`player:${attachment.playerId}`)
+        .some((candidate) => candidate !== ws && candidate.readyState === WebSocket.OPEN);
+      if (activeSibling) {
+        return;
+      }
       await this.leave(attachment.playerId);
     }
   }
