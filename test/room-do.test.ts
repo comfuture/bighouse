@@ -4,6 +4,10 @@ import { describe, expect, it } from "vitest";
 import "../src";
 import type { RoomDO } from "../src/do/room";
 
+type RoomDOTestAccess = {
+  scheduleDisconnect(playerId: string, delayMs?: number): Promise<void>;
+};
+
 describe("RoomDO", () => {
   it("handles join, duplicate action ids, stale versions, and invalid turns", async () => {
     const room = env.ROOM_DO.getByName("room:test-gomoku") as unknown as RoomDO;
@@ -88,6 +92,58 @@ describe("RoomDO", () => {
     });
   });
 
+  it("allows existing players to reconnect but rejects new players after waiting", async () => {
+    const room = env.ROOM_DO.getByName("room:test-join-phase") as unknown as RoomDO;
+    await room.initialize({
+      roomId: "test-join-phase",
+      gameId: "gomoku",
+      mode: "default",
+      minPlayers: 2,
+      maxPlayers: 2
+    });
+    await room.join({ playerId: "host" });
+    await room.join({ playerId: "guest" });
+    await room.setReady("guest", true);
+    await room.startGame("host");
+
+    await expect(room.tryJoin({ playerId: "late-active" })).resolves.toMatchObject({
+      ok: false,
+      error: { code: "invalid_room_phase" }
+    });
+    await expect(room.join({ playerId: "host" })).resolves.toMatchObject({ phase: "active", playerCount: 2 });
+
+    const winningMoves = [
+      ["host", 0, 0],
+      ["guest", 0, 1],
+      ["host", 1, 0],
+      ["guest", 1, 1],
+      ["host", 2, 0],
+      ["guest", 2, 1],
+      ["host", 3, 0],
+      ["guest", 3, 1],
+      ["host", 4, 0]
+    ] as const;
+    let version = 4;
+    for (const [playerId, x, y] of winningMoves) {
+      const result = await room.submitAction({
+        playerId,
+        clientActionId: `phase-${playerId}-${x}-${y}`,
+        expectedVersion: version,
+        type: "placeStone",
+        payload: { x, y }
+      });
+      version = result.version;
+    }
+
+    await expect(room.tryJoin({ playerId: "late-finished" })).resolves.toMatchObject({
+      ok: false,
+      error: { code: "invalid_room_phase" }
+    });
+    await expect(room.join({ playerId: "guest" })).resolves.toMatchObject({ phase: "finished", playerCount: 2 });
+    await room.leaveFinishedGame("host");
+    await expect(room.join({ playerId: "replacement" })).resolves.toMatchObject({ phase: "waiting", playerCount: 2 });
+  });
+
   it("returns private card state only to the matching player", async () => {
     const room = env.ROOM_DO.getByName("room:test-card") as unknown as RoomDO;
     await room.initialize({
@@ -142,6 +198,37 @@ describe("RoomDO", () => {
     });
 
     await expect(runDurableObjectAlarm(roomStub)).resolves.toBe(true);
+  });
+
+  it("keeps durable disconnect grace pending when game timers are rescheduled", async () => {
+    const roomStub = env.ROOM_DO.getByName("room:test-disconnect-grace");
+    const room = roomStub as unknown as RoomDO;
+    const testRoom = roomStub as unknown as RoomDOTestAccess;
+    await room.initialize({
+      roomId: "test-disconnect-grace",
+      gameId: "gomoku",
+      mode: "default",
+      minPlayers: 2,
+      maxPlayers: 2
+    });
+    await room.join({ playerId: "host" });
+    await room.join({ playerId: "guest" });
+    await room.setReady("guest", true);
+    await room.startGame("host");
+
+    await testRoom.scheduleDisconnect("guest", 100);
+    await room.submitAction({
+      playerId: "host",
+      clientActionId: "disconnect-grace-move",
+      expectedVersion: 4,
+      type: "placeStone",
+      payload: { x: 0, y: 0 }
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 110));
+    await expect(runDurableObjectAlarm(roomStub)).resolves.toBe(true);
+    const snapshot = await room.getSnapshot("host");
+    expect(snapshot.players.find((player) => player.playerId === "guest")).toMatchObject({ connected: false });
   });
 
   it("supports rematch requests and finished-game leaves", async () => {

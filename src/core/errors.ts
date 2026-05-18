@@ -28,7 +28,7 @@ export class GameServerError extends Error {
 }
 
 export function toErrorResponse(error: unknown): Response {
-  if (error instanceof GameServerError) {
+  if (error instanceof GameServerError || isGameServerErrorLike(error)) {
     return Response.json(
       { error: { code: error.code, message: error.message, details: error.details } },
       { status: error.status }
@@ -40,4 +40,12 @@ export function toErrorResponse(error: unknown): Response {
     { error: { code: "internal_error", message: "Internal server error" } },
     { status: 500 }
   );
+}
+
+function isGameServerErrorLike(error: unknown): error is GameServerError {
+  if (!error || typeof error !== "object") {
+    return false;
+  }
+  const candidate = error as { code?: unknown; message?: unknown; status?: unknown };
+  return typeof candidate.code === "string" && typeof candidate.message === "string" && typeof candidate.status === "number";
 }
