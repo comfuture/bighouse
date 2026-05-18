@@ -133,6 +133,9 @@ const error = ref("");
 const gameHost = ref<HTMLElement>();
 let ws: WebSocket | undefined;
 let gameInstance: GomokuGameInstance | undefined;
+let reconnectTimer: ReturnType<typeof window.setTimeout> | undefined;
+let reconnectAttempt = 0;
+let closingRoom = false;
 
 const me = computed(() => room.value?.players.find((player) => player.playerId === identity.playerId));
 const isHost = computed(() => room.value?.hostPlayerId === identity.playerId);
@@ -161,19 +164,37 @@ watch(identityReady, (ready) => {
 });
 
 onBeforeUnmount(() => {
+  closingRoom = true;
+  clearReconnectTimer();
   ws?.close();
   gameInstance?.destroy();
 });
 
 function connectRoom(): void {
+  clearReconnectTimer();
+  closingRoom = false;
   ws?.close();
-  ws = new WebSocket(roomWebsocketUrl(roomId.value));
-  ws.addEventListener("open", () => {
-    ws?.send(JSON.stringify({ type: "joinRoom", playerId: identity.playerId, displayName: identity.displayName || undefined }));
+  const socket = new WebSocket(roomWebsocketUrl(roomId.value));
+  ws = socket;
+  socket.addEventListener("open", () => {
+    if (ws !== socket) return;
+    reconnectAttempt = 0;
+    error.value = "";
+    socket.send(JSON.stringify({ type: "joinRoom", playerId: identity.playerId, displayName: identity.displayName || undefined }));
   });
-  ws.addEventListener("message", (event) => void handleRoomMessage(JSON.parse(String(event.data)) as ServerMessage));
-  ws.addEventListener("error", () => {
+  socket.addEventListener("message", (event) => {
+    if (ws === socket) {
+      void handleRoomMessage(JSON.parse(String(event.data)) as ServerMessage);
+    }
+  });
+  socket.addEventListener("error", () => {
+    if (ws !== socket) return;
     error.value = "Room WebSocket failed";
+  });
+  socket.addEventListener("close", () => {
+    if (!closingRoom && ws === socket) {
+      scheduleReconnect();
+    }
   });
 }
 
@@ -183,10 +204,11 @@ async function handleRoomMessage(message: ServerMessage): Promise<void> {
     await mountOrUpdateGame();
     return;
   }
-  if (message.type === "event" || message.type === "privateEvent" || message.type === "presence") {
-    requestSnapshot();
+  if (message.type === "presence") {
+    applyPresence(message.payload as { playerId: string; connected: boolean });
     return;
   }
+  if (message.type === "event" || message.type === "privateEvent") return;
   if (message.type === "chat") {
     chat.value.push((message.payload as { message: ChatMessage }).message);
     return;
@@ -196,8 +218,11 @@ async function handleRoomMessage(message: ServerMessage): Promise<void> {
   }
 }
 
-function requestSnapshot(): void {
-  ws?.send(JSON.stringify({ type: "joinRoom", playerId: identity.playerId, displayName: identity.displayName || undefined }));
+function applyPresence(payload: { playerId: string; connected: boolean }): void {
+  const player = room.value?.players.find((candidate) => candidate.playerId === payload.playerId);
+  if (player) {
+    player.connected = payload.connected;
+  }
 }
 
 async function mountOrUpdateGame(): Promise<void> {
@@ -251,5 +276,23 @@ function transferHost(targetPlayerId: string): void {
 
 function sendChat(body: string, targetPlayerId?: string): void {
   ws?.send(JSON.stringify({ type: "chat", playerId: identity.playerId, targetPlayerId, body }));
+}
+
+function scheduleReconnect(): void {
+  if (!identityReady.value || reconnectTimer) return;
+  const delay = Math.min(500 * 2 ** reconnectAttempt, 5000);
+  reconnectAttempt += 1;
+  error.value = "Room connection lost. Reconnecting...";
+  reconnectTimer = window.setTimeout(() => {
+    reconnectTimer = undefined;
+    connectRoom();
+  }, delay);
+}
+
+function clearReconnectTimer(): void {
+  if (reconnectTimer) {
+    window.clearTimeout(reconnectTimer);
+    reconnectTimer = undefined;
+  }
 }
 </script>

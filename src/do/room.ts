@@ -89,6 +89,8 @@ type SocketAttachment = {
 };
 
 export class RoomDO extends DurableObject<Env> {
+  private readonly disconnectTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     ctx.blockConcurrencyWhile(async () => {
@@ -131,8 +133,10 @@ export class RoomDO extends DurableObject<Env> {
 
   async join(input: JoinRoomInput): Promise<RoomSummary> {
     const state = this.requireState();
+    this.clearDisconnectTimer(input.playerId);
     const existing = state.players.find((player) => player.playerId === input.playerId);
     if (existing) {
+      const wasConnected = existing.connected;
       existing.connected = true;
       existing.ready = existing.ready ?? false;
       if (input.displayName) {
@@ -141,7 +145,10 @@ export class RoomDO extends DurableObject<Env> {
       delete state.emptySince;
       state.updatedAt = Date.now();
       this.saveState(state);
-      this.broadcastPresence(state, input.playerId, true);
+      if (!wasConnected) {
+        this.broadcastPresence(state, input.playerId, true);
+        this.broadcastSnapshots(state);
+      }
       return this.toSummary(state);
     }
 
@@ -179,6 +186,7 @@ export class RoomDO extends DurableObject<Env> {
   }
 
   async leave(playerId: string): Promise<RoomSummary> {
+    this.clearDisconnectTimer(playerId);
     const state = this.requireState();
     const player = state.players.find((candidate) => candidate.playerId === playerId);
     if (!player) {
@@ -372,6 +380,7 @@ export class RoomDO extends DurableObject<Env> {
       now
     );
     this.deliverEvents(applied.state, applied.events);
+    this.broadcastSnapshots(applied.state);
     return ack;
   }
 
@@ -486,7 +495,7 @@ export class RoomDO extends DurableObject<Env> {
       if (activeSibling) {
         return;
       }
-      await this.leave(attachment.playerId);
+      this.scheduleDisconnect(attachment.playerId);
     }
   }
 
@@ -827,6 +836,41 @@ export class RoomDO extends DurableObject<Env> {
     for (const ws of this.ctx.getWebSockets(`player:${playerId}`)) {
       this.sendToSocket(ws, message);
     }
+  }
+
+  private scheduleDisconnect(playerId: string): void {
+    this.clearDisconnectTimer(playerId);
+    const timer = setTimeout(() => {
+      this.disconnectTimers.delete(playerId);
+      void this.confirmDisconnect(playerId);
+    }, this.disconnectGraceMs());
+    this.disconnectTimers.set(playerId, timer);
+  }
+
+  private async confirmDisconnect(playerId: string): Promise<void> {
+    const activeSibling = this.ctx
+      .getWebSockets(`player:${playerId}`)
+      .some((candidate) => candidate.readyState === WebSocket.OPEN);
+    if (activeSibling) {
+      return;
+    }
+    const state = this.loadState();
+    if (!state || !state.players.some((player) => player.playerId === playerId && player.connected)) {
+      return;
+    }
+    await this.leave(playerId);
+  }
+
+  private clearDisconnectTimer(playerId: string): void {
+    const timer = this.disconnectTimers.get(playerId);
+    if (timer) {
+      clearTimeout(timer);
+      this.disconnectTimers.delete(playerId);
+    }
+  }
+
+  private disconnectGraceMs(): number {
+    return this.env.ENVIRONMENT === "test" ? 100 : 10_000;
   }
 
   private toCommandError(error: unknown): RoomCommandResultEnvelope {
