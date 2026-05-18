@@ -133,7 +133,7 @@ The deployment uses Worker static assets from `packages/frontend/dist`, while AP
   "assets": {
     "directory": "./packages/frontend/dist",
     "not_found_handling": "single-page-application",
-    "run_worker_first": ["/games/*", "/rooms/*", "/matchmaking/*"]
+    "run_worker_first": ["/games", "/games/*", "/rooms/*", "/matchmaking/*"]
   }
 }
 ```
