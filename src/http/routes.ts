@@ -65,8 +65,20 @@ async function route(request: Request, env: Env): Promise<Response> {
     });
     return Response.json({
       ...result,
+      lobbyWsUrl: lobbyWebsocketUrl(url, game.gameId, mode, body.playerId, body.displayName),
       wsUrl: websocketUrl(url, result.roomId, body.playerId)
     });
+  }
+
+  const lobbyWsPath = matchPath(url.pathname, /^\/games\/([^/]+)\/lobbies\/([^/]+)\/ws$/u, [
+    "gameId",
+    "mode"
+  ]);
+  if (request.method === "GET" && lobbyWsPath) {
+    await seedBuiltInGames(repo);
+    const game = await requireGame(repo, routeParam(lobbyWsPath, "gameId"));
+    const mode = routeParam(lobbyWsPath, "mode");
+    return env.LOBBY_DO.getByName(lobbyDoName(game.gameId, mode)).fetch(request);
   }
 
   const ticketCreate = matchPath(url.pathname, /^\/games\/([^/]+)\/matchmaking\/tickets$/u, ["gameId"]);
@@ -160,6 +172,16 @@ function websocketUrl(url: URL, roomId: string, playerId: string): string {
   const wsUrl = new URL(`/rooms/${roomId}/ws`, url);
   wsUrl.protocol = url.protocol === "https:" ? "wss:" : "ws:";
   wsUrl.searchParams.set("playerId", playerId);
+  return wsUrl.toString();
+}
+
+function lobbyWebsocketUrl(url: URL, gameId: string, mode: string, playerId: string, displayName?: string): string {
+  const wsUrl = new URL(`/games/${gameId}/lobbies/${mode}/ws`, url);
+  wsUrl.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  wsUrl.searchParams.set("playerId", playerId);
+  if (displayName) {
+    wsUrl.searchParams.set("displayName", displayName);
+  }
   return wsUrl.toString();
 }
 

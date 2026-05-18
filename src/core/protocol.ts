@@ -1,3 +1,4 @@
+import type { ChatMessage } from "./chat";
 import type { GameEvent, JsonObject, PlayerSeat, RoomPhase } from "./game";
 
 export type ClientMessage =
@@ -27,6 +28,12 @@ export type ClientMessage =
       };
     }
   | {
+      type: "chat";
+      playerId: string;
+      body: string;
+      targetPlayerId?: string;
+    }
+  | {
       type: "ping";
       nonce?: string;
     };
@@ -47,6 +54,7 @@ export type ServerMessage =
   | BaseServerMessage<"event", { event: GameEvent }>
   | BaseServerMessage<"privateEvent", { event: GameEvent }>
   | BaseServerMessage<"ack", { command: string; clientActionId?: string; result?: JsonObject }>
+  | BaseServerMessage<"chat", { message: ChatMessage }>
   | BaseServerMessage<"error", { code: string; message: string; details?: unknown }>
   | BaseServerMessage<"presence", { playerId: string; connected: boolean }>
   | BaseServerMessage<"roomClosed", { reason: string }>

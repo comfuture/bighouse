@@ -1,4 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
+import { normalizeChatBody, type ChatInput, type ChatMessage } from "../core/chat";
 import { GameServerError } from "../core/errors";
 import type { ClientGameAction, GameEvent, JsonObject, PlayerSeat, RoomState, TimerIntent } from "../core/game";
 import { cloneState, privateEventsFor, publicEvents } from "../core/game";
@@ -66,6 +67,7 @@ type TimerRow = {
 
 type SocketAttachment = {
   playerId?: string;
+  displayName?: string;
 };
 
 export class RoomDO extends DurableObject<Env> {
@@ -239,6 +241,33 @@ export class RoomDO extends DurableObject<Env> {
     return ack;
   }
 
+  async sendChat(input: ChatInput): Promise<ChatMessage> {
+    const state = this.requireState();
+    const player = state.players.find((candidate) => candidate.playerId === input.playerId);
+    if (!player) {
+      throw new GameServerError("player_not_found", "Player is not in this room", 404);
+    }
+    if (input.targetPlayerId && !state.players.some((candidate) => candidate.playerId === input.targetPlayerId)) {
+      throw new GameServerError("player_not_found", "Target player is not in this room", 404);
+    }
+
+    const now = Date.now();
+    const message: ChatMessage = {
+      id: createId("chat"),
+      scope: "room",
+      scopeId: state.room.roomId,
+      visibility: input.targetPlayerId ? "private" : "public",
+      playerId: input.playerId,
+      ...(player.displayName ? { displayName: player.displayName } : {}),
+      ...(input.targetPlayerId ? { targetPlayerId: input.targetPlayerId } : {}),
+      body: normalizeChatBody(input.body),
+      createdAt: now
+    };
+    this.insertChat(message);
+    this.deliverChat(state, message);
+    return message;
+  }
+
   async trySubmitAction(action: ClientGameAction): Promise<ActionResultEnvelope> {
     try {
       return { ok: true, ack: await this.submitAction(action) };
@@ -268,7 +297,8 @@ export class RoomDO extends DurableObject<Env> {
     const server = pair[1];
     const url = new URL(request.url);
     const playerId = url.searchParams.get("playerId") ?? undefined;
-    server.serializeAttachment((playerId ? { playerId } : {}) satisfies SocketAttachment);
+    const displayName = url.searchParams.get("displayName") ?? undefined;
+    server.serializeAttachment((playerId ? { playerId, ...(displayName ? { displayName } : {}) } : {}) satisfies SocketAttachment);
     this.ctx.acceptWebSocket(server, playerId ? [`player:${playerId}`] : undefined);
     if (playerId) {
       const state = this.loadState();
@@ -348,7 +378,10 @@ export class RoomDO extends DurableObject<Env> {
       return;
     }
     if (message.type === "hello" || message.type === "joinRoom") {
-      ws.serializeAttachment({ playerId: message.playerId } satisfies SocketAttachment);
+      ws.serializeAttachment({
+        playerId: message.playerId,
+        ...(message.displayName ? { displayName: message.displayName } : {})
+      } satisfies SocketAttachment);
       await this.join({
         playerId: message.playerId,
         ...(message.displayName ? { displayName: message.displayName } : {})
@@ -356,6 +389,15 @@ export class RoomDO extends DurableObject<Env> {
       const latest = this.requireState();
       this.sendToSocket(ws, this.message(latest, "snapshot", this.createSnapshot(latest, message.playerId)));
       this.sendToSocket(ws, this.message(latest, "ack", { command: message.type }));
+      return;
+    }
+    if (message.type === "chat") {
+      const chat = await this.sendChat({
+        playerId: message.playerId,
+        body: message.body,
+        ...(message.targetPlayerId ? { targetPlayerId: message.targetPlayerId } : {})
+      });
+      this.sendToSocket(ws, this.message(this.requireState(), "ack", { command: "chat", result: { chatId: chat.id } }));
       return;
     }
     if (message.type === "leaveRoom") {
@@ -407,7 +449,19 @@ export class RoomDO extends DurableObject<Env> {
         run_at INTEGER NOT NULL,
         payload_json TEXT
       );
+      CREATE TABLE IF NOT EXISTS chat_log (
+        id TEXT PRIMARY KEY,
+        scope TEXT NOT NULL,
+        scope_id TEXT NOT NULL,
+        visibility TEXT NOT NULL,
+        player_id TEXT NOT NULL,
+        display_name TEXT,
+        target_player_id TEXT,
+        body TEXT NOT NULL,
+        created_at INTEGER NOT NULL
+      );
       CREATE INDEX IF NOT EXISTS idx_timers_run_at ON timers (run_at);
+      CREATE INDEX IF NOT EXISTS idx_chat_log_created_at ON chat_log (created_at);
     `);
   }
 
@@ -438,6 +492,23 @@ export class RoomDO extends DurableObject<Env> {
       version,
       JSON.stringify(event),
       event.createdAt
+    );
+  }
+
+  private insertChat(message: ChatMessage): void {
+    this.ctx.storage.sql.exec(
+      `INSERT INTO chat_log (
+        id, scope, scope_id, visibility, player_id, display_name, target_player_id, body, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      message.id,
+      message.scope,
+      message.scopeId,
+      message.visibility,
+      message.playerId,
+      message.displayName ?? null,
+      message.targetPlayerId ?? null,
+      message.body,
+      message.createdAt
     );
   }
 
@@ -516,6 +587,18 @@ export class RoomDO extends DurableObject<Env> {
       for (const event of privateEventsFor(events, player.playerId)) {
         this.broadcastToPlayer(player.playerId, this.message(state, "privateEvent", { event }));
       }
+    }
+  }
+
+  private deliverChat(state: RoomState, chat: ChatMessage): void {
+    const message = this.message(state, "chat", { message: chat });
+    if (chat.visibility === "public") {
+      this.broadcast(message);
+      return;
+    }
+    this.broadcastToPlayer(chat.playerId, message);
+    if (chat.targetPlayerId && chat.targetPlayerId !== chat.playerId) {
+      this.broadcastToPlayer(chat.targetPlayerId, message);
     }
   }
 
