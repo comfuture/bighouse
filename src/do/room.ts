@@ -229,8 +229,9 @@ export class RoomDO extends DurableObject<Env> {
     if (state.players.length < state.room.minPlayers) {
       throw new GameServerError("not_enough_players", "Not enough players to start", 409);
     }
-    if (!state.players.every((candidate) => candidate.ready)) {
-      throw new GameServerError("players_not_ready", "All players must be ready before starting", 409);
+    const requiredReadyPlayers = state.players.filter((candidate) => candidate.playerId !== state.room.hostPlayerId);
+    if (!requiredReadyPlayers.every((candidate) => candidate.ready)) {
+      throw new GameServerError("players_not_ready", "All non-host players must be ready before starting", 409);
     }
 
     const now = Date.now();
@@ -671,7 +672,7 @@ export class RoomDO extends DurableObject<Env> {
       phase: state.phase,
       version: state.version,
       playerCount: state.players.length,
-      readyCount: state.players.filter((player) => player.ready).length,
+      readyCount: state.players.filter((player) => player.playerId !== state.room.hostPlayerId && player.ready).length,
       minPlayers: state.room.minPlayers,
       maxPlayers: state.room.maxPlayers,
       ...(state.room.hostPlayerId ? { hostPlayerId: state.room.hostPlayerId } : {})

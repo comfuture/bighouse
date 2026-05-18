@@ -113,7 +113,6 @@ describe("HTTP API", () => {
     expect(secondJoin.status).toBe(200);
 
     const room = env.ROOM_DO.getByName(firstJoinBody.doName) as unknown as RoomDO;
-    await room.setReady("winner", true);
     await room.setReady("other", true);
     await room.startGame("winner");
     const moves = [
@@ -127,7 +126,7 @@ describe("HTTP API", () => {
       ["other", 3, 1],
       ["winner", 4, 0]
     ] as const;
-    let version = 5;
+    let version = 4;
     for (const [playerId, x, y] of moves) {
       const result = await room.submitAction({
         playerId,
