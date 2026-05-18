@@ -545,6 +545,14 @@ Use server `version` as the synchronization point. When sending an action, set `
 
 ## 11. Practical Test Scenarios
 
+Operational cleanup:
+
+- The deployed Worker runs a cron trigger every five minutes.
+- The cleanup scan starts from D1 `room_index` rows that are still `open`, `matching`, or `active`.
+- A candidate is closed only after its authoritative `RoomDO` verifies that no live WebSocket clients remain and the room has been idle long enough.
+- Waiting and matching rooms use a short stale threshold; active rooms use a longer grace period to allow reconnects.
+- Closed stale rooms are removed from lobby lists and direct `/rooms/:roomId/join` or `/rooms/:roomId/ws` attempts are rejected.
+
 Check the deployed game list:
 
 ```sh

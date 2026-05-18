@@ -3,6 +3,7 @@ import { SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import "../src";
 import type { RoomDO } from "../src/do/room";
+import { cleanupStaleRooms } from "../src/maintenance/stale-rooms";
 
 describe("HTTP API", () => {
   it("lists built-in games and creates a lobby room", async () => {
@@ -151,5 +152,41 @@ describe("HTTP API", () => {
       .bind(firstJoinBody.roomId)
       .first<{ status: string; winner_player_id: string }>();
     expect(resultRow).toEqual({ status: "closed", winner_player_id: "winner" });
+  });
+
+  it("removes stale rooms from lobby lists and direct join paths", async () => {
+    const mode = `stale-${crypto.randomUUID()}`;
+    const createResponse = await SELF.fetch(`https://bighouse.test/games/gomoku/lobbies/${mode}/rooms`, {
+      method: "POST",
+      body: JSON.stringify({ playerId: "stale-host", displayName: "Stale Host" })
+    });
+    const createBody = (await createResponse.json()) as { roomId: string };
+    const joinResponse = await SELF.fetch(`https://bighouse.test/rooms/${createBody.roomId}/join`, {
+      method: "POST",
+      body: JSON.stringify({ playerId: "stale-guest", displayName: "Stale Guest" })
+    });
+    expect(joinResponse.status).toBe(200);
+
+    const cleanup = await cleanupStaleRooms(env, {
+      now: Date.now() + 5 * 60_000 + 1,
+      waitingIdleMs: 5 * 60_000,
+      activeIdleMs: 30 * 60_000
+    });
+    expect(cleanup.cleaned).toBeGreaterThanOrEqual(1);
+
+    const listResponse = await SELF.fetch(`https://bighouse.test/games/gomoku/lobbies/${mode}/rooms`);
+    const listBody = (await listResponse.json()) as { rooms: Array<{ roomId: string }> };
+    expect(listBody.rooms.some((room) => room.roomId === createBody.roomId)).toBe(false);
+
+    const rejectedJoin = await SELF.fetch(`https://bighouse.test/rooms/${createBody.roomId}/join`, {
+      method: "POST",
+      body: JSON.stringify({ playerId: "late-player" })
+    });
+    expect(rejectedJoin.status).toBe(410);
+
+    const wsResponse = await SELF.fetch(`https://bighouse.test/rooms/${createBody.roomId}/ws`, {
+      headers: { Upgrade: "websocket" }
+    });
+    expect(wsResponse.status).toBe(410);
   });
 });

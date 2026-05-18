@@ -33,6 +33,7 @@ export type RoomState = {
   stageState: JsonObject;
   playerStates: Record<string, JsonObject>;
   updatedAt: number;
+  emptySince?: number;
   closedAt?: number;
 };
 

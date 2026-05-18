@@ -55,6 +55,18 @@ export type RoomCommandResultEnvelope =
   | { ok: true; summary: RoomSummary }
   | { ok: false; error: { code: string; message: string; status: number; details?: unknown } };
 
+export type CleanupStaleRoomInput = {
+  now?: number;
+  waitingIdleMs?: number;
+  activeIdleMs?: number;
+};
+
+export type CleanupStaleRoomResult = {
+  cleaned: boolean;
+  reason: "missing_state" | "already_closed" | "connected_clients" | "not_idle" | "stale_no_connections";
+  summary?: RoomSummary;
+};
+
 type RoomStateRow = {
   id: number;
   state_json: string;
@@ -126,6 +138,7 @@ export class RoomDO extends DurableObject<Env> {
       if (input.displayName) {
         existing.displayName = input.displayName;
       }
+      delete state.emptySince;
       state.updatedAt = Date.now();
       this.saveState(state);
       this.broadcastPresence(state, input.playerId, true);
@@ -154,6 +167,7 @@ export class RoomDO extends DurableObject<Env> {
     }
     state.players.push(player);
     state.playerStates[player.playerId] = definition.initialPlayerState(player, { room: state.room, now });
+    delete state.emptySince;
     state.updatedAt = now;
     state.version += 1;
     this.saveState(state);
@@ -175,7 +189,13 @@ export class RoomDO extends DurableObject<Env> {
     if (state.phase === "waiting") {
       player.ready = false;
     }
-    state.updatedAt = Date.now();
+    const now = Date.now();
+    state.updatedAt = now;
+    if (state.players.every((candidate) => !candidate.connected)) {
+      state.emptySince = now;
+    } else {
+      delete state.emptySince;
+    }
     state.version += 1;
     this.saveState(state);
     await this.persistRoomIndex(state);
@@ -253,6 +273,42 @@ export class RoomDO extends DurableObject<Env> {
   async getSnapshot(playerId: string): Promise<SnapshotPayload> {
     const state = this.requireState();
     return this.createSnapshot(state, playerId);
+  }
+
+  async cleanupIfStale(input: CleanupStaleRoomInput = {}): Promise<CleanupStaleRoomResult> {
+    const state = this.loadState();
+    if (!state) {
+      return { cleaned: true, reason: "missing_state" };
+    }
+    if (state.phase === "closed") {
+      return { cleaned: false, reason: "already_closed", summary: this.toSummary(state) };
+    }
+
+    const now = input.now ?? Date.now();
+    const waitingIdleMs = input.waitingIdleMs ?? 5 * 60 * 1000;
+    const activeIdleMs = input.activeIdleMs ?? 30 * 60 * 1000;
+    const requiredIdleMs = state.phase === "active" ? activeIdleMs : waitingIdleMs;
+    const hasLiveSockets = this.ctx.getWebSockets().some((ws) => ws.readyState === WebSocket.OPEN);
+    if (hasLiveSockets) {
+      return { cleaned: false, reason: "connected_clients", summary: this.toSummary(state) };
+    }
+    const staleSince = state.emptySince ?? state.updatedAt;
+    if (now - staleSince < requiredIdleMs) {
+      return { cleaned: false, reason: "not_idle", summary: this.toSummary(state) };
+    }
+
+    state.phase = "closed";
+    state.closedAt = now;
+    state.updatedAt = now;
+    state.version += 1;
+    for (const player of state.players) {
+      player.connected = false;
+      player.ready = false;
+    }
+    this.saveState(state);
+    await this.rescheduleTimers([]);
+    await this.persistAbandonedRoom(state, "stale_no_connections");
+    return { cleaned: true, reason: "stale_no_connections", summary: this.toSummary(state) };
   }
 
   async submitAction(action: ClientGameAction): Promise<ActionAck> {
@@ -818,6 +874,34 @@ export class RoomDO extends DurableObject<Env> {
       result: {
         version: state.version,
         winnerPlayerId,
+        closedAt
+      }
+    });
+  }
+
+  private async persistAbandonedRoom(state: RoomState, reason: string): Promise<void> {
+    const repo = new D1Repository(this.env.DB);
+    const closedAt = new Date(state.closedAt ?? Date.now()).toISOString();
+    await repo.upsertRoom({
+      roomId: state.room.roomId,
+      gameId: state.room.gameId,
+      mode: state.room.mode,
+      status: "closed",
+      playerCount: state.players.length,
+      minPlayers: state.room.minPlayers,
+      maxPlayers: state.room.maxPlayers,
+      doName: roomDoName(state.room.roomId),
+      closedAt
+    });
+    await repo.insertMatchResult({
+      roomId: state.room.roomId,
+      gameId: state.room.gameId,
+      mode: state.room.mode,
+      status: "abandoned",
+      winnerPlayerId: null,
+      result: {
+        version: state.version,
+        reason,
         closedAt
       }
     });
