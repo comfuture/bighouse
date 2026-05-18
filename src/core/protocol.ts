@@ -58,6 +58,8 @@ export type SnapshotPayload = {
   mode: string;
   phase: RoomPhase;
   version: number;
+  minPlayers: number;
+  maxPlayers: number;
   hostPlayerId?: string;
   players: PlayerSeat[];
   publicView: JsonObject;
