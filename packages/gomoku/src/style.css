@@ -11,6 +11,12 @@
   padding: 0.75rem 1rem;
 }
 
+.gomoku-stage {
+  position: relative;
+  inline-size: fit-content;
+  max-inline-size: 100%;
+}
+
 .gomoku-board {
   --point-size: min(36px, calc((100vw - 3rem) / var(--board-size)));
   --line-color: rgb(111 83 36 / 0.72);
@@ -23,6 +29,67 @@
   border: 2px solid #6f5324;
   padding: calc(var(--point-size) / 2);
   background: #d8ad5f;
+}
+
+.gomoku-result-modal {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  background: rgb(15 23 42 / 0.55);
+}
+
+.gomoku-result-modal.is-hidden {
+  display: none;
+}
+
+.gomoku-result-panel {
+  display: grid;
+  gap: 0.75rem;
+  inline-size: min(20rem, 100%);
+  border: 1px solid rgb(255 255 255 / 0.18);
+  border-radius: 0.5rem;
+  background: #111827;
+  color: #f8fafc;
+  padding: 1rem;
+  box-shadow: 0 18px 48px rgb(0 0 0 / 0.35);
+}
+
+.gomoku-result-title {
+  font-size: 1.5rem;
+  font-weight: 700;
+}
+
+.gomoku-result-message {
+  min-block-size: 1.25rem;
+  color: #cbd5e1;
+}
+
+.gomoku-result-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.gomoku-result-button {
+  flex: 1;
+  border: 1px solid rgb(255 255 255 / 0.18);
+  border-radius: 0.375rem;
+  background: #1f2937;
+  color: #f8fafc;
+  font-weight: 600;
+  padding: 0.625rem 0.75rem;
+}
+
+.gomoku-result-button.is-primary {
+  border-color: #22c55e;
+  background: #16a34a;
+}
+
+.gomoku-result-button:disabled {
+  cursor: wait;
+  opacity: 0.72;
 }
 
 .gomoku-board::before {

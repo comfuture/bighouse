@@ -28,11 +28,12 @@ export type RoomSnapshot = {
   roomId: string;
   gameId: string;
   mode: string;
-  phase: "waiting" | "active" | "closed";
+  phase: "waiting" | "active" | "finished" | "closed";
   version: number;
   minPlayers: number;
   maxPlayers: number;
   hostPlayerId?: string;
+  rematchRequests: string[];
   players: Player[];
   publicView: Record<string, unknown>;
   privateView: Record<string, unknown>;
