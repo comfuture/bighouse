@@ -36,7 +36,13 @@ For frontend-only iteration, run the Vite dev server:
 pnpm dev:frontend
 ```
 
-The frontend package lives in `packages/frontend`. Per-game browser code lives in packages such as `packages/gomoku` and is loaded dynamically after entering a room, so the lobby does not download every game's bundle up front.
+The frontend package lives in `packages/frontend`. It is a Vue SPA built with Nuxt UI and uses separate routes for game listing, lobby, and room play:
+
+- `/`: game list
+- `/lobbies/:gameId/:mode`: game lobby with waiting room cards and lobby chat
+- `/play/:roomId`: room waiting/play screen with ready, host controls, chat, and the lazy-loaded game module
+
+Per-game browser code lives in packages such as `packages/gomoku` and is loaded dynamically after entering a room, so the lobby does not download every game's bundle up front.
 
 Apply D1 migrations for a local database when using Wrangler directly:
 
@@ -54,12 +60,26 @@ List enabled games:
 curl http://localhost:8787/games
 ```
 
-Join a lobby room:
+Create a lobby room and automatically join it as host:
 
 ```sh
-curl -X POST http://localhost:8787/games/gomoku/lobbies/default/join \
+curl -X POST http://localhost:8787/games/gomoku/lobbies/default/rooms \
   -H 'content-type: application/json' \
   -d '{"playerId":"p1","displayName":"Alice"}'
+```
+
+List waiting lobby rooms:
+
+```sh
+curl http://localhost:8787/games/gomoku/lobbies/default/rooms
+```
+
+Join a specific room:
+
+```sh
+curl -X POST http://localhost:8787/rooms/room_id/join \
+  -H 'content-type: application/json' \
+  -d '{"playerId":"p2","displayName":"Bob"}'
 ```
 
 Connect to a lobby WebSocket for lobby chat:
@@ -107,6 +127,9 @@ Client messages:
 - `hello`: `{ "type": "hello", "playerId": "p1", "displayName": "Alice" }`
 - `joinRoom`: `{ "type": "joinRoom", "playerId": "p1" }`
 - `leaveRoom`: `{ "type": "leaveRoom", "playerId": "p1" }`
+- `ready`: `{ "type": "ready", "playerId": "p1", "ready": true }`
+- `transferHost`: `{ "type": "transferHost", "playerId": "p1", "targetPlayerId": "p2" }`
+- `startGame`: `{ "type": "startGame", "playerId": "p1" }`
 - `action`: `{ "type": "action", "playerId": "p1", "clientActionId": "a1", "expectedVersion": 2, "action": { "type": "placeStone", "payload": { "x": 0, "y": 0 } } }`
 - `chat`: `{ "type": "chat", "playerId": "p1", "body": "hello" }`
 - `chat` private: `{ "type": "chat", "playerId": "p1", "targetPlayerId": "p2", "body": "secret" }`
@@ -131,6 +154,7 @@ Server messages include `roomId`, `version`, and `serverTime` and use these type
 `gomoku`
 
 - Two-player board game.
+- Lobby-created rooms stay `waiting` until all players are ready and the host starts the game.
 - Public state includes board, turn, move count, last move, and winner.
 - Private state contains the player's stone color.
 - Server validation rejects stale turns, occupied cells, and double-three moves, then computes the winner. The browser also disables occupied and double-three cells for immediate feedback.

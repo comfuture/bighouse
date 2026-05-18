@@ -7,19 +7,35 @@ This guide explains how to build online multiplayer games on top of Bighouse. Bi
 The client flow is the same for every game.
 
 1. Call `GET /games` to list enabled games.
-2. Choose either direct lobby join or matchmaking ticket creation.
-3. Use the returned `roomId` and `wsUrl` to connect to the room WebSocket.
-4. If lobby chat is needed, connect to `lobbyWsUrl` or the lobby WebSocket URL.
-5. Render the current room from the server `snapshot` message.
-6. Send player input as `action` messages.
-7. Apply `ack`, `event`, `privateEvent`, `chat`, `presence`, and `error` messages from the server.
+2. Enter a game lobby route in the SPA: `/lobbies/:gameId/:mode`.
+3. List waiting rooms with `GET /games/:gameId/lobbies/:mode/rooms`.
+4. Create a room or join a waiting room.
+5. Connect to the room WebSocket and render the current `snapshot`.
+6. Each player sends `ready`.
+7. When minimum players are present and all players are ready, the host sends `startGame`.
+8. Send game input as `action` messages after the room becomes `active`.
+9. Apply `ack`, `event`, `privateEvent`, `chat`, `presence`, and `error` messages from the server.
 
-Direct lobby join:
+Create a lobby room:
 
 ```sh
-curl -X POST https://bighouse.comfuture.workers.dev/games/gomoku/lobbies/default/join \
+curl -X POST https://bighouse.comfuture.workers.dev/games/gomoku/lobbies/default/rooms \
   -H 'content-type: application/json' \
   -d '{"playerId":"p1","displayName":"Alice"}'
+```
+
+List lobby rooms:
+
+```sh
+curl https://bighouse.comfuture.workers.dev/games/gomoku/lobbies/default/rooms
+```
+
+Join a room:
+
+```sh
+curl -X POST https://bighouse.comfuture.workers.dev/rooms/room_id/join \
+  -H 'content-type: application/json' \
+  -d '{"playerId":"p2","displayName":"Bob"}'
 ```
 
 Matchmaking ticket:
@@ -79,6 +95,35 @@ Game action:
 }
 ```
 
+Ready:
+
+```json
+{
+  "type": "ready",
+  "playerId": "p1",
+  "ready": true
+}
+```
+
+Transfer host authority:
+
+```json
+{
+  "type": "transferHost",
+  "playerId": "p1",
+  "targetPlayerId": "p2"
+}
+```
+
+Start game:
+
+```json
+{
+  "type": "startGame",
+  "playerId": "p1"
+}
+```
+
 Public chat:
 
 ```json
@@ -106,6 +151,9 @@ Important fields:
 - `expectedVersion`: the room version the client based the action on. If it does not match the current server version, the server rejects the action as stale.
 - `action.type`: the game-specific command interpreted by the adapter.
 - `action.payload`: the game-specific command data.
+- `ready`: only changes state while a room is waiting.
+- `startGame`: only the current host can start, and only after minimum players are present and all players are ready.
+- `transferHost`: only the current host can delegate host authority to another room player.
 - `targetPlayerId`: used only for chat. If omitted, the chat is public. If present, the chat is private to that player and the sender.
 
 Every server message includes `roomId`, `version`, and `serverTime`. Clients should replace their local room model on `snapshot`, then incrementally apply `event`, `privateEvent`, and `chat`.
@@ -116,9 +164,10 @@ The browser frontend is split by responsibility.
 
 `packages/frontend`
 
-- Owns the game list, identity inputs, lobby join, matchmaking, lobby chat, room chat, and room WebSocket lifecycle.
+- Owns the game list, identity inputs, lobby room list, room creation/join, ready/start controls, host delegation, lobby chat, room chat, and room WebSocket lifecycle.
 - It should not import every game package statically.
 - It maps `gameId` to a dynamic import and loads a game bundle only after the player enters a matching room.
+- SPA screen routes are intentionally separate from API routes: `/`, `/lobbies/:gameId/:mode`, and `/play/:roomId`.
 
 `packages/gomoku`
 
