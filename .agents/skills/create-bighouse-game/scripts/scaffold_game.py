@@ -8,7 +8,14 @@ import sys
 from pathlib import Path
 
 
-ROOT = Path(__file__).resolve().parents[3]
+def find_repo_root(start: Path) -> Path:
+    for candidate in [start, *start.parents]:
+        if (candidate / "package.json").exists() and (candidate / "src" / "games").exists():
+            return candidate
+    raise RuntimeError("could not find bighouse repository root")
+
+
+ROOT = find_repo_root(Path(__file__).resolve())
 SKILL_DIR = Path(__file__).resolve().parents[1]
 
 

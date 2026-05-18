@@ -46,7 +46,7 @@ Also inspect the existing adapters:
 Prefer the script:
 
 ```sh
-python3 skills/create-bighouse-game/scripts/scaffold_game.py <game-id> "Display Name"
+python3 .agents/skills/create-bighouse-game/scripts/scaffold_game.py <game-id> "Display Name"
 ```
 
 The script creates:
