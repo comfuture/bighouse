@@ -4,7 +4,7 @@
       <div class="flex items-center gap-2">
         <h1 class="text-lg font-semibold text-highlighted">{{ displayGameId }}</h1>
         <UBadge v-if="room?.mode" color="neutral" variant="subtle">{{ room.mode }}</UBadge>
-        <UBadge v-if="room" :color="room.phase === 'active' ? 'success' : 'warning'" variant="subtle">{{ room.phase }}</UBadge>
+        <UBadge v-if="room" :color="room.phase === 'active' ? 'success' : room.phase === 'finished' ? 'neutral' : 'warning'" variant="subtle">{{ room.phase }}</UBadge>
         <UBadge v-else color="neutral" variant="subtle">Connecting</UBadge>
       </div>
       <div>
@@ -111,7 +111,7 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { useRoute } from "vue-router";
+import { useRoute, useRouter } from "vue-router";
 import type { GomokuGameInstance, GomokuPrivateView, GomokuPublicView } from "@bighouse/gomoku";
 import ChatPanel from "../components/ChatPanel.vue";
 import { identity, identityReady } from "../identity";
@@ -125,6 +125,7 @@ const gameLoaders = {
 } satisfies Record<string, () => Promise<GameModule>>;
 
 const route = useRoute();
+const router = useRouter();
 const roomId = computed(() => String(route.params.roomId));
 const displayGameId = computed(() => room.value?.gameId ?? String(route.params.gameId));
 const room = ref<RoomSnapshot>();
@@ -235,7 +236,11 @@ async function mountOrUpdateGame(): Promise<void> {
   }
   await nextTick();
   const module = await loader();
-  const publicView = { ...snapshot.publicView, roomPhase: snapshot.phase } as GomokuPublicView;
+  const publicView = {
+    ...snapshot.publicView,
+    roomPhase: snapshot.phase,
+    rematchRequests: snapshot.rematchRequests ?? []
+  } as GomokuPublicView;
   const client = {
     playerId: identity.playerId,
     version: snapshot.version,
@@ -255,6 +260,13 @@ async function mountOrUpdateGame(): Promise<void> {
             action
           })
         );
+      },
+      requestPlayAgain() {
+        ws?.send(JSON.stringify({ type: "playAgain", playerId: identity.playerId }));
+      },
+      leaveFinishedGame() {
+        ws?.send(JSON.stringify({ type: "leaveFinishedGame", playerId: identity.playerId }));
+        void router.push(lobbyPath.value);
       }
     });
     return;

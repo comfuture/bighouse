@@ -4,12 +4,13 @@ export type GomokuStone = "black" | "white";
 export type GomokuCell = GomokuStone | null;
 
 export type GomokuPublicView = {
-  roomPhase?: "waiting" | "active" | "closed";
+  roomPhase?: "waiting" | "active" | "finished" | "closed";
   boardSize: number;
   board: GomokuCell[][];
   currentPlayerId?: string;
   turnDeadline?: number;
   moveCount: number;
+  rematchRequests?: string[];
   lastMove?: {
     playerId: string;
     x: number;
@@ -29,10 +30,12 @@ export type GomokuClient = {
   publicView: GomokuPublicView;
   privateView: GomokuPrivateView;
   sendAction(action: { type: string; payload: Record<string, unknown> }): void;
+  requestPlayAgain(): void;
+  leaveFinishedGame(): void;
 };
 
 export type GomokuGameInstance = {
-  update(input: Omit<GomokuClient, "sendAction">): void;
+  update(input: Omit<GomokuClient, "sendAction" | "requestPlayAgain" | "leaveFinishedGame">): void;
   destroy(): void;
 };
 
@@ -41,16 +44,47 @@ export function createGomokuGame(container: HTMLElement, client: GomokuClient): 
   container.classList.add("gomoku-game");
   container.innerHTML = `
     <div class="gomoku-status" data-role="status"></div>
-    <div class="gomoku-board" data-role="board" aria-label="Gomoku board"></div>
+    <div class="gomoku-stage">
+      <div class="gomoku-board" data-role="board" aria-label="Gomoku board"></div>
+      <div class="gomoku-result-modal is-hidden" data-role="result-modal" role="dialog" aria-modal="true">
+        <div class="gomoku-result-panel">
+          <div class="gomoku-result-title" data-role="result-title"></div>
+          <div class="gomoku-result-message" data-role="result-message"></div>
+          <div class="gomoku-result-actions">
+            <button type="button" class="gomoku-result-button is-primary" data-role="play-again">Play Again</button>
+            <button type="button" class="gomoku-result-button" data-role="leave-game">Leave</button>
+          </div>
+        </div>
+      </div>
+    </div>
   `;
 
   const status = container.querySelector<HTMLElement>("[data-role='status']");
   const boardEl = container.querySelector<HTMLElement>("[data-role='board']");
-  if (!status || !boardEl) {
+  const modal = container.querySelector<HTMLElement>("[data-role='result-modal']");
+  const resultTitle = container.querySelector<HTMLElement>("[data-role='result-title']");
+  const resultMessage = container.querySelector<HTMLElement>("[data-role='result-message']");
+  const playAgainButton = container.querySelector<HTMLButtonElement>("[data-role='play-again']");
+  const leaveButton = container.querySelector<HTMLButtonElement>("[data-role='leave-game']");
+  if (!status || !boardEl || !modal || !resultTitle || !resultMessage || !playAgainButton || !leaveButton) {
     throw new Error("Failed to mount gomoku game");
   }
   const statusEl = status;
   const boardElement = boardEl;
+  const modalElement = modal;
+  const resultTitleElement = resultTitle;
+  const resultMessageElement = resultMessage;
+  const playAgainButtonElement = playAgainButton;
+  const leaveButtonElement = leaveButton;
+
+  playAgainButtonElement.addEventListener("click", () => {
+    if (!state.publicView.rematchRequests?.includes(state.playerId)) {
+      client.requestPlayAgain();
+    }
+  });
+  leaveButtonElement.addEventListener("click", () => {
+    client.leaveFinishedGame();
+  });
 
   function render(): void {
     const { publicView, privateView, playerId } = state;
@@ -58,7 +92,9 @@ export function createGomokuGame(container: HTMLElement, client: GomokuClient): 
     const isMyTurn = isActive && publicView.currentPlayerId === playerId && !publicView.winnerPlayerId;
     const stoneLabel = privateView.stone ? `${privateView.stone} stone` : "spectator";
     statusEl.textContent = publicView.winnerPlayerId
-      ? `${publicView.winnerPlayerId} won`
+      ? publicView.winnerPlayerId === playerId
+        ? "You Win!"
+        : "You Lose!"
       : isMyTurn
         ? `Your turn (${stoneLabel})`
         : !isActive
@@ -91,6 +127,31 @@ export function createGomokuGame(container: HTMLElement, client: GomokuClient): 
         boardElement.append(cell);
       }
     }
+    renderResultModal();
+  }
+
+  function renderResultModal(): void {
+    const { publicView, playerId } = state;
+    if (!publicView.winnerPlayerId || publicView.roomPhase !== "finished") {
+      modalElement.classList.add("is-hidden");
+      playAgainButtonElement.disabled = false;
+      playAgainButtonElement.textContent = "Play Again";
+      resultMessageElement.textContent = "";
+      return;
+    }
+
+    const requestedPlayerIds = publicView.rematchRequests ?? [];
+    const iRequested = requestedPlayerIds.includes(playerId);
+    const opponentRequested = requestedPlayerIds.some((requestPlayerId) => requestPlayerId !== playerId);
+    resultTitleElement.textContent = publicView.winnerPlayerId === playerId ? "You Win!" : "You Lose!";
+    resultMessageElement.textContent = iRequested
+      ? "Waiting for opponent..."
+      : opponentRequested
+        ? "Opponent wants to play again."
+        : "Choose whether to play another round.";
+    playAgainButtonElement.disabled = iRequested;
+    playAgainButtonElement.textContent = iRequested ? "Waiting..." : "Play Again";
+    modalElement.classList.remove("is-hidden");
   }
 
   render();
