@@ -3,6 +3,7 @@ export { MatchmakerDO } from "./do/matchmaker";
 export { RoomDO } from "./do/room";
 export type { Env } from "./types";
 
+import "./games";
 import type { Env } from "./types";
 import { handleRequest } from "./http/routes";
 
