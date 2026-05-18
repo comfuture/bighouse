@@ -215,6 +215,19 @@ export class D1Repository {
     return row ? mapRoom(row) : null;
   }
 
+  async listLobbyRooms(gameId: string, mode: string): Promise<RoomIndexRecord[]> {
+    const result = await this.db
+      .prepare(
+        `SELECT room_id, game_id, mode, status, player_count, min_players, max_players, do_name, created_at, updated_at, closed_at
+         FROM room_index
+         WHERE game_id = ? AND mode = ? AND status IN ('open', 'matching')
+         ORDER BY created_at ASC`
+      )
+      .bind(gameId, mode)
+      .all<RoomDbRow>();
+    return (result.results ?? []).map(mapRoom);
+  }
+
   async getRoom(roomId: string): Promise<RoomIndexRecord | null> {
     const row = await this.db
       .prepare(

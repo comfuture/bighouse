@@ -18,6 +18,20 @@ export type ClientMessage =
       playerId: string;
     }
   | {
+      type: "ready";
+      playerId: string;
+      ready: boolean;
+    }
+  | {
+      type: "startGame";
+      playerId: string;
+    }
+  | {
+      type: "transferHost";
+      playerId: string;
+      targetPlayerId: string;
+    }
+  | {
       type: "action";
       playerId: string;
       clientActionId: string;
@@ -44,6 +58,7 @@ export type SnapshotPayload = {
   mode: string;
   phase: RoomPhase;
   version: number;
+  hostPlayerId?: string;
   players: PlayerSeat[];
   publicView: JsonObject;
   privateView: JsonObject;

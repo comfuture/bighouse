@@ -8,6 +8,7 @@ export type PlayerIdentity = {
 export type PlayerSeat = PlayerIdentity & {
   seat: number;
   connected: boolean;
+  ready: boolean;
   joinedAt: number;
 };
 
@@ -19,6 +20,7 @@ export type RoomConfig = {
   maxPlayers: number;
   config: JsonObject;
   createdAt: number;
+  hostPlayerId?: string;
 };
 
 export type RoomPhase = "waiting" | "active" | "closed";
