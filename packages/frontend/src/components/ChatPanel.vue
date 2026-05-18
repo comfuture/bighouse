@@ -21,7 +21,13 @@
       </div>
 
       <div class="grid gap-2 md:grid-cols-[1fr_auto]">
-        <UInput v-model="body" :placeholder="`${title} message`" @keydown.enter.prevent="submit" />
+        <UInput
+          v-model="body"
+          :placeholder="`${title} message`"
+          @compositionstart="handleCompositionStart"
+          @compositionend="handleCompositionEnd"
+          @keydown.enter="handleEnter"
+        />
         <UButton label="Send" icon="i-lucide-send" @click="submit" />
       </div>
     </div>
@@ -30,6 +36,12 @@
 
 <script setup lang="ts">
 import { ref } from "vue";
+import {
+  createChatImeState,
+  markCompositionEnd,
+  markCompositionStart,
+  shouldSubmitChatEnter
+} from "../chat-ime";
 import type { ChatMessage } from "../types";
 
 defineProps<{
@@ -42,6 +54,21 @@ const emit = defineEmits<{
 }>();
 
 const body = ref("");
+const imeState = createChatImeState();
+
+function handleCompositionStart(): void {
+  markCompositionStart(imeState);
+}
+
+function handleCompositionEnd(): void {
+  markCompositionEnd(imeState);
+}
+
+function handleEnter(event: KeyboardEvent): void {
+  if (!shouldSubmitChatEnter(event, imeState)) return;
+  event.preventDefault();
+  submit();
+}
 
 function submit(): void {
   const trimmed = body.value.trim();
