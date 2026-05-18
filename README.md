@@ -24,11 +24,19 @@ pnpm typecheck
 pnpm test
 ```
 
-Start the local Worker:
+Start the local Worker with the built frontend assets:
 
 ```sh
 pnpm dev
 ```
+
+For frontend-only iteration, run the Vite dev server:
+
+```sh
+pnpm dev:frontend
+```
+
+The frontend package lives in `packages/frontend`. Per-game browser code lives in packages such as `packages/gomoku` and is loaded dynamically after entering a room, so the lobby does not download every game's bundle up front.
 
 Apply D1 migrations for a local database when using Wrangler directly:
 
@@ -66,6 +74,12 @@ Create a matchmaking ticket:
 curl -X POST http://localhost:8787/games/gomoku/matchmaking/tickets \
   -H 'content-type: application/json' \
   -d '{"playerId":"p1","mode":"default","region":"apac","skill":"beginner"}'
+```
+
+Poll a queued ticket until it is matched:
+
+```sh
+curl http://localhost:8787/matchmaking/tickets/ticket_id
 ```
 
 Cancel a matchmaking ticket:
@@ -117,8 +131,9 @@ Server messages include `roomId`, `version`, and `serverTime` and use these type
 `gomoku`
 
 - Two-player board game.
-- Public state includes board, turn, move count, and winner.
+- Public state includes board, turn, move count, last move, and winner.
 - Private state contains the player's stone color.
+- Server validation rejects stale turns, occupied cells, and double-three moves, then computes the winner. The browser also disables occupied and double-three cells for immediate feedback.
 
 `card-demo`
 
