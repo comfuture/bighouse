@@ -1,3 +1,5 @@
+import "./style.css";
+
 export type GomokuStone = "black" | "white";
 export type GomokuCell = GomokuStone | null;
 
