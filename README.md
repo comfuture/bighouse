@@ -40,7 +40,7 @@ The frontend package lives in `packages/frontend`. It is a Vue SPA built with Nu
 
 - `/`: game list
 - `/lobbies/:gameId/:mode`: game lobby with waiting room cards and lobby chat
-- `/play/:roomId`: room waiting/play screen with ready, host controls, chat, and the lazy-loaded game module
+- `/play/:roomId`: room waiting/play screen with non-host ready controls, host start/delegation controls, chat, and the lazy-loaded game module
 
 Per-game browser code lives in packages such as `packages/gomoku` and is loaded dynamically after entering a room, so the lobby does not download every game's bundle up front.
 
@@ -127,7 +127,7 @@ Client messages:
 - `hello`: `{ "type": "hello", "playerId": "p1", "displayName": "Alice" }`
 - `joinRoom`: `{ "type": "joinRoom", "playerId": "p1" }`
 - `leaveRoom`: `{ "type": "leaveRoom", "playerId": "p1" }`
-- `ready`: `{ "type": "ready", "playerId": "p1", "ready": true }`
+- `ready`: `{ "type": "ready", "playerId": "p2", "ready": true }`
 - `transferHost`: `{ "type": "transferHost", "playerId": "p1", "targetPlayerId": "p2" }`
 - `startGame`: `{ "type": "startGame", "playerId": "p1" }`
 - `action`: `{ "type": "action", "playerId": "p1", "clientActionId": "a1", "expectedVersion": 2, "action": { "type": "placeStone", "payload": { "x": 0, "y": 0 } } }`
@@ -154,7 +154,7 @@ Server messages include `roomId`, `version`, and `serverTime` and use these type
 `gomoku`
 
 - Two-player board game.
-- Lobby-created rooms stay `waiting` until all players are ready and the host starts the game.
+- Lobby-created rooms stay `waiting` until every non-host player is ready and the host starts the game.
 - Public state includes board, turn, move count, last move, and winner.
 - Private state contains the player's stone color.
 - Server validation rejects stale turns, occupied cells, and double-three moves, then computes the winner. The browser also disables occupied and double-three cells for immediate feedback.

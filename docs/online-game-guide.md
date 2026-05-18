@@ -11,8 +11,8 @@ The client flow is the same for every game.
 3. List waiting rooms with `GET /games/:gameId/lobbies/:mode/rooms`.
 4. Create a room or join a waiting room.
 5. Connect to the room WebSocket and render the current `snapshot`.
-6. Each player sends `ready`.
-7. When minimum players are present and all players are ready, the host sends `startGame`.
+6. Non-host players send `ready`.
+7. When minimum players are present and every non-host player is ready, the host sends `startGame`.
 8. Send game input as `action` messages after the room becomes `active`.
 9. Apply `ack`, `event`, `privateEvent`, `chat`, `presence`, and `error` messages from the server.
 
@@ -100,7 +100,7 @@ Ready:
 ```json
 {
   "type": "ready",
-  "playerId": "p1",
+  "playerId": "p2",
   "ready": true
 }
 ```
@@ -151,8 +151,8 @@ Important fields:
 - `expectedVersion`: the room version the client based the action on. If it does not match the current server version, the server rejects the action as stale.
 - `action.type`: the game-specific command interpreted by the adapter.
 - `action.payload`: the game-specific command data.
-- `ready`: only changes state while a room is waiting.
-- `startGame`: only the current host can start, and only after minimum players are present and all players are ready.
+- `ready`: only changes state while a room is waiting. The host does not need a Ready control; readiness is required from the non-host players.
+- `startGame`: only the current host can start, and only after minimum players are present and every non-host player is ready.
 - `transferHost`: only the current host can delegate host authority to another room player.
 - `targetPlayerId`: used only for chat. If omitted, the chat is public. If present, the chat is private to that player and the sender.
 

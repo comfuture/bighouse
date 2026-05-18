@@ -17,19 +17,18 @@ describe("RoomDO", () => {
     await room.join({ playerId: "p1" });
     const joined = await room.join({ playerId: "p2" });
     expect(joined).toMatchObject({ phase: "waiting", playerCount: 2, readyCount: 0, hostPlayerId: "p1", version: 2 });
-    await room.setReady("p1", true);
     await room.setReady("p2", true);
     const started = await room.startGame("p1");
-    expect(started).toMatchObject({ phase: "active", playerCount: 2, readyCount: 2, version: 5 });
+    expect(started).toMatchObject({ phase: "active", playerCount: 2, readyCount: 1, version: 4 });
 
     const ack = await room.submitAction({
       playerId: "p1",
       clientActionId: "move-1",
-      expectedVersion: 5,
+      expectedVersion: 4,
       type: "placeStone",
       payload: { x: 0, y: 0 }
     });
-    expect(ack.version).toBe(6);
+    expect(ack.version).toBe(5);
     expect(ack.events[0]).toMatchObject({ type: "gomoku.stonePlaced", visibility: "public" });
 
     const duplicate = await room.submitAction({
@@ -45,7 +44,7 @@ describe("RoomDO", () => {
       room.trySubmitAction({
         playerId: "p2",
         clientActionId: "stale-1",
-        expectedVersion: 5,
+        expectedVersion: 4,
         type: "placeStone",
         payload: { x: 1, y: 0 }
       })
@@ -55,7 +54,7 @@ describe("RoomDO", () => {
       room.trySubmitAction({
         playerId: "p1",
         clientActionId: "invalid-turn-1",
-        expectedVersion: 6,
+        expectedVersion: 5,
         type: "placeStone",
         payload: { x: 1, y: 0 }
       })
@@ -77,14 +76,15 @@ describe("RoomDO", () => {
     await expect(room.tryStartGame("guest")).resolves.toMatchObject({ ok: false, error: { code: "forbidden" } });
     await expect(room.tryStartGame("host")).resolves.toMatchObject({ ok: false, error: { code: "players_not_ready" } });
 
-    await room.setReady("host", true);
     await room.setReady("guest", true);
     await room.transferHost("host", "guest");
     await expect(room.tryStartGame("host")).resolves.toMatchObject({ ok: false, error: { code: "forbidden" } });
+    await expect(room.tryStartGame("guest")).resolves.toMatchObject({ ok: false, error: { code: "players_not_ready" } });
+    await room.setReady("host", true);
     await expect(room.startGame("guest")).resolves.toMatchObject({
       phase: "active",
       hostPlayerId: "guest",
-      readyCount: 2
+      readyCount: 1
     });
   });
 
@@ -99,7 +99,6 @@ describe("RoomDO", () => {
     });
     await room.join({ playerId: "p1" });
     await room.join({ playerId: "p2" });
-    await room.setReady("p1", true);
     await room.setReady("p2", true);
     await room.startGame("p1");
 
@@ -112,7 +111,7 @@ describe("RoomDO", () => {
     const ack = await room.submitAction({
       playerId: "p1",
       clientActionId: "play-as",
-      expectedVersion: 5,
+      expectedVersion: 4,
       type: "playCard",
       payload: { card: "AS" }
     });
@@ -132,13 +131,12 @@ describe("RoomDO", () => {
     });
     await room.join({ playerId: "p1" });
     await room.join({ playerId: "p2" });
-    await room.setReady("p1", true);
     await room.setReady("p2", true);
     await room.startGame("p1");
     await room.submitAction({
       playerId: "p1",
       clientActionId: "move-1",
-      expectedVersion: 5,
+      expectedVersion: 4,
       type: "placeStone",
       payload: { x: 0, y: 0 }
     });

@@ -33,7 +33,10 @@
                 <UBadge :color="player.connected ? 'success' : 'neutral'" variant="subtle">
                   {{ player.connected ? "online" : "offline" }}
                 </UBadge>
-                <UBadge :color="player.ready ? 'success' : 'warning'" variant="subtle">
+                <UBadge v-if="player.playerId === room?.hostPlayerId" color="neutral" variant="subtle">
+                  host
+                </UBadge>
+                <UBadge v-else :color="player.ready ? 'success' : 'warning'" variant="subtle">
                   {{ player.ready ? "ready" : "not ready" }}
                 </UBadge>
               </div>
@@ -48,6 +51,7 @@
 
           <div class="space-y-3">
             <UButton
+              v-if="!isHost"
               :label="me?.ready ? 'Cancel ready' : 'Ready'"
               :icon="me?.ready ? 'i-lucide-circle-x' : 'i-lucide-circle-check'"
               :color="me?.ready ? 'neutral' : 'primary'"
@@ -56,6 +60,7 @@
               @click="sendReady(!me?.ready)"
             />
             <UButton
+              v-if="isHost"
               label="Start"
               icon="i-lucide-play"
               :disabled="!canStart"
@@ -129,7 +134,8 @@ const isHost = computed(() => room.value?.hostPlayerId === identity.playerId);
 const canStart = computed(() => {
   const snapshot = room.value;
   if (!snapshot || !isHost.value || snapshot.phase !== "waiting") return false;
-  return snapshot.players.length >= snapshot.minPlayers && snapshot.players.every((player) => player.ready);
+  const requiredReadyPlayers = snapshot.players.filter((player) => player.playerId !== snapshot.hostPlayerId);
+  return snapshot.players.length >= snapshot.minPlayers && requiredReadyPlayers.every((player) => player.ready);
 });
 const delegatablePlayers = computed<Player[]>(() => {
   if (!room.value || !isHost.value) return [];
