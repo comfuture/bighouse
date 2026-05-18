@@ -1,0 +1,180 @@
+import { z } from "zod";
+import { GameServerError, toErrorResponse } from "../core/errors";
+import { lobbyDoName, matchmakerDoName, roomDoName } from "../core/ids";
+import { listGameDefinitions } from "../games/registry";
+import { D1Repository, type GameRow } from "../storage/d1";
+import type { Env } from "../types";
+
+const joinSchema = z.object({
+  playerId: z.string().min(1),
+  displayName: z.string().min(1).optional(),
+  minPlayers: z.number().int().positive().optional(),
+  maxPlayers: z.number().int().positive().optional(),
+  config: z.record(z.unknown()).optional()
+});
+
+const ticketSchema = z.object({
+  playerId: z.string().min(1),
+  displayName: z.string().min(1).optional(),
+  mode: z.string().min(1).default("default"),
+  region: z.string().min(1).default("global"),
+  skill: z.string().min(1).default("default")
+});
+
+type RouteMatch = {
+  params: Record<string, string>;
+};
+
+export async function handleRequest(request: Request, env: Env): Promise<Response> {
+  try {
+    return await route(request, env);
+  } catch (error) {
+    return toErrorResponse(error);
+  }
+}
+
+async function route(request: Request, env: Env): Promise<Response> {
+  const url = new URL(request.url);
+  const repo = new D1Repository(env.DB);
+
+  if (request.method === "GET" && url.pathname === "/games") {
+    await seedBuiltInGames(repo);
+    const games = await repo.listEnabledGames();
+    return Response.json({ games });
+  }
+
+  const lobbyJoin = matchPath(url.pathname, /^\/games\/([^/]+)\/lobbies\/([^/]+)\/join$/u, [
+    "gameId",
+    "mode"
+  ]);
+  if (request.method === "POST" && lobbyJoin) {
+    await seedBuiltInGames(repo);
+    const body = joinSchema.parse(await request.json());
+    const gameId = routeParam(lobbyJoin, "gameId");
+    const mode = routeParam(lobbyJoin, "mode");
+    const game = await requireGame(repo, gameId);
+    const lobby = env.LOBBY_DO.getByName(lobbyDoName(game.gameId, mode));
+    const result = await lobby.join({
+      gameId: game.gameId,
+      mode,
+      playerId: body.playerId,
+      ...(body.displayName ? { displayName: body.displayName } : {}),
+      ...(body.minPlayers ? { minPlayers: body.minPlayers } : {}),
+      ...(body.maxPlayers ? { maxPlayers: body.maxPlayers } : {}),
+      config: body.config ?? game.config
+    });
+    return Response.json({
+      ...result,
+      wsUrl: websocketUrl(url, result.roomId, body.playerId)
+    });
+  }
+
+  const ticketCreate = matchPath(url.pathname, /^\/games\/([^/]+)\/matchmaking\/tickets$/u, ["gameId"]);
+  if (request.method === "POST" && ticketCreate) {
+    await seedBuiltInGames(repo);
+    const body = ticketSchema.parse(await request.json());
+    const game = await requireGame(repo, routeParam(ticketCreate, "gameId"));
+    const matchmaker = env.MATCHMAKER_DO.getByName(
+      matchmakerDoName(game.gameId, body.mode, body.region, body.skill)
+    );
+    const result = await matchmaker.enqueue({
+      gameId: game.gameId,
+      mode: body.mode,
+      playerId: body.playerId,
+      ...(body.displayName ? { displayName: body.displayName } : {}),
+      region: body.region,
+      skill: body.skill
+    });
+    return Response.json(result, { status: result.matchedRoomId ? 201 : 202 });
+  }
+
+  const ticketCancel = matchPath(url.pathname, /^\/matchmaking\/tickets\/([^/]+)$/u, ["ticketId"]);
+  if (request.method === "DELETE" && ticketCancel) {
+    const ticket = await repo.getTicket(routeParam(ticketCancel, "ticketId"));
+    if (!ticket) {
+      throw new GameServerError("bad_request", "Ticket not found", 404);
+    }
+    const matchmaker = env.MATCHMAKER_DO.getByName(
+      matchmakerDoName(ticket.gameId, ticket.mode, ticket.region ?? "global", ticket.skill ?? "default")
+    );
+    const cancelled = await matchmaker.cancel(ticket.ticketId);
+    return Response.json({ cancelled });
+  }
+
+  const roomPath = matchPath(url.pathname, /^\/rooms\/([^/]+)$/u, ["roomId"]);
+  if (request.method === "GET" && roomPath) {
+    const roomId = routeParam(roomPath, "roomId");
+    const indexed = await repo.getRoom(roomId);
+    const doName = indexed?.doName ?? roomDoName(roomId);
+    const room = env.ROOM_DO.getByName(doName);
+    const summary = await room.getSummary();
+    return Response.json({ room: indexed, summary });
+  }
+
+  const roomWsPath = matchPath(url.pathname, /^\/rooms\/([^/]+)\/ws$/u, ["roomId"]);
+  if (request.method === "GET" && roomWsPath) {
+    const roomId = routeParam(roomWsPath, "roomId");
+    const indexed = await repo.getRoom(roomId);
+    const doName = indexed?.doName ?? roomDoName(roomId);
+    return env.ROOM_DO.getByName(doName).fetch(request);
+  }
+
+  return Response.json({ error: { code: "not_found", message: "Not found" } }, { status: 404 });
+}
+
+function routeParam(match: RouteMatch, name: string): string {
+  const value = match.params[name];
+  if (!value) {
+    throw new GameServerError("bad_request", `Missing route parameter '${name}'`, 400);
+  }
+  return value;
+}
+
+async function requireGame(repo: D1Repository, gameId: string): Promise<GameRow> {
+  const game = await repo.getGame(gameId);
+  if (!game || !game.enabled) {
+    throw new GameServerError("game_not_found", `Game '${gameId}' was not found`, 404);
+  }
+  return game;
+}
+
+async function seedBuiltInGames(repo: D1Repository): Promise<void> {
+  const builtIns = listGameDefinitions();
+  if (builtIns.length === 0) {
+    return;
+  }
+  for (const definition of builtIns) {
+    await repo.upsertGame({
+      gameId: definition.gameId,
+      adapterKey: definition.adapterKey,
+      displayName: definition.displayName,
+      enabled: true,
+      minPlayers: definition.minPlayers,
+      maxPlayers: definition.maxPlayers,
+      config: {}
+    });
+  }
+}
+
+function websocketUrl(url: URL, roomId: string, playerId: string): string {
+  const wsUrl = new URL(`/rooms/${roomId}/ws`, url);
+  wsUrl.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  wsUrl.searchParams.set("playerId", playerId);
+  return wsUrl.toString();
+}
+
+function matchPath(pathname: string, pattern: RegExp, names: string[]): RouteMatch | null {
+  const match = pathname.match(pattern);
+  if (!match) {
+    return null;
+  }
+  const params: Record<string, string> = {};
+  for (const [index, name] of names.entries()) {
+    const value = match[index + 1];
+    if (!value) {
+      return null;
+    }
+    params[name] = decodeURIComponent(value);
+  }
+  return { params };
+}

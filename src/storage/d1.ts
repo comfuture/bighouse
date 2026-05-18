@@ -34,6 +34,8 @@ export type MatchTicketRecord = {
   displayName?: string;
   status: MatchTicketStatus;
   matchedRoomId?: string | null;
+  region?: string;
+  skill?: string;
 };
 
 export type MatchResultRecord = {
@@ -68,6 +70,18 @@ type RoomDbRow = {
   created_at: string;
   updated_at: string;
   closed_at: string | null;
+};
+
+type MatchTicketDbRow = {
+  ticket_id: string;
+  game_id: string;
+  mode: string;
+  player_id: string;
+  display_name: string | null;
+  status: MatchTicketStatus;
+  matched_room_id: string | null;
+  region: string;
+  skill: string;
 };
 
 function parseJsonObject(value: string): Record<string, unknown> {
@@ -217,11 +231,13 @@ export class D1Repository {
     await this.db
       .prepare(
         `INSERT INTO match_tickets (
-          ticket_id, game_id, mode, player_id, display_name, status, matched_room_id, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+          ticket_id, game_id, mode, player_id, display_name, status, matched_room_id, region, skill, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
         ON CONFLICT(ticket_id) DO UPDATE SET
           status = excluded.status,
           matched_room_id = excluded.matched_room_id,
+          region = excluded.region,
+          skill = excluded.skill,
           updated_at = CURRENT_TIMESTAMP`
       )
       .bind(
@@ -231,9 +247,35 @@ export class D1Repository {
         ticket.playerId,
         ticket.displayName ?? null,
         ticket.status,
-        ticket.matchedRoomId ?? null
+        ticket.matchedRoomId ?? null,
+        ticket.region ?? "global",
+        ticket.skill ?? "default"
       )
       .run();
+  }
+
+  async getTicket(ticketId: string): Promise<MatchTicketRecord | null> {
+    const row = await this.db
+      .prepare(
+        `SELECT ticket_id, game_id, mode, player_id, display_name, status, matched_room_id, region, skill
+         FROM match_tickets
+         WHERE ticket_id = ?`
+      )
+      .bind(ticketId)
+      .first<MatchTicketDbRow>();
+    return row
+      ? {
+          ticketId: row.ticket_id,
+          gameId: row.game_id,
+          mode: row.mode,
+          playerId: row.player_id,
+          ...(row.display_name ? { displayName: row.display_name } : {}),
+          status: row.status,
+          matchedRoomId: row.matched_room_id,
+          region: row.region,
+          skill: row.skill
+        }
+      : null;
   }
 
   async cancelTicket(ticketId: string): Promise<boolean> {

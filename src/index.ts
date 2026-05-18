@@ -4,9 +4,10 @@ export { RoomDO } from "./do/room";
 export type { Env } from "./types";
 
 import type { Env } from "./types";
+import { handleRequest } from "./http/routes";
 
 export default {
-  async fetch(): Promise<Response> {
-    return Response.json({ ok: true, service: "bighouse" });
+  async fetch(request, env): Promise<Response> {
+    return handleRequest(request, env);
   }
 } satisfies ExportedHandler<Env>;
