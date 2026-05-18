@@ -2,6 +2,7 @@ export type GomokuStone = "black" | "white";
 export type GomokuCell = GomokuStone | null;
 
 export type GomokuPublicView = {
+  roomPhase?: "waiting" | "active" | "closed";
   boardSize: number;
   board: GomokuCell[][];
   currentPlayerId?: string;
@@ -51,12 +52,15 @@ export function createGomokuGame(container: HTMLElement, client: GomokuClient): 
 
   function render(): void {
     const { publicView, privateView, playerId } = state;
-    const isMyTurn = publicView.currentPlayerId === playerId && !publicView.winnerPlayerId;
+    const isActive = publicView.roomPhase === undefined || publicView.roomPhase === "active";
+    const isMyTurn = isActive && publicView.currentPlayerId === playerId && !publicView.winnerPlayerId;
     const stoneLabel = privateView.stone ? `${privateView.stone} stone` : "spectator";
     statusEl.textContent = publicView.winnerPlayerId
       ? `${publicView.winnerPlayerId} won`
       : isMyTurn
         ? `Your turn (${stoneLabel})`
+        : !isActive
+          ? "Waiting for opponent"
         : `Waiting for ${publicView.currentPlayerId ?? "opponent"}`;
     boardElement.style.setProperty("--board-size", String(publicView.boardSize));
     boardElement.innerHTML = "";
@@ -112,6 +116,9 @@ export function isLegalMove(
   y: number
 ): boolean {
   if (publicView.winnerPlayerId || publicView.currentPlayerId !== playerId) {
+    return false;
+  }
+  if (publicView.roomPhase !== undefined && publicView.roomPhase !== "active") {
     return false;
   }
   if (!privateView.stone) {
