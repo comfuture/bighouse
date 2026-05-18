@@ -7,7 +7,7 @@ export const router = createRouter({
   history: createWebHistory(),
   routes: [
     { path: "/", name: "games", component: GameListView },
-    { path: "/lobbies/:gameId/:mode", name: "lobby", component: LobbyView },
-    { path: "/play/:roomId", name: "room", component: RoomView }
+    { path: "/game/:gameId/:roomId(room_[A-Za-z0-9_]+)", name: "room", component: RoomView },
+    { path: "/game/:gameId/:mode", name: "lobby", component: LobbyView }
   ]
 });

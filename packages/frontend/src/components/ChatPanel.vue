@@ -20,8 +20,7 @@
         </div>
       </div>
 
-      <div class="grid gap-2 md:grid-cols-[220px_1fr_auto]">
-        <UInput v-model="target" placeholder="target playerId" />
+      <div class="grid gap-2 md:grid-cols-[1fr_auto]">
         <UInput v-model="body" :placeholder="`${title} message`" @keydown.enter.prevent="submit" />
         <UButton label="Send" icon="i-lucide-send" @click="submit" />
       </div>
@@ -43,12 +42,11 @@ const emit = defineEmits<{
 }>();
 
 const body = ref("");
-const target = ref("");
 
 function submit(): void {
   const trimmed = body.value.trim();
   if (!trimmed) return;
-  emit("send", trimmed, target.value.trim() || undefined);
+  emit("send", trimmed);
   body.value = "";
 }
 </script>

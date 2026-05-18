@@ -7,7 +7,7 @@ This guide explains how to build online multiplayer games on top of Bighouse. Bi
 The client flow is the same for every game.
 
 1. Call `GET /games` to list enabled games.
-2. Enter a game lobby route in the SPA: `/lobbies/:gameId/:mode`.
+2. Enter a game lobby route in the SPA: `/game/:gameId/:mode`.
 3. List waiting rooms with `GET /games/:gameId/lobbies/:mode/rooms`.
 4. Create a room or join a waiting room.
 5. Connect to the room WebSocket and render the current `snapshot`.
@@ -56,6 +56,12 @@ Room WebSocket URL:
 
 ```text
 wss://bighouse.comfuture.workers.dev/rooms/room_id/ws?playerId=p1
+```
+
+Room SPA URL:
+
+```text
+https://bighouse.comfuture.workers.dev/game/gomoku/room_id
 ```
 
 Lobby WebSocket URL:
@@ -167,7 +173,7 @@ The browser frontend is split by responsibility.
 - Owns the game list, identity inputs, lobby room list, room creation/join, ready/start controls, host delegation, lobby chat, room chat, and room WebSocket lifecycle.
 - It should not import every game package statically.
 - It maps `gameId` to a dynamic import and loads a game bundle only after the player enters a matching room.
-- SPA screen routes are intentionally separate from API routes: `/`, `/lobbies/:gameId/:mode`, and `/play/:roomId`.
+- SPA screen routes are intentionally separate from API routes: `/`, `/game/:gameId/:mode`, and `/game/:gameId/:roomId`. Room ids currently use the `room_` prefix, so `/game/gomoku/default` is the default gomoku lobby while `/game/gomoku/room_abc` is a gomoku room.
 
 `packages/gomoku`
 

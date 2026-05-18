@@ -2,8 +2,12 @@
   <div class="space-y-6">
     <IdentityPanel />
 
-    <div class="flex flex-wrap items-end justify-between gap-3">
-      <UPageHeader :title="`${gameId} lobby`" :description="`Mode: ${mode}`" />
+    <div class="flex flex-wrap items-center justify-between gap-3">
+      <div class="flex items-center gap-2">
+        <h1 class="text-lg font-semibold text-highlighted">{{ gameId }}</h1>
+        <UBadge color="neutral" variant="subtle">{{ mode }}</UBadge>
+        <UBadge color="neutral" variant="outline">Lobby</UBadge>
+      </div>
       <div class="flex gap-2">
         <UButton label="Games" icon="i-lucide-arrow-left" color="neutral" variant="subtle" to="/" />
         <UButton label="Create room" icon="i-lucide-plus" @click="createRoom" />
@@ -16,7 +20,7 @@
       <UPageCard
         v-for="room in rooms"
         :key="room.roomId"
-        :title="room.roomId"
+        title="Waiting room"
         :description="`${room.playerCount}/${room.maxPlayers} players`"
         icon="i-lucide-users"
       >
@@ -80,7 +84,7 @@ async function refreshRooms(): Promise<void> {
 async function createRoom(): Promise<void> {
   try {
     const result = await createLobbyRoom(gameId.value, mode.value);
-    await router.push(`/play/${encodeURIComponent(result.roomId)}`);
+    await router.push(`/game/${encodeURIComponent(gameId.value)}/${encodeURIComponent(result.roomId)}`);
   } catch (cause) {
     error.value = cause instanceof Error ? cause.message : "Failed to create room";
   }
@@ -89,7 +93,7 @@ async function createRoom(): Promise<void> {
 async function joinExisting(roomId: string): Promise<void> {
   try {
     await joinRoom(roomId);
-    await router.push(`/play/${encodeURIComponent(roomId)}`);
+    await router.push(`/game/${encodeURIComponent(gameId.value)}/${encodeURIComponent(roomId)}`);
   } catch (cause) {
     error.value = cause instanceof Error ? cause.message : "Failed to join room";
   }

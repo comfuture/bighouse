@@ -1,10 +1,14 @@
 <template>
   <div class="space-y-6">
-    <div class="flex flex-wrap items-end justify-between gap-3">
-      <UPageHeader :title="room?.roomId ?? roomId" :description="room ? `${room.gameId} / ${room.mode}` : 'Connecting room'" />
-      <div class="flex gap-2">
-        <UButton label="Lobby" icon="i-lucide-arrow-left" color="neutral" variant="subtle" :to="lobbyPath" />
+    <div class="flex flex-wrap items-center justify-between gap-3">
+      <div class="flex items-center gap-2">
+        <h1 class="text-lg font-semibold text-highlighted">{{ displayGameId }}</h1>
+        <UBadge v-if="room?.mode" color="neutral" variant="subtle">{{ room.mode }}</UBadge>
         <UBadge v-if="room" :color="room.phase === 'active' ? 'success' : 'warning'" variant="subtle">{{ room.phase }}</UBadge>
+        <UBadge v-else color="neutral" variant="subtle">Connecting</UBadge>
+      </div>
+      <div>
+        <UButton label="Lobby" icon="i-lucide-arrow-left" color="neutral" variant="subtle" :to="lobbyPath" />
       </div>
     </div>
 
@@ -122,6 +126,7 @@ const gameLoaders = {
 
 const route = useRoute();
 const roomId = computed(() => String(route.params.roomId));
+const displayGameId = computed(() => room.value?.gameId ?? String(route.params.gameId));
 const room = ref<RoomSnapshot>();
 const chat = ref<ChatMessage[]>([]);
 const error = ref("");
@@ -142,8 +147,9 @@ const delegatablePlayers = computed<Player[]>(() => {
   return room.value.players.filter((player) => player.playerId !== identity.playerId);
 });
 const lobbyPath = computed(() => {
-  if (!room.value) return "/";
-  return `/lobbies/${encodeURIComponent(room.value.gameId)}/${encodeURIComponent(room.value.mode)}`;
+  const gameId = room.value?.gameId ?? String(route.params.gameId);
+  const mode = room.value?.mode ?? "default";
+  return `/game/${encodeURIComponent(gameId)}/${encodeURIComponent(mode)}`;
 });
 
 onMounted(() => {

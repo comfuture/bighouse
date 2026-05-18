@@ -39,8 +39,8 @@ pnpm dev:frontend
 The frontend package lives in `packages/frontend`. It is a Vue SPA built with Nuxt UI and uses separate routes for game listing, lobby, and room play:
 
 - `/`: game list
-- `/lobbies/:gameId/:mode`: game lobby with waiting room cards and lobby chat
-- `/play/:roomId`: room waiting/play screen with non-host ready controls, host start/delegation controls, chat, and the lazy-loaded game module
+- `/game/:gameId/:mode`: game lobby with waiting room cards and lobby chat
+- `/game/:gameId/:roomId`: room waiting/play screen with non-host ready controls, host start/delegation controls, chat, and the lazy-loaded game module. Room ids currently use the `room_` prefix, which keeps the room route distinct from lobby modes such as `default`.
 
 Per-game browser code lives in packages such as `packages/gomoku` and is loaded dynamically after entering a room, so the lobby does not download every game's bundle up front.
 

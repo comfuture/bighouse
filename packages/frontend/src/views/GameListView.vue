@@ -2,7 +2,7 @@
   <div class="space-y-6">
     <IdentityPanel />
 
-    <UPageHeader title="Games" description="Choose a game first. The lobby and room screens are separate SPA routes." />
+    <UPageHeader title="Games" description="Choose a game." />
 
     <UPageGrid>
       <UPageCard
@@ -42,6 +42,6 @@ onMounted(async () => {
 
 function lobbyPath(gameId: string): string {
   persistIdentity();
-  return `/lobbies/${encodeURIComponent(gameId)}/${encodeURIComponent(identity.mode)}`;
+  return `/game/${encodeURIComponent(gameId)}/${encodeURIComponent(identity.mode)}`;
 }
 </script>
