@@ -45,6 +45,11 @@ describe("HTTP API", () => {
     const joinBody = (await joinResponse.json()) as { summary: { phase: string; readyCount: number; playerCount: number }; wsUrl: string };
     expect(joinBody.summary).toMatchObject({ phase: "waiting", readyCount: 0, playerCount: 2 });
     expect(joinBody.wsUrl).toContain(`/rooms/${createBody.roomId}/ws`);
+
+    const fullListResponse = await SELF.fetch(`https://bighouse.test/games/gomoku/lobbies/${mode}/rooms`);
+    expect(fullListResponse.status).toBe(200);
+    const fullListBody = (await fullListResponse.json()) as { rooms: Array<{ roomId: string }> };
+    expect(fullListBody.rooms.some((room) => room.roomId === createBody.roomId)).toBe(false);
   });
 
   it("rejects new room joins after the game leaves the waiting phase", async () => {
