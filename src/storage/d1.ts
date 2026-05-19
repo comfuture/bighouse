@@ -220,7 +220,7 @@ export class D1Repository {
       .prepare(
         `SELECT room_id, game_id, mode, status, player_count, min_players, max_players, do_name, created_at, updated_at, closed_at
          FROM room_index
-         WHERE game_id = ? AND mode = ? AND status IN ('open', 'matching')
+         WHERE game_id = ? AND mode = ? AND status IN ('open', 'matching') AND player_count < max_players
          ORDER BY created_at ASC`
       )
       .bind(gameId, mode)
