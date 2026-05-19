@@ -441,17 +441,23 @@ The client should render shared table UI from `publicView`, and update the playe
 
 ## 8. Adding a New Game
 
-Add a new game in `src/games/<game>.ts`, then register it in `src/games/index.ts`.
+Add a game as a package-owned plugin. A game package should export server rules from a Worker-safe entrypoint, browser UI from a browser-only entrypoint, and fixed-name metadata as `gameMetadata`.
 
-Minimum adapter shape:
+Minimum server entrypoint:
 
 ```ts
-export const myGameDefinition: GameDefinition = {
+import { defineGameDefinition } from "@bighouse/game-sdk/server";
+
+export const gameMetadata = {
   gameId: "my-game",
   adapterKey: "my-game",
   displayName: "My Game",
+  description: "Short game-list description.",
   minPlayers: 2,
-  maxPlayers: 4,
+  maxPlayers: 4
+};
+
+export const gameDefinition = defineGameDefinition(gameMetadata, {
   initialStageState(context) {
     return {};
   },
@@ -473,19 +479,63 @@ export const myGameDefinition: GameDefinition = {
   nextTimers(context) {
     return [];
   }
+});
+
+export const myGamePlugin = {
+  gameMetadata,
+  gameDefinition
 };
 ```
 
-Register it:
+Minimum browser entrypoint:
 
 ```ts
-import { myGameDefinition } from "./my-game";
-import { registerGame } from "./registry";
+import type { GameClientContext, MountedGameClient } from "@bighouse/game-sdk/client";
+import thumbnailUrl from "./assets/thumbnail.png?url";
+import { baseGameMetadata } from "./metadata";
 
-registerGame(myGameDefinition);
+export const gameMetadata = {
+  ...baseGameMetadata,
+  thumbnail: {
+    src: thumbnailUrl,
+    alt: "My game thumbnail"
+  }
+};
+
+export function mountGame(container: HTMLElement, context: GameClientContext): MountedGameClient {
+  container.textContent = `Version ${context.version}`;
+  return {
+    update(nextContext) {
+      container.textContent = `Version ${nextContext.version}`;
+    },
+    destroy() {
+      container.innerHTML = "";
+    }
+  };
+}
 ```
 
-`GET /games` seeds registered built-in adapters into the D1 `games` table, so a registered adapter appears in the game list.
+Register the server plugin from the Worker build:
+
+```ts
+import { myGamePlugin } from "@bighouse/my-game/server";
+import { registerGamePlugins } from "./registry";
+
+registerGamePlugins([myGamePlugin]);
+```
+
+Register the browser client in the frontend plugin registry:
+
+```ts
+const clientGamePlugins = {
+  [myGameMetadata.gameId]: {
+    metadata: myGameMetadata,
+    load: () => import("@bighouse/my-game/client")
+  }
+};
+```
+
+`GET /games` seeds registered server plugins into the D1 `games` table and returns only games that are both enabled in D1 and registered in the current Worker build. The frontend may merge matching client metadata, such as a Vite asset URL for `thumbnail.src`, before rendering the game list.
 
 ## 9. Adapter Design Checklist
 

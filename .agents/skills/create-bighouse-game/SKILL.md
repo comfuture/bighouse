@@ -11,6 +11,7 @@ Use this skill to add a new Bighouse game adapter without breaking the server's 
 
 - `RoomDO` owns live authoritative state.
 - `GameDefinition` owns game rules, state projection, action validation, and timer intents.
+- Each game package exports fixed-name `gameMetadata`; server plugins also export a `gameDefinition`, and browser client entrypoints export `mountGame()`.
 - Public state and private player state must be intentionally separated.
 - Every action must be validated before mutation.
 - Winner and terminal-state logic must be deterministic and test-covered.
@@ -36,14 +37,15 @@ Open these files before implementation:
 - `references/action-validation-and-winners.md`
 - `references/testing-checklist.md`
 
-Also inspect the existing adapters:
+Also inspect the existing plugins:
 
-- `src/games/gomoku.ts` for public global-state game structure.
-- `src/games/card-demo.ts` for hidden player-state structure.
+- `packages/gomoku/src/server.ts` for public global-state game rules.
+- `packages/gomoku/src/client.ts` for browser mount/update/destroy behavior.
+- `src/games/card-demo.ts` for a server-only hidden player-state sample.
 
 ### 3) Scaffold the adapter
 
-Prefer the script:
+Prefer the script when adding a server-only adapter. For full games, create a package-owned plugin with separate Worker-safe server and browser client entrypoints:
 
 ```sh
 python3 .agents/skills/create-bighouse-game/scripts/scaffold_game.py <game-id> "Display Name"
@@ -54,7 +56,7 @@ The script creates:
 - `src/games/<game-id>.ts`
 - `test/<game-id>.test.ts`
 
-Then register the new adapter in `src/games/index.ts`.
+Then move the adapter into a package plugin or register it as an explicit server-only plugin in `src/games/index.ts`.
 
 If the script is not appropriate, use:
 
@@ -84,14 +86,14 @@ Rules:
 
 ### 5) Register and seed
 
-Add the definition to `src/games/index.ts`:
+Add the server plugin to `src/games/index.ts`:
 
 ```ts
-import { myGameDefinition } from "./my-game";
-registerGame(myGameDefinition);
+import { myGamePlugin } from "@bighouse/my-game/server";
+registerGamePlugins([myGamePlugin]);
 ```
 
-`GET /games` seeds registered definitions into D1, so no D1 migration is needed for a built-in game unless the core schema changes.
+Add the browser client loader to `packages/frontend/src/game-plugins.ts`. `GET /games` seeds registered definitions into D1 and returns only registered-and-enabled games, so no D1 migration is needed for a built-in game unless the core schema changes.
 
 ### 6) Test the adapter
 
