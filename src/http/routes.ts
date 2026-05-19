@@ -246,7 +246,7 @@ function requireGame(gameId: string): RegisteredGame {
     minPlayers: metadata.minPlayers,
     maxPlayers: metadata.maxPlayers,
     ...(metadata.thumbnail ? { thumbnail: metadata.thumbnail } : {}),
-    config: {}
+    config: structuredClone(metadata.config ?? {})
   };
 }
 

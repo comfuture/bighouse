@@ -172,6 +172,7 @@ export function createGomokuGame(container: HTMLElement, client: GomokuClient): 
 
   return {
     update(input) {
+      if (state.version === input.version) return;
       state.playerId = input.playerId;
       state.version = input.version;
       state.publicView = input.publicView;
@@ -224,19 +225,32 @@ function toGomokuClient(context: GameClientContext): GomokuClient {
 }
 
 function createsDoubleThree(board: GomokuCell[][], x: number, y: number, stone: GomokuStone): boolean {
-  const nextBoard = board.map((row) => [...row]);
-  nextBoard[y]![x] = stone;
+  const virtualStone = { x, y, stone };
   const openThreeCount = [
     [1, 0],
     [0, 1],
     [1, 1],
     [1, -1]
-  ].filter(([dx, dy]) => isOpenThree(nextBoard, x, y, stone, dx!, dy!)).length;
+  ].filter(([dx, dy]) => isOpenThree(board, x, y, stone, dx!, dy!, virtualStone)).length;
   return openThreeCount >= 2;
 }
 
-function isOpenThree(board: GomokuCell[][], x: number, y: number, stone: GomokuStone, dx: number, dy: number): boolean {
-  const line = collectLine(board, x, y, dx, dy);
+type VirtualStone = {
+  x: number;
+  y: number;
+  stone: GomokuStone;
+};
+
+function isOpenThree(
+  board: GomokuCell[][],
+  x: number,
+  y: number,
+  stone: GomokuStone,
+  dx: number,
+  dy: number,
+  virtualStone?: VirtualStone
+): boolean {
+  const line = collectLine(board, x, y, dx, dy, virtualStone);
   const center = line.findIndex((cell) => cell.x === x && cell.y === y);
   if (center < 0) {
     return false;
@@ -252,7 +266,7 @@ function isOpenThree(board: GomokuCell[][], x: number, y: number, stone: GomokuS
       values[4] === null &&
       values.filter((value) => value === stone).length === 3 &&
       values.filter((value) => value === null).length === 2 &&
-      countLine(board, x, y, stone, dx, dy) === 3
+      countLine(board, x, y, stone, dx, dy, virtualStone) === 3
     ) {
       return true;
     }
@@ -260,36 +274,70 @@ function isOpenThree(board: GomokuCell[][], x: number, y: number, stone: GomokuS
   return false;
 }
 
-function collectLine(board: GomokuCell[][], x: number, y: number, dx: number, dy: number): Array<{ x: number; y: number; value: GomokuCell }> {
+function collectLine(
+  board: GomokuCell[][],
+  x: number,
+  y: number,
+  dx: number,
+  dy: number,
+  virtualStone?: VirtualStone
+): Array<{ x: number; y: number; value: GomokuCell }> {
   const cells: Array<{ x: number; y: number; value: GomokuCell }> = [];
   let sx = x;
   let sy = y;
-  while (board[sy - dy]?.[sx - dx] !== undefined) {
+  while (cellValue(board, sx - dx, sy - dy, virtualStone) !== undefined) {
     sx -= dx;
     sy -= dy;
   }
   let cx = sx;
   let cy = sy;
-  while (board[cy]?.[cx] !== undefined) {
-    cells.push({ x: cx, y: cy, value: board[cy]![cx]! });
+  while (cellValue(board, cx, cy, virtualStone) !== undefined) {
+    cells.push({ x: cx, y: cy, value: cellValue(board, cx, cy, virtualStone)! });
     cx += dx;
     cy += dy;
   }
   return cells;
 }
 
-function countLine(board: GomokuCell[][], x: number, y: number, stone: GomokuStone, dx: number, dy: number): number {
-  return 1 + countDirection(board, x, y, stone, dx, dy) + countDirection(board, x, y, stone, -dx, -dy);
+function countLine(
+  board: GomokuCell[][],
+  x: number,
+  y: number,
+  stone: GomokuStone,
+  dx: number,
+  dy: number,
+  virtualStone?: VirtualStone
+): number {
+  return (
+    1 +
+    countDirection(board, x, y, stone, dx, dy, virtualStone) +
+    countDirection(board, x, y, stone, -dx, -dy, virtualStone)
+  );
 }
 
-function countDirection(board: GomokuCell[][], x: number, y: number, stone: GomokuStone, dx: number, dy: number): number {
+function countDirection(
+  board: GomokuCell[][],
+  x: number,
+  y: number,
+  stone: GomokuStone,
+  dx: number,
+  dy: number,
+  virtualStone?: VirtualStone
+): number {
   let count = 0;
   let cx = x + dx;
   let cy = y + dy;
-  while (board[cy]?.[cx] === stone) {
+  while (cellValue(board, cx, cy, virtualStone) === stone) {
     count += 1;
     cx += dx;
     cy += dy;
   }
   return count;
+}
+
+function cellValue(board: GomokuCell[][], x: number, y: number, virtualStone?: VirtualStone): GomokuCell | undefined {
+  if (virtualStone && virtualStone.x === x && virtualStone.y === y) {
+    return virtualStone.stone;
+  }
+  return board[y]?.[x];
 }
