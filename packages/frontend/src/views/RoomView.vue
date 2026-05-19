@@ -116,6 +116,7 @@ import type { GomokuGameInstance, GomokuPrivateView, GomokuPublicView } from "@b
 import ChatPanel from "../components/ChatPanel.vue";
 import { identity, identityReady } from "../identity";
 import { roomWebsocketUrl } from "../api";
+import { parseServerMessage } from "../socket";
 import type { ChatMessage, Player, RoomSnapshot, ServerMessage } from "../types";
 
 type GameModule = typeof import("@bighouse/gomoku");
@@ -185,7 +186,8 @@ function connectRoom(): void {
   });
   socket.addEventListener("message", (event) => {
     if (ws === socket) {
-      void handleRoomMessage(JSON.parse(String(event.data)) as ServerMessage);
+      const message = parseServerMessage(event.data);
+      if (message) void handleRoomMessage(message);
     }
   });
   socket.addEventListener("error", () => {

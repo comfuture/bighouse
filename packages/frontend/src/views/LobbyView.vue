@@ -46,7 +46,8 @@ import { useRoute, useRouter } from "vue-router";
 import ChatPanel from "../components/ChatPanel.vue";
 import { createLobbyRoom, joinRoom, listLobbyRooms, lobbyWebsocketUrl } from "../api";
 import { identity, identityReady } from "../identity";
-import type { ChatMessage, RoomIndex, ServerMessage } from "../types";
+import { parseServerMessage } from "../socket";
+import type { ChatMessage, RoomIndex } from "../types";
 
 const route = useRoute();
 const router = useRouter();
@@ -103,7 +104,8 @@ function connectLobby(): void {
   ws?.close();
   ws = new WebSocket(lobbyWebsocketUrl(gameId.value, mode.value));
   ws.addEventListener("message", (event) => {
-    const message = JSON.parse(String(event.data)) as ServerMessage;
+    const message = parseServerMessage(event.data);
+    if (!message) return;
     if (message.type === "chat") {
       chat.value.push((message.payload as { message: ChatMessage }).message);
     }
