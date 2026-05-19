@@ -22,9 +22,9 @@ describe("HTTP API", () => {
 
     await env.DB.prepare(
       `INSERT INTO games (game_id, adapter_key, display_name, enabled, min_players, max_players, config_json)
-       VALUES ('stale-game', 'stale-game', 'Stale Game', 1, 1, 2, '{}')
-       ON CONFLICT(game_id) DO UPDATE SET enabled = 1`
+       VALUES ('stale-game', 'stale-game', 'Stale Game', 1, 1, 2, '{}')`
     ).run();
+    await env.DB.prepare("UPDATE games SET enabled = 0 WHERE game_id = 'gomoku'").run();
     const filteredResponse = await SELF.fetch("https://bighouse.test/games");
     const filteredBody = (await filteredResponse.json()) as { games: Array<{ gameId: string }> };
     expect(filteredBody.games.map((game) => game.gameId)).toEqual(["card-demo", "gomoku"]);

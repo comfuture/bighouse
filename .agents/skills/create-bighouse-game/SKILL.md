@@ -93,7 +93,7 @@ import { myGamePlugin } from "@bighouse/my-game/server";
 registerGamePlugins([myGamePlugin]);
 ```
 
-Add the browser client loader to `packages/frontend/src/game-plugins.ts`. `GET /games` seeds registered definitions into D1 and returns only registered-and-enabled games, so no D1 migration is needed for a built-in game unless the core schema changes.
+Add the browser client loader to `packages/frontend/src/game-plugins.ts`. `GET /games` returns the plugins registered in the current Worker build, so no D1 migration is needed for a built-in game unless room/result storage changes.
 
 ### 6) Test the adapter
 

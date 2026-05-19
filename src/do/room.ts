@@ -125,7 +125,6 @@ export class RoomDO extends DurableObject<Env> {
     };
 
     this.saveState(state);
-    await this.persistGameDefinition(definition);
     await this.rescheduleTimers(definition.nextTimers({ state, now }));
     return this.toSummary(state);
   }
@@ -977,19 +976,6 @@ export class RoomDO extends DurableObject<Env> {
       maxPlayers: state.room.maxPlayers,
       doName: roomDoName(state.room.roomId),
       ...(state.closedAt ? { closedAt: new Date(state.closedAt).toISOString() } : {})
-    });
-  }
-
-  private async persistGameDefinition(definition: ReturnType<typeof getGameDefinition>): Promise<void> {
-    const repo = new D1Repository(this.env.DB);
-    await repo.upsertGame({
-      gameId: definition.gameId,
-      adapterKey: definition.adapterKey,
-      displayName: definition.displayName,
-      enabled: true,
-      minPlayers: definition.minPlayers,
-      maxPlayers: definition.maxPlayers,
-      config: {}
     });
   }
 

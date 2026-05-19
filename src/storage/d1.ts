@@ -1,13 +1,3 @@
-export type GameRow = {
-  gameId: string;
-  adapterKey: string;
-  displayName: string;
-  enabled: boolean;
-  minPlayers: number;
-  maxPlayers: number;
-  config: Record<string, unknown>;
-};
-
 export type RoomStatus = "open" | "matching" | "active" | "closed";
 
 export type RoomIndexRecord = {
@@ -48,16 +38,6 @@ export type MatchResultRecord = {
   replayPointer?: string | null;
 };
 
-type GameDbRow = {
-  game_id: string;
-  adapter_key: string;
-  display_name: string;
-  enabled: number;
-  min_players: number;
-  max_players: number;
-  config_json: string;
-};
-
 type RoomDbRow = {
   room_id: string;
   game_id: string;
@@ -84,25 +64,6 @@ type MatchTicketDbRow = {
   skill: string;
 };
 
-function parseJsonObject(value: string): Record<string, unknown> {
-  const parsed = JSON.parse(value) as unknown;
-  return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-    ? (parsed as Record<string, unknown>)
-    : {};
-}
-
-function mapGame(row: GameDbRow): GameRow {
-  return {
-    gameId: row.game_id,
-    adapterKey: row.adapter_key,
-    displayName: row.display_name,
-    enabled: row.enabled === 1,
-    minPlayers: row.min_players,
-    maxPlayers: row.max_players,
-    config: parseJsonObject(row.config_json)
-  };
-}
-
 function mapRoom(row: RoomDbRow): RoomIndexRecord {
   return {
     roomId: row.room_id,
@@ -121,57 +82,6 @@ function mapRoom(row: RoomDbRow): RoomIndexRecord {
 
 export class D1Repository {
   constructor(private readonly db: D1Database) {}
-
-  async upsertGame(game: GameRow): Promise<void> {
-    await this.db
-      .prepare(
-        `INSERT INTO games (
-          game_id, adapter_key, display_name, enabled, min_players, max_players, config_json, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-        ON CONFLICT(game_id) DO UPDATE SET
-          adapter_key = excluded.adapter_key,
-          display_name = excluded.display_name,
-          enabled = excluded.enabled,
-          min_players = excluded.min_players,
-          max_players = excluded.max_players,
-          config_json = excluded.config_json,
-          updated_at = CURRENT_TIMESTAMP`
-      )
-      .bind(
-        game.gameId,
-        game.adapterKey,
-        game.displayName,
-        game.enabled ? 1 : 0,
-        game.minPlayers,
-        game.maxPlayers,
-        JSON.stringify(game.config)
-      )
-      .run();
-  }
-
-  async listEnabledGames(): Promise<GameRow[]> {
-    const result = await this.db
-      .prepare(
-        `SELECT game_id, adapter_key, display_name, enabled, min_players, max_players, config_json
-         FROM games
-         WHERE enabled = 1
-         ORDER BY game_id`
-      )
-      .all<GameDbRow>();
-    return (result.results ?? []).map(mapGame);
-  }
-
-  async getGame(gameId: string): Promise<GameRow | null> {
-    const row = await this.db
-      .prepare(
-        `SELECT game_id, adapter_key, display_name, enabled, min_players, max_players, config_json
-         FROM games
-         WHERE game_id = ?`
-      )
-      .bind(gameId)
-      .first<GameDbRow>();
-    return row ? mapGame(row) : null;
-  }
 
   async upsertRoom(room: RoomIndexRecord): Promise<void> {
     await this.db
