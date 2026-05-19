@@ -12,6 +12,7 @@ export type GameMetadata = {
   description: string;
   minPlayers: number;
   maxPlayers: number;
+  config?: JsonObject;
   thumbnail?: GameThumbnail;
 };
 
@@ -129,7 +130,7 @@ export function privateEventsFor(events: GameEvent[], playerId: string): GameEve
 }
 
 export function cloneState(state: RoomState): RoomState {
-  return JSON.parse(JSON.stringify(state)) as RoomState;
+  return structuredClone(state);
 }
 
 export function createGameEventId(): string {
