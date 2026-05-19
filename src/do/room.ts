@@ -125,6 +125,7 @@ export class RoomDO extends DurableObject<Env> {
     };
 
     this.saveState(state);
+    await this.persistGameDefinition(definition);
     await this.rescheduleTimers(definition.nextTimers({ state, now }));
     return this.toSummary(state);
   }
@@ -654,6 +655,7 @@ export class RoomDO extends DurableObject<Env> {
       return;
     }
     if (message.type === "hello" || message.type === "joinRoom") {
+      const wasBoundToPlayer = Boolean((ws.deserializeAttachment() as SocketAttachment | undefined)?.playerId);
       const requestedPlayerId = this.bindSocketPlayer(ws, message.playerId, message.displayName);
       ws.serializeAttachment({
         playerId: requestedPlayerId,
@@ -664,7 +666,9 @@ export class RoomDO extends DurableObject<Env> {
         ...(message.displayName ? { displayName: message.displayName } : {})
       });
       const latest = this.requireState();
-      this.sendToSocket(ws, this.message(latest, "snapshot", this.createSnapshot(latest, requestedPlayerId)));
+      if (!wasBoundToPlayer) {
+        this.sendToSocket(ws, this.message(latest, "snapshot", this.createSnapshot(latest, requestedPlayerId)));
+      }
       this.sendToSocket(ws, this.message(latest, "ack", { command: message.type }));
       return;
     }
@@ -954,17 +958,7 @@ export class RoomDO extends DurableObject<Env> {
   }
 
   private async persistRoomIndex(state: RoomState): Promise<void> {
-    const definition = getGameDefinition(state.room.gameId);
     const repo = new D1Repository(this.env.DB);
-    await repo.upsertGame({
-      gameId: definition.gameId,
-      adapterKey: definition.adapterKey,
-      displayName: definition.displayName,
-      enabled: true,
-      minPlayers: definition.minPlayers,
-      maxPlayers: definition.maxPlayers,
-      config: {}
-    });
     const status =
       state.phase === "closed"
         ? "closed"
@@ -983,6 +977,19 @@ export class RoomDO extends DurableObject<Env> {
       maxPlayers: state.room.maxPlayers,
       doName: roomDoName(state.room.roomId),
       ...(state.closedAt ? { closedAt: new Date(state.closedAt).toISOString() } : {})
+    });
+  }
+
+  private async persistGameDefinition(definition: ReturnType<typeof getGameDefinition>): Promise<void> {
+    const repo = new D1Repository(this.env.DB);
+    await repo.upsertGame({
+      gameId: definition.gameId,
+      adapterKey: definition.adapterKey,
+      displayName: definition.displayName,
+      enabled: true,
+      minPlayers: definition.minPlayers,
+      maxPlayers: definition.maxPlayers,
+      config: {}
     });
   }
 
