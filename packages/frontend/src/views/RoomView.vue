@@ -112,18 +112,13 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import type { GomokuGameInstance, GomokuPrivateView, GomokuPublicView } from "@bighouse/gomoku";
+import type { GameClientContext, MountedGameClient } from "@bighouse/game-sdk/client";
 import ChatPanel from "../components/ChatPanel.vue";
 import { identity, identityReady } from "../identity";
 import { roomWebsocketUrl } from "../api";
+import { loadGameClient } from "../game-plugins";
 import { parseServerMessage } from "../socket";
 import type { ChatMessage, Player, RoomSnapshot, ServerMessage } from "../types";
-
-type GameModule = typeof import("@bighouse/gomoku");
-
-const gameLoaders = {
-  gomoku: () => import("@bighouse/gomoku")
-} satisfies Record<string, () => Promise<GameModule>>;
 
 const route = useRoute();
 const router = useRouter();
@@ -134,7 +129,8 @@ const chat = ref<ChatMessage[]>([]);
 const error = ref("");
 const gameHost = ref<HTMLElement>();
 let ws: WebSocket | undefined;
-let gameInstance: GomokuGameInstance | undefined;
+let gameInstance: MountedGameClient | undefined;
+let mountedGameId: string | undefined;
 let reconnectTimer: ReturnType<typeof window.setTimeout> | undefined;
 let reconnectAttempt = 0;
 let closingRoom = false;
@@ -231,26 +227,24 @@ function applyPresence(payload: { playerId: string; connected: boolean }): void 
 async function mountOrUpdateGame(): Promise<void> {
   const snapshot = room.value;
   if (!snapshot || !gameHost.value) return;
-  const loader = gameLoaders[snapshot.gameId as keyof typeof gameLoaders];
-  if (!loader) {
+  const module = await loadGameClient(snapshot.gameId);
+  if (!module) {
     gameHost.value.textContent = `No client module installed for ${snapshot.gameId}.`;
     return;
   }
   await nextTick();
-  const module = await loader();
-  const publicView = {
-    ...snapshot.publicView,
-    roomPhase: snapshot.phase,
-    rematchRequests: snapshot.rematchRequests ?? []
-  } as GomokuPublicView;
   const client = {
     playerId: identity.playerId,
     version: snapshot.version,
-    publicView,
-    privateView: snapshot.privateView as GomokuPrivateView
-  };
-  if (!gameInstance) {
-    gameInstance = module.createGomokuGame(gameHost.value, {
+    phase: snapshot.phase,
+    publicView: snapshot.publicView,
+    privateView: snapshot.privateView,
+    rematchRequests: snapshot.rematchRequests ?? []
+  } satisfies Omit<GameClientContext, "sendAction" | "requestPlayAgain" | "leaveFinishedGame">;
+  if (!gameInstance || mountedGameId !== snapshot.gameId) {
+    gameInstance?.destroy();
+    mountedGameId = snapshot.gameId;
+    gameInstance = module.mountGame(gameHost.value, {
       ...client,
       sendAction(action) {
         ws?.send(

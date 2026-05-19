@@ -8,6 +8,9 @@ importers:
 
   .:
     dependencies:
+      '@bighouse/game-sdk':
+        specifier: workspace:*
+        version: link:packages/game-sdk
       '@bighouse/gomoku':
         specifier: workspace:*
         version: link:packages/gomoku
@@ -36,6 +39,9 @@ importers:
 
   packages/frontend:
     dependencies:
+      '@bighouse/game-sdk':
+        specifier: workspace:*
+        version: link:../game-sdk
       '@bighouse/gomoku':
         specifier: workspace:*
         version: link:../gomoku
@@ -68,7 +74,17 @@ importers:
         specifier: ^3.2.9
         version: 3.2.9(typescript@5.9.3)
 
+  packages/game-sdk:
+    devDependencies:
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+
   packages/gomoku:
+    dependencies:
+      '@bighouse/game-sdk':
+        specifier: workspace:*
+        version: link:../game-sdk
     devDependencies:
       typescript:
         specifier: ^5.9.3

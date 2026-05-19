@@ -2,13 +2,14 @@ import type {
   ActionResult,
   ClientGameAction,
   GameContext,
-  GameDefinition,
   GameEvent,
+  GameMetadata,
   JsonObject,
   PlayerSeat,
+  ServerGamePlugin,
   ValidationResult
 } from "../core/game";
-import { createId } from "../core/ids";
+import { createGameEventId, defineGameDefinition } from "../core/game";
 
 type CardStageState = {
   discardPile: string[];
@@ -28,13 +29,16 @@ const initialHands = [
   ["JH", "9C", "6D"]
 ];
 
-export const cardDemoDefinition: GameDefinition = {
+export const gameMetadata = {
   gameId: "card-demo",
   adapterKey: "card-demo",
   displayName: "Card Demo",
+  description: "Server-only sample that exercises private player state and public card events.",
   minPlayers: 2,
-  maxPlayers: 4,
+  maxPlayers: 4
+} satisfies GameMetadata;
 
+export const cardDemoDefinition = defineGameDefinition(gameMetadata, {
   initialStageState(): JsonObject {
     return {
       discardPile: [],
@@ -83,7 +87,7 @@ export const cardDemoDefinition: GameDefinition = {
       playerState.hand = playerState.hand.filter((held) => held !== card);
       stage.discardPile.push(card);
       events.push({
-        id: createId("evt"),
+        id: createGameEventId(),
         type: "card.played",
         visibility: "public",
         payload: { playerId: action.playerId, card },
@@ -96,7 +100,7 @@ export const cardDemoDefinition: GameDefinition = {
       stage.deckCount -= 1;
       playerState.hand.push(card);
       events.push({
-        id: createId("evt"),
+        id: createGameEventId(),
         type: "card.drawn",
         visibility: "private",
         playerId: action.playerId,
@@ -140,7 +144,12 @@ export const cardDemoDefinition: GameDefinition = {
   nextTimers() {
     return [];
   }
-};
+});
+
+export const cardDemoGamePlugin = {
+  gameMetadata,
+  gameDefinition: cardDemoDefinition
+} satisfies ServerGamePlugin;
 
 function cardStage(value: JsonObject): CardStageState {
   return value as unknown as CardStageState;
