@@ -4,12 +4,20 @@
 
     <UPageGrid>
       <UPageCard
-        v-for="game in games"
+        v-for="game in displayGames"
         :key="game.gameId"
         :title="game.displayName"
-        :description="`${game.minPlayers}-${game.maxPlayers} players`"
-        icon="i-lucide-gamepad-2"
+        :description="game.description"
       >
+        <img
+          v-if="game.thumbnail"
+          class="mb-4 aspect-[16/10] w-full rounded-md object-cover"
+          :src="game.thumbnail.src"
+          :alt="game.thumbnail.alt"
+        />
+        <div class="mb-4 flex gap-2">
+          <UBadge color="neutral" variant="subtle">{{ game.minPlayers }}-{{ game.maxPlayers }} players</UBadge>
+        </div>
         <template #footer>
           <UButton label="Enter lobby" icon="i-lucide-door-open" :to="lobbyPath(game.gameId)" block />
         </template>
@@ -21,13 +29,24 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
+import { computed, onMounted, ref } from "vue";
 import { listGames } from "../api";
+import { getClientGameMetadata } from "../game-plugins";
 import { identity } from "../identity";
 import type { Game } from "../types";
 
 const games = ref<Game[]>([]);
 const error = ref("");
+const displayGames = computed(() =>
+  games.value.map((game) => {
+    const clientMetadata = getClientGameMetadata(game.gameId);
+    return {
+      ...game,
+      thumbnail: clientMetadata?.thumbnail ?? game.thumbnail,
+      description: clientMetadata?.description ?? game.description
+    };
+  })
+);
 
 onMounted(async () => {
   try {

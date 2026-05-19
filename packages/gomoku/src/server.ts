@@ -2,13 +2,14 @@ import type {
   ActionResult,
   ClientGameAction,
   GameContext,
-  GameDefinition,
   GameEvent,
   JsonObject,
   PlayerSeat,
+  ServerGamePlugin,
   ValidationResult
-} from "../core/game";
-import { createId } from "../core/ids";
+} from "@bighouse/game-sdk/server";
+import { createGameEventId, defineGameDefinition } from "@bighouse/game-sdk/server";
+import { baseGameMetadata } from "./metadata";
 
 type Stone = "black" | "white";
 type Cell = Stone | null;
@@ -31,13 +32,9 @@ type GomokuStageState = {
 const boardSize = 15;
 const turnMs = 30_000;
 
-export const gomokuDefinition: GameDefinition = {
-  gameId: "gomoku",
-  adapterKey: "gomoku",
-  displayName: "Gomoku",
-  minPlayers: 2,
-  maxPlayers: 2,
+export const gameMetadata = baseGameMetadata;
 
+export const gomokuDefinition = defineGameDefinition(gameMetadata, {
   initialStageState(): JsonObject {
     return {
       boardSize,
@@ -100,7 +97,7 @@ export const gomokuDefinition: GameDefinition = {
 
     const events: GameEvent[] = [
       {
-        id: createId("evt"),
+        id: createGameEventId(),
         type: "gomoku.stonePlaced",
         visibility: "public",
         payload: { playerId: action.playerId, x, y, stone },
@@ -109,7 +106,7 @@ export const gomokuDefinition: GameDefinition = {
     ];
     if (winnerPlayerId) {
       events.push({
-        id: createId("evt"),
+        id: createGameEventId(),
         type: "gomoku.gameWon",
         visibility: "system",
         payload: { winnerPlayerId },
@@ -150,7 +147,12 @@ export const gomokuDefinition: GameDefinition = {
       }
     ];
   }
-};
+});
+
+export const gomokuGamePlugin = {
+  gameMetadata,
+  gameDefinition: gomokuDefinition
+} satisfies ServerGamePlugin;
 
 function gomokuStage(value: JsonObject): GomokuStageState {
   return value as unknown as GomokuStageState;

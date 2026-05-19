@@ -1,8 +1,7 @@
 import { describe, expect, it } from "vitest";
-import "../src/games";
 import { cloneState, privateEventsFor, publicEvents, type RoomState } from "../src/core/game";
 import { cardDemoDefinition } from "../src/games/card-demo";
-import { gomokuDefinition } from "../src/games/gomoku";
+import { gomokuDefinition } from "@bighouse/gomoku/server";
 
 function baseState(gameId: string): RoomState {
   return {

@@ -1,8 +1,14 @@
 export type Game = {
   gameId: string;
+  adapterKey: string;
   displayName: string;
+  description: string;
   minPlayers: number;
   maxPlayers: number;
+  thumbnail?: {
+    src: string;
+    alt: string;
+  };
 };
 
 export type Player = {

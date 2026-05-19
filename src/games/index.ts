@@ -1,8 +1,9 @@
-import { cardDemoDefinition } from "./card-demo";
-import { gomokuDefinition } from "./gomoku";
-import { registerGame } from "./registry";
+import { gomokuGamePlugin, gomokuDefinition } from "@bighouse/gomoku/server";
+import { cardDemoDefinition, cardDemoGamePlugin } from "./card-demo";
+import { registerGamePlugins } from "./registry";
 
-registerGame(gomokuDefinition);
-registerGame(cardDemoDefinition);
+export function registerBuiltInGamePlugins(): void {
+  registerGamePlugins([gomokuGamePlugin, cardDemoGamePlugin]);
+}
 
 export { cardDemoDefinition, gomokuDefinition };

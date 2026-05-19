@@ -1,10 +1,20 @@
 import { GameServerError } from "../core/errors";
-import type { GameDefinition } from "../core/game";
+import type { GameDefinition, GameMetadata, ServerGamePlugin } from "../core/game";
 
 const definitions = new Map<string, GameDefinition>();
 
+export function registerGamePlugin(plugin: ServerGamePlugin): void {
+  definitions.set(plugin.gameDefinition.gameId, plugin.gameDefinition);
+}
+
+export function registerGamePlugins(plugins: ServerGamePlugin[]): void {
+  for (const plugin of plugins) {
+    registerGamePlugin(plugin);
+  }
+}
+
 export function registerGame(definition: GameDefinition): void {
-  definitions.set(definition.gameId, definition);
+  registerGamePlugin({ gameMetadata: definition.metadata, gameDefinition: definition });
 }
 
 export function getGameDefinition(gameId: string): GameDefinition {
@@ -17,4 +27,8 @@ export function getGameDefinition(gameId: string): GameDefinition {
 
 export function listGameDefinitions(): GameDefinition[] {
   return Array.from(definitions.values()).sort((a, b) => a.gameId.localeCompare(b.gameId));
+}
+
+export function listGameMetadata(): GameMetadata[] {
+  return listGameDefinitions().map((definition) => definition.metadata);
 }

@@ -2,7 +2,7 @@ import { z } from "zod";
 import { GameServerError, toErrorResponse } from "../core/errors";
 import { lobbyDoName, matchmakerDoName, roomDoName } from "../core/ids";
 import type { RoomCommandResultEnvelope } from "../do/room";
-import { listGameDefinitions } from "../games/registry";
+import { getGameDefinition, listGameDefinitions } from "../games/registry";
 import { D1Repository, type GameRow } from "../storage/d1";
 import type { Env } from "../types";
 
@@ -26,6 +26,19 @@ type RouteMatch = {
   params: Record<string, string>;
 };
 
+type GameListItem = {
+  gameId: string;
+  adapterKey: string;
+  displayName: string;
+  description: string;
+  minPlayers: number;
+  maxPlayers: number;
+  thumbnail?: {
+    src: string;
+    alt: string;
+  };
+};
+
 export async function handleRequest(request: Request, env: Env): Promise<Response> {
   try {
     return await route(request, env);
@@ -40,7 +53,7 @@ async function route(request: Request, env: Env): Promise<Response> {
 
   if (request.method === "GET" && url.pathname === "/games") {
     await seedBuiltInGames(repo);
-    const games = await repo.listEnabledGames();
+    const games = await listEnabledRegisteredGames(repo);
     return Response.json({ games });
   }
 
@@ -225,11 +238,37 @@ function routeParam(match: RouteMatch, name: string): string {
 }
 
 async function requireGame(repo: D1Repository, gameId: string): Promise<GameRow> {
+  const definition = getGameDefinition(gameId);
   const game = await repo.getGame(gameId);
   if (!game || !game.enabled) {
     throw new GameServerError("game_not_found", `Game '${gameId}' was not found`, 404);
   }
-  return game;
+  return {
+    ...game,
+    adapterKey: definition.adapterKey,
+    displayName: definition.displayName,
+    minPlayers: definition.minPlayers,
+    maxPlayers: definition.maxPlayers
+  };
+}
+
+async function listEnabledRegisteredGames(repo: D1Repository): Promise<GameListItem[]> {
+  const enabledRows = await repo.listEnabledGames();
+  const enabledIds = new Set(enabledRows.map((game) => game.gameId));
+  return listGameDefinitions()
+    .filter((definition) => enabledIds.has(definition.gameId))
+    .map((definition) => {
+      const metadata = definition.metadata;
+      return {
+        gameId: metadata.gameId,
+        adapterKey: metadata.adapterKey,
+        displayName: metadata.displayName,
+        description: metadata.description,
+        minPlayers: metadata.minPlayers,
+        maxPlayers: metadata.maxPlayers,
+        ...(metadata.thumbnail ? { thumbnail: metadata.thumbnail } : {})
+      };
+    });
 }
 
 async function seedBuiltInGames(repo: D1Repository): Promise<void> {

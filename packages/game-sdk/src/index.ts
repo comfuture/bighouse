@@ -1,10 +1,15 @@
 export type {
+  GameClientAction,
+  GameClientContext,
+  GameClientModule,
+  MountedGameClient
+} from "./client";
+export type {
   ActionResult,
   ClientGameAction,
   GameAction,
   GameContext,
   GameDefinition,
-  GameDefinitionImplementation,
   GameEvent,
   GameMetadata,
   GameThumbnail,
@@ -18,12 +23,4 @@ export type {
   TimerIntent,
   ValidationResult,
   Visibility
-} from "@bighouse/game-sdk/server";
-
-export {
-  cloneState,
-  createGameEventId,
-  defineGameDefinition,
-  privateEventsFor,
-  publicEvents
-} from "@bighouse/game-sdk/server";
+} from "./server";
