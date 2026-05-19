@@ -3,7 +3,7 @@ import { GameServerError, toErrorResponse } from "../core/errors";
 import { lobbyDoName, matchmakerDoName, roomDoName } from "../core/ids";
 import type { RoomCommandResultEnvelope } from "../do/room";
 import { getGameDefinition, listGameDefinitions } from "../games/registry";
-import { D1Repository, type GameRow } from "../storage/d1";
+import { D1Repository } from "../storage/d1";
 import type { Env } from "../types";
 
 const joinSchema = z.object({
@@ -39,6 +39,10 @@ type GameListItem = {
   };
 };
 
+type RegisteredGame = GameListItem & {
+  config: Record<string, unknown>;
+};
+
 export async function handleRequest(request: Request, env: Env): Promise<Response> {
   try {
     return await route(request, env);
@@ -52,8 +56,7 @@ async function route(request: Request, env: Env): Promise<Response> {
   const repo = new D1Repository(env.DB);
 
   if (request.method === "GET" && url.pathname === "/games") {
-    await seedBuiltInGames(repo);
-    const games = await listEnabledRegisteredGames(repo);
+    const games = listRegisteredGames();
     return Response.json({ games });
   }
 
@@ -62,11 +65,10 @@ async function route(request: Request, env: Env): Promise<Response> {
     "mode"
   ]);
   if (request.method === "POST" && lobbyJoin) {
-    await seedBuiltInGames(repo);
     const body = joinSchema.parse(await request.json());
     const gameId = routeParam(lobbyJoin, "gameId");
     const mode = routeParam(lobbyJoin, "mode");
-    const game = await requireGame(repo, gameId);
+    const game = requireGame(gameId);
     const lobby = env.LOBBY_DO.getByName(lobbyDoName(game.gameId, mode));
     const result = await lobby.join({
       gameId: game.gameId,
@@ -89,17 +91,15 @@ async function route(request: Request, env: Env): Promise<Response> {
     "mode"
   ]);
   if (request.method === "GET" && lobbyRooms) {
-    await seedBuiltInGames(repo);
-    const game = await requireGame(repo, routeParam(lobbyRooms, "gameId"));
+    const game = requireGame(routeParam(lobbyRooms, "gameId"));
     const mode = routeParam(lobbyRooms, "mode");
     const rooms = await repo.listLobbyRooms(game.gameId, mode);
     return Response.json({ rooms });
   }
 
   if (request.method === "POST" && lobbyRooms) {
-    await seedBuiltInGames(repo);
     const body = joinSchema.parse(await request.json());
-    const game = await requireGame(repo, routeParam(lobbyRooms, "gameId"));
+    const game = requireGame(routeParam(lobbyRooms, "gameId"));
     const mode = routeParam(lobbyRooms, "mode");
     const lobby = env.LOBBY_DO.getByName(lobbyDoName(game.gameId, mode));
     const result = await lobby.createRoom({
@@ -123,17 +123,15 @@ async function route(request: Request, env: Env): Promise<Response> {
     "mode"
   ]);
   if (request.method === "GET" && lobbyWsPath) {
-    await seedBuiltInGames(repo);
-    const game = await requireGame(repo, routeParam(lobbyWsPath, "gameId"));
+    const game = requireGame(routeParam(lobbyWsPath, "gameId"));
     const mode = routeParam(lobbyWsPath, "mode");
     return env.LOBBY_DO.getByName(lobbyDoName(game.gameId, mode)).fetch(request);
   }
 
   const ticketCreate = matchPath(url.pathname, /^\/games\/([^/]+)\/matchmaking\/tickets$/u, ["gameId"]);
   if (request.method === "POST" && ticketCreate) {
-    await seedBuiltInGames(repo);
     const body = ticketSchema.parse(await request.json());
-    const game = await requireGame(repo, routeParam(ticketCreate, "gameId"));
+    const game = requireGame(routeParam(ticketCreate, "gameId"));
     const matchmaker = env.MATCHMAKER_DO.getByName(
       matchmakerDoName(game.gameId, body.mode, body.region, body.skill)
     );
@@ -237,26 +235,23 @@ function routeParam(match: RouteMatch, name: string): string {
   return value;
 }
 
-async function requireGame(repo: D1Repository, gameId: string): Promise<GameRow> {
+function requireGame(gameId: string): RegisteredGame {
   const definition = getGameDefinition(gameId);
-  const game = await repo.getGame(gameId);
-  if (!game || !game.enabled) {
-    throw new GameServerError("game_not_found", `Game '${gameId}' was not found`, 404);
-  }
+  const metadata = definition.metadata;
   return {
-    ...game,
-    adapterKey: definition.adapterKey,
-    displayName: definition.displayName,
-    minPlayers: definition.minPlayers,
-    maxPlayers: definition.maxPlayers
+    gameId: metadata.gameId,
+    adapterKey: metadata.adapterKey,
+    displayName: metadata.displayName,
+    description: metadata.description,
+    minPlayers: metadata.minPlayers,
+    maxPlayers: metadata.maxPlayers,
+    ...(metadata.thumbnail ? { thumbnail: metadata.thumbnail } : {}),
+    config: {}
   };
 }
 
-async function listEnabledRegisteredGames(repo: D1Repository): Promise<GameListItem[]> {
-  const enabledRows = await repo.listEnabledGames();
-  const enabledIds = new Set(enabledRows.map((game) => game.gameId));
+function listRegisteredGames(): GameListItem[] {
   return listGameDefinitions()
-    .filter((definition) => enabledIds.has(definition.gameId))
     .map((definition) => {
       const metadata = definition.metadata;
       return {
@@ -269,24 +264,6 @@ async function listEnabledRegisteredGames(repo: D1Repository): Promise<GameListI
         ...(metadata.thumbnail ? { thumbnail: metadata.thumbnail } : {})
       };
     });
-}
-
-async function seedBuiltInGames(repo: D1Repository): Promise<void> {
-  const builtIns = listGameDefinitions();
-  if (builtIns.length === 0) {
-    return;
-  }
-  for (const definition of builtIns) {
-    await repo.upsertGame({
-      gameId: definition.gameId,
-      adapterKey: definition.adapterKey,
-      displayName: definition.displayName,
-      enabled: true,
-      minPlayers: definition.minPlayers,
-      maxPlayers: definition.maxPlayers,
-      config: {}
-    });
-  }
 }
 
 function websocketUrl(url: URL, roomId: string, playerId: string): string {

@@ -6,7 +6,7 @@ This guide explains how to build online multiplayer games on top of Bighouse. Bi
 
 The client flow is the same for every game.
 
-1. Call `GET /games` to list enabled games.
+1. Call `GET /games` to list games registered in the current Worker build.
 2. Enter a game lobby route in the SPA: `/game/:gameId/:mode`.
 3. If no saved `playerId` exists, collect player information in the modal before any lobby or room WebSocket is opened.
 4. List waiting rooms with `GET /games/:gameId/lobbies/:mode/rooms`.
@@ -535,7 +535,7 @@ const clientGamePlugins = {
 };
 ```
 
-`GET /games` seeds registered server plugins into the D1 `games` table and returns only games that are both enabled in D1 and registered in the current Worker build. The frontend may merge matching client metadata, such as a Vite asset URL for `thumbnail.src`, before rendering the game list.
+`GET /games` returns the server plugins registered in the current Worker build. D1 does not own the public game list; the frontend may merge matching client metadata, such as a Vite asset URL for `thumbnail.src`, before rendering the game list.
 
 ## 9. Adapter Design Checklist
 
