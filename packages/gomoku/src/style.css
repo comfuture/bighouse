@@ -15,20 +15,21 @@
 .gomoku-stage {
   position: relative;
   justify-self: center;
-  inline-size: fit-content;
+  container-type: inline-size;
+  inline-size: 100%;
   max-inline-size: 100%;
+  overflow: auto;
 }
 
 .gomoku-board {
-  --point-size: clamp(16px, 5vw, 36px);
+  --point-size: clamp(16px, calc((100cqw - 4px) / (var(--board-size) + 1)), 36px);
   --line-color: rgb(111 83 36 / 0.72);
   position: relative;
   box-sizing: border-box;
   display: grid;
   grid-template-columns: repeat(var(--board-size), var(--point-size));
-  inline-size: fit-content;
-  max-inline-size: 100%;
-  overflow: hidden;
+  inline-size: max-content;
+  overflow: visible;
   border: 2px solid #6f5324;
   padding: calc(var(--point-size) / 2);
   background: #d8ad5f;
