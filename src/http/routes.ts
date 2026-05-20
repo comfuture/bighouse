@@ -3,7 +3,7 @@ import { GameServerError, toErrorResponse } from "../core/errors";
 import { lobbyDoName, matchmakerDoName, roomDoName } from "../core/ids";
 import type { RoomCommandResultEnvelope } from "../do/room";
 import { getGameDefinition, listGameDefinitions } from "../games/registry";
-import { D1Repository } from "../storage/d1";
+import { D1Repository, type RoomIndexRecord } from "../storage/d1";
 import type { Env } from "../types";
 
 const joinSchema = z.object({
@@ -93,7 +93,7 @@ async function route(request: Request, env: Env): Promise<Response> {
   if (request.method === "GET" && lobbyRooms) {
     const game = requireGame(routeParam(lobbyRooms, "gameId"));
     const mode = routeParam(lobbyRooms, "mode");
-    const rooms = await repo.listLobbyRooms(game.gameId, mode);
+    const rooms = await refreshLobbyRooms(env, repo, await repo.listLobbyRooms(game.gameId, mode));
     return Response.json({ rooms });
   }
 
@@ -248,6 +248,47 @@ function requireGame(gameId: string): RegisteredGame {
     ...(metadata.thumbnail ? { thumbnail: metadata.thumbnail } : {}),
     config: structuredClone(metadata.config ?? {})
   };
+}
+
+async function refreshLobbyRooms(env: Env, repo: D1Repository, rooms: RoomIndexRecord[]): Promise<RoomIndexRecord[]> {
+  const refreshed: RoomIndexRecord[] = [];
+  for (const indexed of rooms) {
+    const room = env.ROOM_DO.getByName(indexed.doName);
+    const summary = await room.refreshLobbyStatus();
+    if (summary.phase === "closed" || summary.playerCount === 0) {
+      await repo.closeRoomIndex(indexed.roomId, new Date().toISOString());
+      continue;
+    }
+
+    const status = summary.activeInterruption
+      ? summary.playerCount >= summary.minPlayers
+        ? "matching"
+        : "open"
+      : summary.phase === "active" || summary.phase === "finished"
+        ? "active"
+        : summary.playerCount >= summary.minPlayers
+          ? "matching"
+          : "open";
+    const record: RoomIndexRecord = {
+      ...indexed,
+      status,
+      playerCount: summary.playerCount,
+      minPlayers: summary.minPlayers,
+      maxPlayers: summary.maxPlayers
+    };
+    if (
+      record.status !== indexed.status ||
+      record.playerCount !== indexed.playerCount ||
+      record.minPlayers !== indexed.minPlayers ||
+      record.maxPlayers !== indexed.maxPlayers
+    ) {
+      await repo.upsertRoom(record);
+    }
+    if ((record.status === "open" || record.status === "matching") && record.playerCount < record.maxPlayers) {
+      refreshed.push(record);
+    }
+  }
+  return refreshed;
 }
 
 function listRegisteredGames(): GameListItem[] {

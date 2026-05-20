@@ -142,6 +142,30 @@ describe("RoomDO", () => {
     });
   });
 
+  it("removes waiting players on leave and closes empty waiting rooms", async () => {
+    const room = env.ROOM_DO.getByName("room:test-waiting-leave") as unknown as RoomDO;
+    await room.initialize({
+      roomId: "test-waiting-leave",
+      gameId: "gomoku",
+      mode: "default",
+      minPlayers: 2,
+      maxPlayers: 2
+    });
+    await room.join({ playerId: "host" });
+    await room.join({ playerId: "guest" });
+
+    await expect(room.leave("guest")).resolves.toMatchObject({ phase: "waiting", playerCount: 1, hostPlayerId: "host" });
+    const afterGuest = await room.getSnapshot("host");
+    expect(afterGuest.players.map((player) => player.playerId)).toEqual(["host"]);
+
+    await expect(room.leave("host")).resolves.toMatchObject({ phase: "closed", playerCount: 0 });
+    const row = await env.DB.prepare("SELECT status, player_count, closed_at FROM room_index WHERE room_id = ?")
+      .bind("test-waiting-leave")
+      .first<{ status: string; player_count: number; closed_at: string | null }>();
+    expect(row).toMatchObject({ status: "closed", player_count: 0 });
+    expect(row?.closed_at).toBeTruthy();
+  });
+
   it("allows existing players to reconnect but rejects new players after waiting", async () => {
     const room = env.ROOM_DO.getByName("room:test-join-phase") as unknown as RoomDO;
     await room.initialize({
@@ -558,8 +582,7 @@ describe("RoomDO", () => {
     await room.join({ playerId: "host" });
     await room.join({ playerId: "guest" });
     await room.leave("host");
-    await room.leave("guest");
-    await room.join({ playerId: "guest" });
+    await expect(room.join({ playerId: "guest" })).resolves.toMatchObject({ phase: "waiting", playerCount: 1 });
 
     await expect(room.cleanupIfStale({ now: Date.now() + 60_000 })).resolves.toMatchObject({
       cleaned: false,

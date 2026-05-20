@@ -85,6 +85,32 @@ describe("HTTP API", () => {
     expect(createBody.summary).toMatchObject({ phase: "waiting", hostPlayerId: "onecard-owner", playerCount: 1 });
   });
 
+  it("actively hides empty rooms from lobby lists", async () => {
+    const mode = `empty-room-${crypto.randomUUID()}`;
+    const createResponse = await SELF.fetch(`https://bighouse.test/games/gomoku/lobbies/${mode}/rooms`, {
+      method: "POST",
+      body: JSON.stringify({ playerId: "empty-owner", displayName: "Owner" })
+    });
+    expect(createResponse.status).toBe(200);
+    const createBody = (await createResponse.json()) as { roomId: string; doName: string };
+    const room = env.ROOM_DO.getByName(createBody.doName) as unknown as RoomDO;
+    await room.leave("empty-owner");
+
+    await env.DB.prepare("UPDATE room_index SET status = 'open', player_count = 1, closed_at = NULL WHERE room_id = ?")
+      .bind(createBody.roomId)
+      .run();
+
+    const listResponse = await SELF.fetch(`https://bighouse.test/games/gomoku/lobbies/${mode}/rooms`);
+    expect(listResponse.status).toBe(200);
+    const listBody = (await listResponse.json()) as { rooms: Array<{ roomId: string }> };
+    expect(listBody.rooms.some((candidate) => candidate.roomId === createBody.roomId)).toBe(false);
+
+    const row = await env.DB.prepare("SELECT status FROM room_index WHERE room_id = ?")
+      .bind(createBody.roomId)
+      .first<{ status: string }>();
+    expect(row?.status).toBe("closed");
+  });
+
   it("rejects new room joins after the game leaves the waiting phase", async () => {
     const mode = `active-join-${crypto.randomUUID()}`;
     const createResponse = await SELF.fetch(`https://bighouse.test/games/card-demo/lobbies/${mode}/rooms`, {
