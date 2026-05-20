@@ -15,7 +15,7 @@
     <UAlert v-if="error" color="error" icon="i-lucide-circle-alert" :title="error" />
 
     <div class="grid gap-6 lg:grid-cols-[360px_1fr]">
-      <div class="space-y-6">
+      <div class="order-1 space-y-6 lg:order-1">
         <UCard>
           <template #header>
             <div class="flex items-center justify-between">
@@ -90,11 +90,9 @@
             </div>
           </template>
         </UCard>
-
-        <ChatPanel title="Room chat" :messages="chat" @send="sendChat" />
       </div>
 
-      <UCard>
+      <UCard class="order-2 lg:order-2">
         <template #header>
           <div class="flex items-center justify-between">
             <h2 class="font-semibold">Game</h2>
@@ -105,6 +103,8 @@
           <UAlert v-if="!room" color="neutral" variant="subtle" title="Waiting for snapshot" />
         </div>
       </UCard>
+
+      <ChatPanel class="order-3 lg:order-3" title="Room chat" :messages="chat" @send="sendChat" />
     </div>
   </div>
 </template>
