@@ -87,9 +87,11 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
   container.innerHTML = `
     <div class="onecard-table">
       <!-- Opponent Seats -->
-      <div class="seat-top" data-role="seat-top"></div>
-      <div class="seat-left" data-role="seat-left"></div>
-      <div class="seat-right" data-role="seat-right"></div>
+      <div class="opponent-seats">
+        <div class="seat-top" data-role="seat-top"></div>
+        <div class="seat-left" data-role="seat-left"></div>
+        <div class="seat-right" data-role="seat-right"></div>
+      </div>
 
       <!-- Center Stage -->
       <div class="onecard-center-stage">
@@ -409,6 +411,7 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
     if (playerHandEl) {
       playerHandEl.innerHTML = "";
       const playable = getPlayableCards(priv.hand, pub);
+      playerHandEl.style.setProperty("--hand-card-overlap", `${getMobileHandOverlap(priv.hand.length)}px`);
 
       priv.hand.forEach((card) => {
         const cardEl = renderCard(card);
@@ -440,6 +443,14 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
     if (!playerId) return "Opponent";
     if (playerId === state.playerId) return "You";
     return playerId.slice(0, 8); // truncate ID nicely
+  }
+
+  function getMobileHandOverlap(cardCount: number): number {
+    if (cardCount >= 15) return -44;
+    if (cardCount >= 12) return -40;
+    if (cardCount >= 9) return -34;
+    if (cardCount >= 8) return -28;
+    return -24;
   }
 
   function getRelativeSeat(playerId: string): "bottom" | "left" | "top" | "right" {

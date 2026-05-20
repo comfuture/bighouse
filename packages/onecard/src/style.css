@@ -29,8 +29,14 @@
 }
 
 /* Opponent Seats Positioned Circularly */
-.seat-top, .seat-left, .seat-right {
+.opponent-seats {
   grid-area: seats;
+  display: flex;
+  justify-content: center;
+  z-index: 50;
+}
+
+.seat-top, .seat-left, .seat-right {
   align-self: start;
   z-index: 50;
 }
@@ -581,30 +587,79 @@
 
 @media (max-width: 700px) {
   .onecard-game {
-    min-height: 620px;
-    border-radius: 14px;
+    min-height: 560px;
+    border-radius: 0;
   }
 
   .onecard-table {
-    grid-template-rows: auto auto minmax(210px, 1fr) auto;
-    gap: 12px;
-    padding: 14px 10px;
+    grid-template-rows: auto auto minmax(160px, 1fr) auto;
+    gap: 10px;
+    padding: 12px 8px;
   }
 
+  .opponent-seats {
+    display: flex;
+    justify-content: center;
+    align-items: stretch;
+    gap: 8px;
+    width: 100%;
+    min-width: 0;
+    overflow-x: auto;
+    padding: 0 2px 2px;
+    box-sizing: border-box;
+    scrollbar-width: none;
+  }
+
+  .opponent-seats::-webkit-scrollbar {
+    display: none;
+  }
+
+  .seat-top,
   .seat-left,
   .seat-right {
     position: static;
     transform: none;
-    justify-self: center;
+    flex: 1 1 0;
+    min-width: 0;
   }
 
   .opponent-profile {
-    min-width: 88px;
-    padding: 8px 12px;
+    width: 100%;
+    min-width: 0;
+    padding: 8px 6px;
+    gap: 4px;
+    border-radius: 10px;
+  }
+
+  .opponent-profile.is-active-turn {
+    transform: none;
+  }
+
+  .opponent-avatar {
+    font-size: 18px;
+  }
+
+  .opponent-name {
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 12px;
+  }
+
+  .opponent-hand-preview {
+    padding: 3px 6px;
+    gap: 4px;
+  }
+
+  .card-back-icon {
+    font-size: 13px;
   }
 
   .onecard-center-stage {
-    gap: 20px;
+    width: 100%;
+    justify-content: center;
+    gap: clamp(14px, 5vw, 22px);
     transform: none;
   }
 
@@ -615,15 +670,27 @@
   }
 
   .direction-indicator {
-    width: 190px;
-    height: 190px;
+    width: min(52vw, 180px);
+    height: min(52vw, 180px);
+  }
+
+  .player-hand-container {
+    min-width: 0;
+    gap: 6px;
+  }
+
+  .hand-header {
+    padding: 0 4px;
   }
 
   .player-hand {
-    justify-content: flex-start;
-    gap: 8px;
+    justify-content: center;
+    gap: 0;
     min-height: 112px;
-    padding: 8px;
+    padding: 8px 18px;
+    overflow-x: auto;
+    overflow-y: visible;
+    scrollbar-width: thin;
   }
 
   .onecard-card {
@@ -632,7 +699,40 @@
     flex: 0 0 auto;
   }
 
+  .player-hand .onecard-card + .onecard-card {
+    margin-left: var(--hand-card-overlap, -24px);
+  }
+
+  .player-hand .onecard-card.is-playable:hover {
+    transform: translateY(-8px) scale(1.02);
+  }
+
   .card-center {
     font-size: 22px;
+  }
+}
+
+@media (max-width: 380px) {
+  .onecard-game {
+    min-height: 540px;
+  }
+
+  .onecard-table {
+    padding-inline: 6px;
+  }
+
+  .onecard-deck,
+  .onecard-discard {
+    width: 64px;
+    height: 90px;
+  }
+
+  .onecard-card {
+    width: 58px;
+    height: 84px;
+  }
+
+  .player-hand .onecard-card + .onecard-card {
+    margin-left: calc(var(--hand-card-overlap, -24px) - 1px);
   }
 }
