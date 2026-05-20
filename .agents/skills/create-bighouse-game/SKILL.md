@@ -35,6 +35,7 @@ Open these files before implementation:
 - `references/game-definition-contract.md`
 - `references/state-visibility.md`
 - `references/action-validation-and-winners.md`
+- `references/player-departure-and-restart.md`
 - `references/testing-checklist.md`
 
 Also inspect the existing plugins:
@@ -124,6 +125,7 @@ pnpm test
 - `game-definition-contract.md`: required `GameDefinition` API and implementation rules.
 - `state-visibility.md`: how to split `stageState`, `playerStates`, public views, private views, and events.
 - `action-validation-and-winners.md`: validation, mutation, turn order, timer, and winner patterns.
+- `player-departure-and-restart.md`: protocol and implementation rules for active-game player departure, host handoff, interruption snapshots, and restart.
 - `testing-checklist.md`: required tests for new game adapters.
 
 ### skeletons/
