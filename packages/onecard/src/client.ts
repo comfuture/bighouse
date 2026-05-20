@@ -184,6 +184,8 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
 
   // State variable for pending suit choice
   let pendingJokerCard: string | null = null;
+  let drawNotice: { playerId: string; count: number; wasAttack: boolean; version: number } | null = null;
+  let drawNoticeTimer: ReturnType<typeof window.setTimeout> | undefined;
 
   // Set event listeners
   deckEl?.addEventListener("click", () => {
@@ -257,6 +259,17 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
     return cardEl;
   }
 
+  function renderCardBack(): HTMLElement {
+    const cardEl = document.createElement("div");
+    cardEl.className = "onecard-card is-card-back";
+    cardEl.innerHTML = `
+      <div class="card-back-pattern">
+        <div class="card-back-mark">BH</div>
+      </div>
+    `;
+    return cardEl;
+  }
+
   function getPlayableCards(hand: string[], pub: OneCardPublicView): string[] {
     const topCard = pub.discardPile[pub.discardPile.length - 1];
     if (!topCard) return hand;
@@ -301,11 +314,11 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
     return playable;
   }
 
-  function triggerFlyAnimation(fromEl: HTMLElement, targetEl: HTMLElement, cardStr: string) {
+  function triggerFlyAnimation(fromEl: HTMLElement, targetEl: HTMLElement, cardStr?: string) {
     const startRect = fromEl.getBoundingClientRect();
     const endRect = targetEl.getBoundingClientRect();
 
-    const flyer = renderCard(cardStr);
+    const flyer = cardStr ? renderCard(cardStr) : renderCardBack();
     flyer.classList.add("flyer-animating");
     flyer.style.position = "fixed";
     flyer.style.left = `${startRect.left}px`;
@@ -326,6 +339,27 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
     setTimeout(() => {
       flyer.remove();
     }, 450);
+  }
+
+  function setDrawNotice(playerId: string, count: number, wasAttack: boolean, version: number): void {
+    if (drawNoticeTimer) window.clearTimeout(drawNoticeTimer);
+    drawNotice = { playerId, count, wasAttack, version };
+    drawNoticeTimer = window.setTimeout(() => {
+      if (drawNotice?.version === version) {
+        drawNotice = null;
+        render();
+      }
+    }, 2400);
+  }
+
+  function findDrawFromSnapshot(oldPub: OneCardPublicView, newPub: OneCardPublicView): { playerId: string; count: number; wasAttack: boolean } | null {
+    const actorId = oldPub.currentPlayerId;
+    if (!actorId) return null;
+    const oldCount = oldPub.hands[actorId]?.count;
+    const newCount = newPub.hands[actorId]?.count;
+    if (oldCount === undefined || newCount === undefined || newCount <= oldCount) return null;
+    if (newPub.discardPile.length > oldPub.discardPile.length) return null;
+    return { playerId: actorId, count: newCount - oldCount, wasAttack: oldPub.activeAttackCount > 0 };
   }
 
   function render(): void {
@@ -396,6 +430,13 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
       } else if (pub.activeAttackCount > 0) {
         statusBar.className = "onecard-status-bar active-attack";
         statusBar.innerHTML = `Attack <strong>+${pub.activeAttackCount}</strong>: defend or draw`;
+      } else if (drawNotice) {
+        statusBar.className = "onecard-status-bar draw-notice";
+        const subject = drawNotice.playerId === state.playerId ? "You" : getPlayerName(drawNotice.playerId);
+        const cardText = drawNotice.count === 1 ? "1 card" : `${drawNotice.count} cards`;
+        statusBar.textContent = drawNotice.wasAttack
+          ? `${subject} picked up ${cardText} from the deck.`
+          : `${subject} drew ${cardText} from the deck.`;
       } else {
         statusBar.className = "onecard-status-bar";
         if (isMyTurn) {
@@ -574,6 +615,23 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
         }
       }
 
+      const draw = oldPub && newPub ? findDrawFromSnapshot(oldPub, newPub) : null;
+      if (draw && deckEl) {
+        let targetEl: HTMLElement | null = null;
+        if (draw.playerId === input.playerId) {
+          targetEl = playerHandEl;
+        } else {
+          const relativeSeat = getRelativeSeat(draw.playerId);
+          if (relativeSeat === "top") targetEl = seatTop;
+          else if (relativeSeat === "left") targetEl = seatLeft;
+          else if (relativeSeat === "right") targetEl = seatRight;
+        }
+        if (targetEl) {
+          triggerFlyAnimation(deckEl, targetEl);
+        }
+        setDrawNotice(draw.playerId, draw.count, draw.wasAttack, input.version);
+      }
+
       state.playerId = input.playerId;
       state.version = input.version;
       state.publicView = input.publicView;
@@ -581,6 +639,7 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
       render();
     },
     destroy() {
+      if (drawNoticeTimer) window.clearTimeout(drawNoticeTimer);
       container.classList.remove("onecard-game");
       container.innerHTML = "";
     }
