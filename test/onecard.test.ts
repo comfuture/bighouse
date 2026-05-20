@@ -413,6 +413,55 @@ describe("One Card Game Logic", () => {
     expect((drawResult.state.stageState as any).activeAttackCard).toBeUndefined();
   });
 
+  it("allows drawing through a +2 attack when the player has no defense card", () => {
+    const state = baseState(2);
+    state.stageState = {
+      discardPile: ["5S", "2S"],
+      deck: ["9D", "10C", "QH"],
+      deckCount: 3,
+      currentPlayerId: "p2",
+      turnDirection: "clockwise",
+      activeAttackCount: 2,
+      activeAttackCard: "2S",
+      eliminatedPlayerIds: [],
+      hasExtraTurn: false
+    };
+    state.playerStates.p1 = { hand: ["6H"] };
+    state.playerStates.p2 = { hand: ["3C", "7D"] };
+
+    expect(
+      oneCardDefinition.validateAction(
+        { state: cloneState(state), now: 1 },
+        { playerId: "p2", clientActionId: "bad-defense", expectedVersion: 2, type: "playCard", payload: { card: "3C" } }
+      )
+    ).toMatchObject({ ok: false, code: "invalid_action", message: "Must defend attack with a 2, A, or Joker" });
+    expect(
+      oneCardDefinition.validateAction(
+        { state: cloneState(state), now: 1 },
+        { playerId: "p2", clientActionId: "draw-attack", expectedVersion: 2, type: "drawCard", payload: {} }
+      )
+    ).toMatchObject({ ok: true });
+
+    const result = oneCardDefinition.applyAction(
+      { state: cloneState(state), now: 1 },
+      { playerId: "p2", clientActionId: "draw-attack", expectedVersion: 2, type: "drawCard", payload: {} }
+    );
+
+    expect(result.state.stageState).toMatchObject({
+      activeAttackCount: 0,
+      currentPlayerId: "p1"
+    });
+    expect((result.state.stageState as any).activeAttackCard).toBeUndefined();
+    expect((result.state.playerStates.p2 as any).hand).toHaveLength(4);
+    expect(result.events).toContainEqual(
+      expect.objectContaining({
+        type: "onecard.playerDrawnCount",
+        visibility: "public",
+        payload: expect.objectContaining({ playerId: "p2", count: 2, wasAttack: true })
+      })
+    );
+  });
+
   it("recycles the deck when it runs out", () => {
     const state = baseState(2);
     state.stageState = {
