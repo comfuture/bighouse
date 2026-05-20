@@ -409,4 +409,33 @@ describe("One Card Game Logic", () => {
       winnerPlayerId: "p1"
     });
   });
+
+  it("skips only active players when some players are eliminated", () => {
+    // 3 players: p1, p2, p3
+    const state = baseState(3);
+    state.stageState = {
+      discardPile: ["5S"],
+      deck: ["8S", "9S"],
+      deckCount: 2,
+      currentPlayerId: "p1",
+      turnDirection: "clockwise",
+      activeAttackCount: 0,
+      eliminatedPlayerIds: ["p2"], // p2 is out
+      hasExtraTurn: false
+    };
+    state.playerStates.p1 = { hand: ["JS", "8S"] };
+    state.playerStates.p2 = { hand: [] };
+    state.playerStates.p3 = { hand: ["9S"] };
+
+    // p1 plays a Jack (JS). It should skip the next active player (p3),
+    // and since p2 is eliminated, the turn should return to p1!
+    const result = oneCardDefinition.applyAction(
+      { state: cloneState(state), now: 1 },
+      { playerId: "p1", clientActionId: "a1", expectedVersion: 2, type: "playCard", payload: { card: "JS" } }
+    );
+
+    const stage = result.state.stageState as any;
+    expect(stage.currentPlayerId).toBe("p1");
+  });
 });
+

@@ -104,13 +104,20 @@ export class RoomDO extends DurableObject<Env> {
     }
 
     const now = Date.now();
+    const config = { ...input.config };
+    if (!config.seed) {
+      const arr = new Uint32Array(1);
+      crypto.getRandomValues(arr);
+      config.seed = String(arr[0]);
+    }
+
     const room = {
       roomId: input.roomId,
       gameId: input.gameId,
       mode: input.mode,
       minPlayers: input.minPlayers,
       maxPlayers: input.maxPlayers,
-      config: input.config ?? {},
+      config,
       createdAt: now
     };
     const definition = getGameDefinition(input.gameId);
@@ -596,7 +603,20 @@ export class RoomDO extends DurableObject<Env> {
     }
   }
 
-  async webSocketClose(ws: WebSocket): Promise<void> {
+  async webSocketClose(ws: WebSocket, code: number, reason: string, wasClean: boolean): Promise<void> {
+    const attachment = ws.deserializeAttachment() as SocketAttachment | undefined;
+    if (attachment?.playerId) {
+      const activeSibling = this.ctx
+        .getWebSockets(`player:${attachment.playerId}`)
+        .some((candidate) => candidate !== ws && candidate.readyState === WebSocket.OPEN);
+      if (activeSibling) {
+        return;
+      }
+      await this.scheduleDisconnect(attachment.playerId);
+    }
+  }
+
+  async webSocketError(ws: WebSocket, error: unknown): Promise<void> {
     const attachment = ws.deserializeAttachment() as SocketAttachment | undefined;
     if (attachment?.playerId) {
       const activeSibling = this.ctx

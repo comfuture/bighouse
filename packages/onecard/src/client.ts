@@ -82,7 +82,6 @@ function toOneCardClient(context: GameClientContext): OneCardClient {
 
 export function createOneCardGame(container: HTMLElement, client: OneCardClient): OneCardGameInstance {
   const state = { ...client };
-  let lastDiscardPileLength = state.publicView.discardPile.length;
 
   container.classList.add("onecard-game");
   container.innerHTML = `
@@ -333,29 +332,6 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
     const N = Object.keys(pub.hands).length || 2;
     const isMyTurn = pub.currentPlayerId === state.playerId && !pub.winnerPlayerId;
 
-    // Check for flying card animations from others
-    if (pub.discardPile.length > lastDiscardPileLength) {
-      const topPlayed = pub.discardPile[pub.discardPile.length - 1]!;
-      // Find who played it. The previous player before currentPlayerId in the direction sequence played it.
-      // We can animate from that player's seat to the discard pile.
-      // Let's find their relative seat element.
-      // Wait, is it us who played? If so, we already animated, or we can just let it animate.
-      // Let's find the player element.
-      let sourceSeatEl: HTMLElement | null = null;
-      // We'll approximate or just animate from the seat of the non-active player.
-      const prevPlayerId = Object.keys(pub.hands).find((id) => id !== pub.currentPlayerId);
-      if (prevPlayerId) {
-        const relativeSeat = getRelativeSeat(prevPlayerId);
-        if (relativeSeat === "top") sourceSeatEl = seatTop;
-        else if (relativeSeat === "left") sourceSeatEl = seatLeft;
-        else if (relativeSeat === "right") sourceSeatEl = seatRight;
-      }
-      if (sourceSeatEl && discardEl) {
-        triggerFlyAnimation(sourceSeatEl, discardEl, topPlayed);
-      }
-      lastDiscardPileLength = pub.discardPile.length;
-    }
-
     // Render deck count
     if (deckCountEl) {
       deckCountEl.textContent = String(pub.deckCount);
@@ -573,6 +549,25 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
   return {
     update(input) {
       if (state.version === input.version) return;
+      const oldPub = state.publicView;
+      const newPub = input.publicView;
+
+      if (oldPub && newPub && newPub.discardPile.length > oldPub.discardPile.length) {
+        const topPlayed = newPub.discardPile[newPub.discardPile.length - 1]!;
+        const actorId = oldPub.currentPlayerId;
+        if (actorId && actorId !== input.playerId) {
+          let sourceSeatEl: HTMLElement | null = null;
+          const relativeSeat = getRelativeSeat(actorId);
+          if (relativeSeat === "top") sourceSeatEl = seatTop;
+          else if (relativeSeat === "left") sourceSeatEl = seatLeft;
+          else if (relativeSeat === "right") sourceSeatEl = seatRight;
+
+          if (sourceSeatEl && discardEl) {
+            triggerFlyAnimation(sourceSeatEl, discardEl, topPlayed);
+          }
+        }
+      }
+
       state.playerId = input.playerId;
       state.version = input.version;
       state.publicView = input.publicView;

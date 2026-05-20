@@ -72,7 +72,7 @@ function seededShuffle(deck: string[], seed: string): string[] {
 
 export const oneCardDefinition = defineGameDefinition(gameMetadata, {
   initialStageState(context): JsonObject {
-    const seed = context.room.roomId + "_" + context.room.createdAt;
+    const seed = String(context.room.config?.seed ?? (context.room.roomId + "_" + context.room.createdAt));
     let fullDeck = seededShuffle(generateDeck(), seed);
 
     const N = context.players.length;
@@ -113,7 +113,7 @@ export const oneCardDefinition = defineGameDefinition(gameMetadata, {
   },
 
   initialPlayerState(player, context): JsonObject {
-    const seed = context.room.roomId + "_" + context.room.createdAt;
+    const seed = String(context.room.config?.seed ?? (context.room.roomId + "_" + context.room.createdAt));
     const fullDeck = seededShuffle(generateDeck(), seed);
     const seat = player.seat;
     const hand = fullDeck.slice(seat * 7, (seat + 1) * 7);
@@ -488,20 +488,20 @@ function nextPlayerId(players: PlayerSeat[], stage: CardStageState, skipNext: bo
     return players[0]?.playerId ?? "";
   }
 
-  let step = stage.turnDirection === "clockwise" ? 1 : -1;
-  if (skipNext) {
-    step *= 2;
-  }
-
-  let seat = currentSeat;
-  let safety = 0;
-  while (safety < 10) {
-    seat = (seat + step + N) % N;
-    const candidateId = players[seat]?.playerId ?? "";
-    if (!stage.eliminatedPlayerIds.includes(candidateId)) {
-      return candidateId;
+  const step = stage.turnDirection === "clockwise" ? 1 : -1;
+  const findNextActive = (fromSeat: number) => {
+    let s = fromSeat;
+    for (let i = 0; i < N; i++) {
+      s = (s + step + N) % N;
+      const candidateId = players[s]?.playerId ?? "";
+      if (!stage.eliminatedPlayerIds.includes(candidateId)) return s;
     }
-    safety++;
+    return fromSeat;
+  };
+
+  let nextSeat = findNextActive(currentSeat);
+  if (skipNext) {
+    nextSeat = findNextActive(nextSeat);
   }
-  return players[0]?.playerId ?? "";
+  return players[nextSeat]?.playerId ?? "";
 }

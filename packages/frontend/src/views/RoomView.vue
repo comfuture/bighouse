@@ -96,7 +96,7 @@
         </div>
       </UCard>
 
-      <ChatPanel class="order-3 lg:order-3" title="Room chat" :messages="chat" @send="sendChat" />
+      <ChatPanel class="order-3 lg:order-3 lg:col-span-2" title="Room chat" :messages="chat" @send="sendChat" />
     </div>
   </div>
 </template>
