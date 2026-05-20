@@ -1,7 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { normalizeChatBody, type ChatInput, type ChatMessage } from "../core/chat";
 import { GameServerError } from "../core/errors";
-import type { ClientGameAction, GameEvent, JsonObject, PlayerSeat, RoomState, TimerIntent } from "../core/game";
+import type { ClientGameAction, GameEvent, JsonObject, PlayerSeat, RoomInterruption, RoomState, TimerIntent } from "../core/game";
 import { cloneState, privateEventsFor, publicEvents } from "../core/game";
 import { createId, roomDoName } from "../core/ids";
 import {
@@ -40,6 +40,7 @@ export type RoomSummary = {
   minPlayers: number;
   maxPlayers: number;
   hostPlayerId?: string;
+  activeInterruption?: RoomInterruption;
 };
 
 export type ActionAck = {
@@ -161,7 +162,7 @@ export class RoomDO extends DurableObject<Env> {
     if (state.phase === "closed") {
       throw new GameServerError("room_closed", "Room is closed", 409);
     }
-    if (state.phase !== "waiting") {
+    if (state.phase !== "waiting" && !state.activeInterruption) {
       throw new GameServerError("invalid_room_phase", "New players can only join waiting rooms", 409);
     }
     if (state.players.length >= state.room.maxPlayers) {
@@ -188,7 +189,7 @@ export class RoomDO extends DurableObject<Env> {
     state.version += 1;
     this.saveState(state);
     await this.persistRoomIndex(state);
-    await this.rescheduleTimers(definition.nextTimers({ state, now }));
+    await this.rescheduleTimers(state.activeInterruption ? [] : definition.nextTimers({ state, now }));
     this.broadcastPresence(state, input.playerId, true);
     this.broadcastSnapshots(state);
     return this.toSummary(state);
@@ -200,6 +201,10 @@ export class RoomDO extends DurableObject<Env> {
     const player = state.players.find((candidate) => candidate.playerId === playerId);
     if (!player) {
       throw new GameServerError("player_not_found", "Player is not in this room", 404);
+    }
+
+    if (state.phase === "active") {
+      return this.handleActivePlayerLeave(state, playerId);
     }
 
     player.connected = false;
@@ -216,6 +221,48 @@ export class RoomDO extends DurableObject<Env> {
     state.version += 1;
     this.saveState(state);
     await this.persistRoomIndex(state);
+    this.broadcastPresence(state, playerId, false);
+    this.broadcastSnapshots(state);
+    return this.toSummary(state);
+  }
+
+  private async handleActivePlayerLeave(state: RoomState, playerId: string): Promise<RoomSummary> {
+    const now = Date.now();
+    const playerIndex = state.players.findIndex((candidate) => candidate.playerId === playerId);
+    const [leftPlayer] = state.players.splice(playerIndex, 1);
+    delete state.playerStates[playerId];
+    this.resetSeats(state.players);
+
+    if (state.room.hostPlayerId === playerId) {
+      const nextHost = state.players.find((candidate) => candidate.connected) ?? state.players[0];
+      if (nextHost) {
+        state.room.hostPlayerId = nextHost.playerId;
+      } else {
+        delete state.room.hostPlayerId;
+      }
+    }
+
+    if (state.players.length === 0) {
+      state.phase = "closed";
+      state.closedAt = now;
+      delete state.activeInterruption;
+      state.emptySince = now;
+    } else {
+      delete state.emptySince;
+      state.activeInterruption = {
+        reason: "player_left",
+        playerId,
+        ...(leftPlayer?.displayName ? { displayName: leftPlayer.displayName } : {}),
+        hostPlayerId: state.room.hostPlayerId!,
+        createdAt: now
+      };
+    }
+
+    state.updatedAt = now;
+    state.version += 1;
+    this.saveState(state);
+    await this.persistRoomIndex(state);
+    await this.rescheduleTimers([]);
     this.broadcastPresence(state, playerId, false);
     this.broadcastSnapshots(state);
     return this.toSummary(state);
@@ -269,6 +316,31 @@ export class RoomDO extends DurableObject<Env> {
     const requiredReadyPlayers = state.players.filter((candidate) => candidate.playerId !== state.room.hostPlayerId);
     if (!requiredReadyPlayers.every((candidate) => candidate.ready)) {
       throw new GameServerError("players_not_ready", "All non-host players must be ready before starting", 409);
+    }
+
+    const now = Date.now();
+    const definition = getGameDefinition(state.room.gameId);
+    this.resetGameState(state, definition, now);
+    state.phase = "active";
+    state.updatedAt = now;
+    state.version += 1;
+    this.saveState(state);
+    await this.persistRoomIndex(state);
+    await this.rescheduleTimers(definition.nextTimers({ state, now }));
+    this.broadcastSnapshots(state);
+    return this.toSummary(state);
+  }
+
+  async restartGame(playerId: string): Promise<RoomSummary> {
+    const state = this.requireState();
+    if (!state.activeInterruption) {
+      throw new GameServerError("invalid_room_phase", "No interrupted game is waiting for restart", 409);
+    }
+    if (state.room.hostPlayerId !== playerId) {
+      throw new GameServerError("forbidden", "Only the host can restart the interrupted game", 403);
+    }
+    if (state.players.length < state.room.minPlayers) {
+      throw new GameServerError("not_enough_players", "Not enough players to restart", 409);
     }
 
     const now = Date.now();
@@ -429,6 +501,9 @@ export class RoomDO extends DurableObject<Env> {
     if (state.phase !== "active") {
       throw new GameServerError("invalid_action", "Room is not active", 409);
     }
+    if (state.activeInterruption) {
+      throw new GameServerError("game_interrupted", "Game is waiting for the host to restart after a player left", 409);
+    }
 
     const now = Date.now();
     const definition = getGameDefinition(state.room.gameId);
@@ -528,6 +603,14 @@ export class RoomDO extends DurableObject<Env> {
   async tryStartGame(playerId: string): Promise<RoomCommandResultEnvelope> {
     try {
       return { ok: true, summary: await this.startGame(playerId) };
+    } catch (error) {
+      return this.toCommandError(error);
+    }
+  }
+
+  async tryRestartGame(playerId: string): Promise<RoomCommandResultEnvelope> {
+    try {
+      return { ok: true, summary: await this.restartGame(playerId) };
     } catch (error) {
       return this.toCommandError(error);
     }
@@ -720,6 +803,12 @@ export class RoomDO extends DurableObject<Env> {
       this.sendToSocket(ws, this.message(this.requireState(), "ack", { command: "startGame", result: { summary } }));
       return;
     }
+    if (message.type === "restartGame") {
+      const playerId = this.requireSocketPlayer(ws, message.playerId);
+      const summary = await this.restartGame(playerId);
+      this.sendToSocket(ws, this.message(this.requireState(), "ack", { command: "restartGame", result: { summary } }));
+      return;
+    }
     if (message.type === "playAgain") {
       const playerId = this.requireSocketPlayer(ws, message.playerId);
       const summary = await this.requestPlayAgain(playerId);
@@ -828,6 +917,7 @@ export class RoomDO extends DurableObject<Env> {
       state.players.map((player) => [player.playerId, definition.initialPlayerState(player, { room: state.room, now })])
     );
     state.rematchRequests = {};
+    delete state.activeInterruption;
     delete state.closedAt;
   }
 
@@ -907,6 +997,7 @@ export class RoomDO extends DurableObject<Env> {
       maxPlayers: state.room.maxPlayers,
       ...(state.room.hostPlayerId ? { hostPlayerId: state.room.hostPlayerId } : {}),
       rematchRequests: Object.keys(state.rematchRequests ?? {}),
+      ...(state.activeInterruption ? { activeInterruption: state.activeInterruption } : {}),
       players: state.players,
       publicView: definition.getPublicView(context),
       privateView: definition.getPrivateView(context, playerId)
@@ -924,7 +1015,8 @@ export class RoomDO extends DurableObject<Env> {
       readyCount: state.players.filter((player) => player.playerId !== state.room.hostPlayerId && player.ready).length,
       minPlayers: state.room.minPlayers,
       maxPlayers: state.room.maxPlayers,
-      ...(state.room.hostPlayerId ? { hostPlayerId: state.room.hostPlayerId } : {})
+      ...(state.room.hostPlayerId ? { hostPlayerId: state.room.hostPlayerId } : {}),
+      ...(state.activeInterruption ? { activeInterruption: state.activeInterruption } : {})
     };
   }
 
@@ -982,6 +1074,10 @@ export class RoomDO extends DurableObject<Env> {
     const status =
       state.phase === "closed"
         ? "closed"
+        : state.activeInterruption
+          ? state.players.length >= state.room.minPlayers
+            ? "matching"
+            : "open"
         : state.phase === "active" || state.phase === "finished"
           ? "active"
           : state.players.length >= state.room.minPlayers

@@ -41,6 +41,14 @@ export type RoomConfig = {
 
 export type RoomPhase = "waiting" | "active" | "finished" | "closed";
 
+export type RoomInterruption = {
+  reason: "player_left";
+  playerId: string;
+  displayName?: string;
+  hostPlayerId: string;
+  createdAt: number;
+};
+
 export type RoomState = {
   room: RoomConfig;
   phase: RoomPhase;
@@ -50,6 +58,7 @@ export type RoomState = {
   playerStates: Record<string, JsonObject>;
   updatedAt: number;
   rematchRequests?: Record<string, number>;
+  activeInterruption?: RoomInterruption;
   emptySince?: number;
   closedAt?: number;
 };

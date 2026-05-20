@@ -1,5 +1,5 @@
 import type { ChatMessage } from "./chat";
-import type { GameEvent, JsonObject, PlayerSeat, RoomPhase } from "./game";
+import type { GameEvent, JsonObject, PlayerSeat, RoomInterruption, RoomPhase } from "./game";
 
 export type ClientMessage =
   | {
@@ -24,6 +24,10 @@ export type ClientMessage =
     }
   | {
       type: "startGame";
+      playerId: string;
+    }
+  | {
+      type: "restartGame";
       playerId: string;
     }
   | {
@@ -70,6 +74,7 @@ export type SnapshotPayload = {
   maxPlayers: number;
   hostPlayerId?: string;
   rematchRequests: string[];
+  activeInterruption?: RoomInterruption;
   players: PlayerSeat[];
   publicView: JsonObject;
   privateView: JsonObject;

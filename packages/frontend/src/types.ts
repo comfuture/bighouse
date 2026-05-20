@@ -40,6 +40,13 @@ export type RoomSnapshot = {
   maxPlayers: number;
   hostPlayerId?: string;
   rematchRequests: string[];
+  activeInterruption?: {
+    reason: "player_left";
+    playerId: string;
+    displayName?: string;
+    hostPlayerId: string;
+    createdAt: number;
+  };
   players: Player[];
   publicView: Record<string, unknown>;
   privateView: Record<string, unknown>;
