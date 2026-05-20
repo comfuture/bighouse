@@ -1,6 +1,7 @@
 .gomoku-game {
   display: grid;
   gap: 0.75rem;
+  min-inline-size: 0;
 }
 
 .gomoku-status {
@@ -13,19 +14,21 @@
 
 .gomoku-stage {
   position: relative;
+  justify-self: center;
   inline-size: fit-content;
   max-inline-size: 100%;
 }
 
 .gomoku-board {
-  --point-size: min(36px, calc((100vw - 3rem) / var(--board-size)));
+  --point-size: clamp(16px, 5vw, 36px);
   --line-color: rgb(111 83 36 / 0.72);
   position: relative;
+  box-sizing: border-box;
   display: grid;
   grid-template-columns: repeat(var(--board-size), var(--point-size));
   inline-size: fit-content;
   max-inline-size: 100%;
-  overflow: auto;
+  overflow: hidden;
   border: 2px solid #6f5324;
   padding: calc(var(--point-size) / 2);
   background: #d8ad5f;
