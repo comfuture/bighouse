@@ -84,7 +84,7 @@
         </UCard>
       </div>
 
-      <UCard class="order-2 min-w-0 lg:order-2" :ui="{ header: 'p-3 sm:px-6 sm:py-4', body: 'p-3 sm:p-6' }">
+      <UCard class="order-2 min-w-0 -mx-4 sm:mx-0 lg:order-2" :ui="{ header: 'p-3 sm:px-6 sm:py-4', body: 'p-0 sm:p-6' }">
         <template #header>
           <div class="flex items-center justify-between">
             <h2 class="font-semibold">Game</h2>
