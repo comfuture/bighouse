@@ -130,7 +130,10 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
       <div class="player-hand-container">
         <div class="hand-header">
           <span class="player-name">Your Hand</span>
-          <button type="button" class="pass-button is-hidden" data-role="pass-button">Pass / End Turn</button>
+          <div class="hand-actions">
+            <button type="button" class="draw-button is-hidden" data-role="draw-button">Draw</button>
+            <button type="button" class="pass-button is-hidden" data-role="pass-button">Pass / End Turn</button>
+          </div>
         </div>
         <div class="player-hand" data-role="player-hand"></div>
       </div>
@@ -174,6 +177,7 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
   const wildSuitBanner = container.querySelector<HTMLElement>("[data-role='wild-suit-banner']");
   const statusBar = container.querySelector<HTMLElement>("[data-role='status-bar']");
   const playerHandEl = container.querySelector<HTMLElement>("[data-role='player-hand']");
+  const drawButton = container.querySelector<HTMLButtonElement>("[data-role='draw-button']");
   const passButton = container.querySelector<HTMLButtonElement>("[data-role='pass-button']");
   const suitPicker = container.querySelector<HTMLElement>("[data-role='suit-picker']");
   const resultModal = container.querySelector<HTMLElement>("[data-role='result-modal']");
@@ -189,10 +193,11 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
 
   // Set event listeners
   deckEl?.addEventListener("click", () => {
-    const isMyTurn = state.publicView.currentPlayerId === state.playerId;
-    if (isMyTurn && !state.publicView.winnerPlayerId) {
-      client.sendAction({ type: "drawCard", payload: {} });
-    }
+    drawCard();
+  });
+
+  drawButton?.addEventListener("click", () => {
+    drawCard();
   });
 
   passButton?.addEventListener("click", () => {
@@ -362,11 +367,20 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
     return { playerId: actorId, count: newCount - oldCount, wasAttack: oldPub.activeAttackCount > 0 };
   }
 
+  function drawCard(): void {
+    const isMyTurn = state.publicView.currentPlayerId === state.playerId;
+    if (isMyTurn && !state.publicView.winnerPlayerId) {
+      client.sendAction({ type: "drawCard", payload: {} });
+    }
+  }
+
   function render(): void {
     const pub = state.publicView;
     const priv = state.privateView;
     const N = Object.keys(pub.hands).length || 2;
     const isMyTurn = pub.currentPlayerId === state.playerId && !pub.winnerPlayerId;
+    const playable = getPlayableCards(priv.hand, pub);
+    const hasPlayableCard = playable.length > 0;
 
     // Render deck count
     if (deckCountEl) {
@@ -414,6 +428,16 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
     renderSeats();
 
     // Render Pass button (Only visible if King played and hasExtraTurn is true)
+    if (drawButton) {
+      if (isMyTurn) {
+        drawButton.classList.remove("is-hidden");
+        drawButton.classList.toggle("is-urgent", pub.activeAttackCount > 0 && !hasPlayableCard);
+        drawButton.textContent = pub.activeAttackCount > 0 ? `Draw +${pub.activeAttackCount}` : "Draw";
+      } else {
+        drawButton.classList.add("is-hidden");
+        drawButton.classList.remove("is-urgent");
+      }
+    }
     if (passButton) {
       if (isMyTurn && pub.hasExtraTurn) {
         passButton.classList.remove("is-hidden");
@@ -429,7 +453,9 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
         statusBar.textContent = pub.winnerPlayerId === state.playerId ? "🏆 You Won!" : "Game Over";
       } else if (pub.activeAttackCount > 0) {
         statusBar.className = "onecard-status-bar active-attack";
-        statusBar.innerHTML = `Attack <strong>+${pub.activeAttackCount}</strong>: defend or draw`;
+        statusBar.innerHTML = hasPlayableCard
+          ? `Attack <strong>+${pub.activeAttackCount}</strong>: defend or draw`
+          : `Attack <strong>+${pub.activeAttackCount}</strong>: no defense card, draw from the deck`;
       } else if (drawNotice) {
         statusBar.className = "onecard-status-bar draw-notice";
         const subject = drawNotice.playerId === state.playerId ? "You" : getPlayerName(drawNotice.playerId);
@@ -451,7 +477,6 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
     // Render player's hand cards
     if (playerHandEl) {
       playerHandEl.innerHTML = "";
-      const playable = getPlayableCards(priv.hand, pub);
       playerHandEl.style.setProperty("--hand-card-overlap", `${getMobileHandOverlap(priv.hand.length)}px`);
 
       priv.hand.forEach((card) => {
