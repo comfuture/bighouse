@@ -207,13 +207,30 @@ export class RoomDO extends DurableObject<Env> {
       return this.handleActivePlayerLeave(state, playerId);
     }
 
-    player.connected = false;
     if (state.phase === "waiting") {
+      state.players.splice(state.players.indexOf(player), 1);
+      delete state.playerStates[playerId];
+      this.resetSeats(state.players);
+      if (state.room.hostPlayerId === playerId) {
+        const nextHost = state.players.find((candidate) => candidate.connected) ?? state.players[0];
+        if (nextHost) {
+          state.room.hostPlayerId = nextHost.playerId;
+        } else {
+          delete state.room.hostPlayerId;
+        }
+      }
+      player.connected = false;
       player.ready = false;
+    } else {
+      player.connected = false;
     }
     const now = Date.now();
     state.updatedAt = now;
-    if (state.players.every((candidate) => !candidate.connected)) {
+    if (state.phase === "waiting" && state.players.length === 0) {
+      state.phase = "closed";
+      state.closedAt = now;
+      state.emptySince = now;
+    } else if (state.players.every((candidate) => !candidate.connected)) {
       state.emptySince = now;
     } else {
       delete state.emptySince;
@@ -223,6 +240,22 @@ export class RoomDO extends DurableObject<Env> {
     await this.persistRoomIndex(state);
     this.broadcastPresence(state, playerId, false);
     this.broadcastSnapshots(state);
+    return this.toSummary(state);
+  }
+
+  async refreshLobbyStatus(): Promise<RoomSummary> {
+    const state = this.requireState();
+    if (state.phase === "waiting" && state.players.length > 0 && state.players.every((player) => !player.connected)) {
+      const now = Date.now();
+      state.phase = "closed";
+      state.closedAt = now;
+      state.emptySince = now;
+      state.updatedAt = now;
+      state.version += 1;
+      this.saveState(state);
+      await this.persistRoomIndex(state);
+      await this.rescheduleTimers([]);
+    }
     return this.toSummary(state);
   }
 
