@@ -8,6 +8,55 @@ type RoomDOTestAccess = {
   scheduleDisconnect(playerId: string, delayMs?: number): Promise<void>;
 };
 
+type OneCardPublicViewForTest = {
+  discardPile: string[];
+  activeAttackCount: number;
+  activeAttackCard?: string;
+  chosenSuit?: "S" | "H" | "C" | "D";
+};
+
+function findOneCardAction(
+  publicView: OneCardPublicViewForTest,
+  hand: string[]
+): { type: "playCard"; payload: { card: string; chosenSuit?: string } } | { type: "drawCard"; payload: Record<string, never> } {
+  const playable = hand.find((card) => isPlayableOneCard(publicView, card));
+  if (!playable) {
+    return { type: "drawCard", payload: {} };
+  }
+  const rank = playable === "BJ" || playable === "CJ" ? playable : playable.slice(0, -1);
+  return playable === "BJ" || playable === "CJ" || rank === "7"
+    ? { type: "playCard", payload: { card: playable, chosenSuit: "S" } }
+    : { type: "playCard", payload: { card: playable } };
+}
+
+function isPlayableOneCard(publicView: OneCardPublicViewForTest, card: string): boolean {
+  const topCard = publicView.discardPile.at(-1);
+  if (!topCard) return true;
+
+  const isCardJoker = card === "BJ" || card === "CJ";
+  const cardSuit = isCardJoker ? "J" : card.slice(-1);
+  const cardRank = isCardJoker ? card : card.slice(0, -1);
+
+  if (publicView.activeAttackCount > 0 && publicView.activeAttackCard) {
+    const attackCard = publicView.activeAttackCard;
+    const isAttackJoker = attackCard === "BJ" || attackCard === "CJ";
+    const attackRank = isAttackJoker ? attackCard : attackCard.slice(0, -1);
+    if (attackRank === "2") return cardRank === "2" || cardRank === "A" || isCardJoker;
+    if (attackRank === "A") return cardRank === "A" || isCardJoker;
+    if (attackCard === "BJ") return card === "CJ";
+    return false;
+  }
+
+  if (isCardJoker) return true;
+  const isTopJoker = topCard === "BJ" || topCard === "CJ";
+  const topSuit = isTopJoker ? "J" : topCard.slice(-1);
+  const topRank = isTopJoker ? topCard : topCard.slice(0, -1);
+  if ((isTopJoker || topRank === "7") && publicView.chosenSuit) {
+    return cardSuit === publicView.chosenSuit;
+  }
+  return cardSuit === topSuit || cardRank === topRank;
+}
+
 describe("RoomDO", () => {
   it("handles join, duplicate action ids, stale versions, and invalid turns", async () => {
     const room = env.ROOM_DO.getByName("room:test-gomoku") as unknown as RoomDO;
@@ -173,6 +222,54 @@ describe("RoomDO", () => {
     });
     expect(ack.events).toHaveLength(1);
     expect(ack.events[0]).toMatchObject({ type: "card.played", visibility: "public", payload: { card: "AS" } });
+  });
+
+  it("starts one card rooms and accepts validated card actions", async () => {
+    const room = env.ROOM_DO.getByName("room:test-onecard") as unknown as RoomDO;
+    await room.initialize({
+      roomId: "test-onecard",
+      gameId: "onecard",
+      mode: "default",
+      minPlayers: 2,
+      maxPlayers: 4,
+      config: { seed: "onecard-roomdo-test" }
+    });
+    await room.join({ playerId: "p1" });
+    await room.join({ playerId: "p2" });
+    const waitingSnapshot = await room.getSnapshot("p1");
+    expect(waitingSnapshot.publicView).toMatchObject({ discardPile: [], deckCount: 0 });
+    expect(waitingSnapshot.privateView).toMatchObject({ hand: [] });
+
+    await room.setReady("p2", true);
+    await expect(room.startGame("p1")).resolves.toMatchObject({ phase: "active", playerCount: 2 });
+
+    const p1 = await room.getSnapshot("p1");
+    const p2 = await room.getSnapshot("p2");
+    expect(p1.privateView).toMatchObject({ hand: expect.any(Array) });
+    expect(p2.privateView).toMatchObject({ hand: expect.any(Array) });
+    expect((p1.privateView as { hand: string[] }).hand).toHaveLength(7);
+    expect((p2.privateView as { hand: string[] }).hand).toHaveLength(7);
+    expect(JSON.stringify(p1.publicView)).not.toContain((p1.privateView as { hand: string[] }).hand[0]!);
+
+    await expect(
+      room.trySubmitAction({
+        playerId: "p1",
+        clientActionId: "bad-suit",
+        expectedVersion: p1.version,
+        type: "playCard",
+        payload: { card: "BJ", chosenSuit: "X" }
+      })
+    ).resolves.toMatchObject({ ok: false, error: { code: "invalid_action" } });
+
+    const playable = findOneCardAction(p1.publicView as OneCardPublicViewForTest, (p1.privateView as { hand: string[] }).hand);
+    const ack = await room.submitAction({
+      playerId: "p1",
+      clientActionId: "onecard-action-1",
+      expectedVersion: p1.version,
+      type: playable.type,
+      payload: playable.payload
+    });
+    expect(ack.version).toBe(p1.version + 1);
   });
 
   it("schedules and runs the room alarm for gomoku turn timers", async () => {

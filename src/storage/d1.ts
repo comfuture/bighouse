@@ -1,3 +1,5 @@
+import type { GameMetadata } from "../core/game";
+
 export type RoomStatus = "open" | "matching" | "active" | "closed";
 
 export type RoomIndexRecord = {
@@ -82,6 +84,31 @@ function mapRoom(row: RoomDbRow): RoomIndexRecord {
 
 export class D1Repository {
   constructor(private readonly db: D1Database) {}
+
+  async upsertGame(game: GameMetadata): Promise<void> {
+    await this.db
+      .prepare(
+        `INSERT INTO games (
+          game_id, adapter_key, display_name, enabled, min_players, max_players, config_json, updated_at
+        ) VALUES (?, ?, ?, 1, ?, ?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(game_id) DO UPDATE SET
+          adapter_key = excluded.adapter_key,
+          display_name = excluded.display_name,
+          min_players = excluded.min_players,
+          max_players = excluded.max_players,
+          config_json = excluded.config_json,
+          updated_at = CURRENT_TIMESTAMP`
+      )
+      .bind(
+        game.gameId,
+        game.adapterKey,
+        game.displayName,
+        game.minPlayers,
+        game.maxPlayers,
+        JSON.stringify(game.config ?? {})
+      )
+      .run();
+  }
 
   async upsertRoom(room: RoomIndexRecord): Promise<void> {
     await this.db

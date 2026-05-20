@@ -30,6 +30,15 @@ function baseState(numPlayers = 2): RoomState {
 }
 
 describe("One Card Game Logic", () => {
+  it("initializes a waiting room before players join", () => {
+    const state = baseState(0);
+    const stage = oneCardDefinition.initialStageState({ room: state.room, players: [], now: 1 }) as any;
+
+    expect(stage.discardPile).toHaveLength(0);
+    expect(stage.currentPlayerId).toBeUndefined();
+    expect(stage.deckCount).toBe(stage.deck.length);
+  });
+
   it("initializes game state with correct deal and stage deck", () => {
     const state = baseState(2);
     state.stageState = oneCardDefinition.initialStageState({ room: state.room, players: state.players, now: 1 });
@@ -242,12 +251,55 @@ describe("One Card Game Logic", () => {
         { state: cloneState(afterDraw.state), now: 1 },
         { playerId: "p1", clientActionId: "a3", expectedVersion: 2, type: "playCard", payload: { card: "7S" } }
       )
-    ).toMatchObject({ ok: false, code: "invalid_action", message: "Must match the chosen Joker suit: H" });
+    ).toMatchObject({ ok: false, code: "invalid_action", message: "Must match the chosen suit: H" });
 
     expect(
       oneCardDefinition.validateAction(
         { state: cloneState(afterDraw.state), now: 1 },
         { playerId: "p1", clientActionId: "a3", expectedVersion: 2, type: "playCard", payload: { card: "7H" } }
+      )
+    ).toMatchObject({ ok: true });
+  });
+
+  it("validates suit choices and lets sevens change the active suit", () => {
+    const state = baseState(2);
+    state.stageState = {
+      discardPile: ["5S"],
+      deck: ["10S"],
+      deckCount: 1,
+      currentPlayerId: "p1",
+      turnDirection: "clockwise",
+      activeAttackCount: 0,
+      eliminatedPlayerIds: [],
+      hasExtraTurn: false
+    };
+    state.playerStates.p1 = { hand: ["7S", "5H", "BJ"] };
+    state.playerStates.p2 = { hand: ["3H"] };
+
+    expect(
+      oneCardDefinition.validateAction(
+        { state: cloneState(state), now: 1 },
+        { playerId: "p1", clientActionId: "bad-suit", expectedVersion: 2, type: "playCard", payload: { card: "BJ", chosenSuit: "X" } }
+      )
+    ).toMatchObject({ ok: false, code: "invalid_action", message: "chosenSuit must be S, H, C, or D" });
+
+    expect(
+      oneCardDefinition.validateAction(
+        { state: cloneState(state), now: 1 },
+        { playerId: "p1", clientActionId: "bad-card-suit", expectedVersion: 2, type: "playCard", payload: { card: "5H", chosenSuit: "D" } }
+      )
+    ).toMatchObject({ ok: false, code: "invalid_action", message: "Only a 7 or Joker can choose a suit" });
+
+    const result = oneCardDefinition.applyAction(
+      { state: cloneState(state), now: 1 },
+      { playerId: "p1", clientActionId: "seven", expectedVersion: 2, type: "playCard", payload: { card: "7S", chosenSuit: "H" } }
+    );
+    expect(result.state.stageState).toMatchObject({ chosenSuit: "H", currentPlayerId: "p2" });
+
+    expect(
+      oneCardDefinition.validateAction(
+        { state: cloneState(result.state), now: 1 },
+        { playerId: "p2", clientActionId: "match-choice", expectedVersion: 3, type: "playCard", payload: { card: "3H" } }
       )
     ).toMatchObject({ ok: true });
   });
@@ -438,4 +490,3 @@ describe("One Card Game Logic", () => {
     expect(stage.currentPlayerId).toBe("p1");
   });
 });
-

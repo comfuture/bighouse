@@ -76,6 +76,18 @@ export const oneCardDefinition = defineGameDefinition(gameMetadata, {
     let fullDeck = seededShuffle(generateDeck(), seed);
 
     const N = context.players.length;
+    if (N === 0) {
+      return {
+        discardPile: [],
+        deck: [],
+        deckCount: 0,
+        turnDirection: "clockwise",
+        activeAttackCount: 0,
+        eliminatedPlayerIds: [],
+        hasExtraTurn: false
+      } satisfies CardStageState;
+    }
+
     // Deal 7 cards to each player seat (initial hands are sliced deterministically by seat)
     const dealtCount = N * 7;
     const initialDeck = fullDeck.slice(dealtCount);
@@ -100,11 +112,12 @@ export const oneCardDefinition = defineGameDefinition(gameMetadata, {
     // Reconstruct remaining deck without the open card
     deck = initialDeck.filter((_, idx) => idx !== openCardIndex);
 
+    const firstPlayerId = context.players[0]?.playerId;
     return {
       discardPile,
       deck,
       deckCount: deck.length,
-      currentPlayerId: context.players[0]!.playerId,
+      ...(firstPlayerId ? { currentPlayerId: firstPlayerId } : {}),
       turnDirection: "clockwise",
       activeAttackCount: 0,
       eliminatedPlayerIds: [],
@@ -134,6 +147,13 @@ export const oneCardDefinition = defineGameDefinition(gameMetadata, {
       const card = String(action.payload.card ?? "");
       if (!card) {
         return { ok: false, code: "invalid_action", message: "card is required" };
+      }
+      const chosenSuit = action.payload.chosenSuit;
+      if (chosenSuit !== undefined && !isSuit(chosenSuit)) {
+        return { ok: false, code: "invalid_action", message: "chosenSuit must be S, H, C, or D" };
+      }
+      if (chosenSuit !== undefined && !canChooseSuit(card)) {
+        return { ok: false, code: "invalid_action", message: "Only a 7 or Joker can choose a suit" };
       }
       const playerState = readPlayer(context.state.playerStates[action.playerId]);
       if (!playerState.hand.includes(card)) {
@@ -170,7 +190,7 @@ export const oneCardDefinition = defineGameDefinition(gameMetadata, {
 
     if (action.type === "playCard") {
       const card = String(action.payload.card);
-      const chosenSuit = action.payload.chosenSuit as "S" | "H" | "C" | "D" | undefined;
+      const chosenSuit = isSuit(action.payload.chosenSuit) ? action.payload.chosenSuit : undefined;
 
       // Remove from hand
       playerState.hand = playerState.hand.filter((held) => held !== card);
@@ -183,8 +203,8 @@ export const oneCardDefinition = defineGameDefinition(gameMetadata, {
       const rank = isBJ || isCJ ? card : card.slice(0, -1);
 
       // Set wild suit choice
-      if (isBJ || isCJ) {
-        stage.chosenSuit = chosenSuit ?? "S";
+      if (isBJ || isCJ || rank === "7") {
+        stage.chosenSuit = chosenSuit ?? (rank === "7" ? (card.slice(-1) as "S" | "H" | "C" | "D") : "S");
       } else {
         // Clear chosenSuit if a matching standard card is played
         delete stage.chosenSuit;
@@ -372,27 +392,31 @@ export const oneCardDefinition = defineGameDefinition(gameMetadata, {
 
   getPublicView(context: GameContext): JsonObject {
     const stage = readStage(context.state.stageState);
+    const showTable = context.state.phase === "active" || context.state.phase === "finished";
     return {
-      discardPile: stage.discardPile,
-      deckCount: stage.deck.length,
-      currentPlayerId: stage.currentPlayerId ?? context.state.players[0]?.playerId,
+      discardPile: showTable ? stage.discardPile : [],
+      deckCount: showTable ? stage.deck.length : 0,
+      currentPlayerId: showTable ? stage.currentPlayerId ?? context.state.players[0]?.playerId : undefined,
       turnDirection: stage.turnDirection,
-      activeAttackCount: stage.activeAttackCount,
-      activeAttackCard: stage.activeAttackCard,
-      chosenSuit: stage.chosenSuit,
+      activeAttackCount: showTable ? stage.activeAttackCount : 0,
+      activeAttackCard: showTable ? stage.activeAttackCard : undefined,
+      chosenSuit: showTable ? stage.chosenSuit : undefined,
       winnerPlayerId: stage.winnerPlayerId,
       eliminatedPlayerIds: stage.eliminatedPlayerIds,
-      hasExtraTurn: stage.hasExtraTurn,
+      hasExtraTurn: showTable ? stage.hasExtraTurn : false,
       hands: Object.fromEntries(
         context.state.players.map((player) => [
           player.playerId,
-          { count: readPlayer(context.state.playerStates[player.playerId]).hand.length }
+          { count: showTable ? readPlayer(context.state.playerStates[player.playerId]).hand.length : 0 }
         ])
       )
     };
   },
 
   getPrivateView(context: GameContext, playerId: string): JsonObject {
+    if (context.state.phase !== "active" && context.state.phase !== "finished") {
+      return { hand: [] } satisfies CardPlayerState;
+    }
     return readPlayer(context.state.playerStates[playerId]);
   },
 
@@ -412,6 +436,14 @@ function readStage(value: JsonObject): CardStageState {
 
 function readPlayer(value: JsonObject | undefined): CardPlayerState {
   return (value ?? { hand: [] }) as unknown as CardPlayerState;
+}
+
+function isSuit(value: unknown): value is "S" | "H" | "C" | "D" {
+  return value === "S" || value === "H" || value === "C" || value === "D";
+}
+
+function canChooseSuit(card: string): boolean {
+  return card === "BJ" || card === "CJ" || card.slice(0, -1) === "7";
 }
 
 // Check valid move logic authoritatively
@@ -465,12 +497,12 @@ function validateCardPlay(stage: CardStageState, card: string): ValidationResult
   const topSuit = isTopJoker ? "J" : topCard.slice(-1) as "S" | "H" | "C" | "D";
   const topRank = isTopJoker ? topCard : topCard.slice(0, -1);
 
-  // If top is Joker, matching goes by declared chosenSuit
-  if (isTopJoker && stage.chosenSuit) {
+  // If top is Joker or a 7, matching goes by the declared chosen suit.
+  if ((isTopJoker || topRank === "7") && stage.chosenSuit) {
     if (cardSuit === stage.chosenSuit) {
       return { ok: true };
     }
-    return { ok: false, code: "invalid_action", message: `Must match the chosen Joker suit: ${stage.chosenSuit}` };
+    return { ok: false, code: "invalid_action", message: `Must match the chosen suit: ${stage.chosenSuit}` };
   }
 
   // Standard match (same suit or same rank)
