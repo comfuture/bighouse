@@ -165,6 +165,9 @@ export const oneCardDefinition = defineGameDefinition(gameMetadata, {
       if (!validation.ok) {
         return validation;
       }
+      if (chosenSuit === undefined && canChooseSuit(card)) {
+        return { ok: false, code: "invalid_action", message: "chosenSuit is required for a 7 or Joker" };
+      }
       return { ok: true };
     }
 
@@ -204,7 +207,10 @@ export const oneCardDefinition = defineGameDefinition(gameMetadata, {
 
       // Set wild suit choice
       if (isBJ || isCJ || rank === "7") {
-        stage.chosenSuit = chosenSuit ?? (rank === "7" ? (card.slice(-1) as "S" | "H" | "C" | "D") : "S");
+        if (!chosenSuit) {
+          throw new Error("chosenSuit must be validated before applying a 7 or Joker");
+        }
+        stage.chosenSuit = chosenSuit;
       } else {
         // Clear chosenSuit if a matching standard card is played
         delete stage.chosenSuit;
