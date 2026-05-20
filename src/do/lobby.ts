@@ -239,7 +239,19 @@ export class LobbyDO extends DurableObject<Env> {
     }
   }
 
-  async webSocketClose(ws: WebSocket): Promise<void> {
+  async webSocketClose(ws: WebSocket, code: number, reason: string, wasClean: boolean): Promise<void> {
+    const attachment = ws.deserializeAttachment() as LobbySocketAttachment | undefined;
+    if (attachment?.playerId) {
+      const activeSibling = this.ctx
+        .getWebSockets(`player:${attachment.playerId}`)
+        .some((candidate) => candidate !== ws && candidate.readyState === WebSocket.OPEN);
+      if (!activeSibling) {
+        this.ctx.storage.sql.exec("UPDATE lobby_players SET connected = 0, updated_at = ? WHERE player_id = ?", Date.now(), attachment.playerId);
+      }
+    }
+  }
+
+  async webSocketError(ws: WebSocket, error: unknown): Promise<void> {
     const attachment = ws.deserializeAttachment() as LobbySocketAttachment | undefined;
     if (attachment?.playerId) {
       const activeSibling = this.ctx

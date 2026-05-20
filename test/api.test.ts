@@ -10,7 +10,7 @@ describe("HTTP API", () => {
     const gamesResponse = await SELF.fetch("https://bighouse.test/games");
     expect(gamesResponse.status).toBe(200);
     const gamesBody = (await gamesResponse.json()) as { games: Array<{ gameId: string; description: string; minPlayers: number; maxPlayers: number }> };
-    expect(gamesBody.games.map((game) => game.gameId)).toEqual(["card-demo", "gomoku"]);
+    expect(gamesBody.games.map((game) => game.gameId)).toEqual(["card-demo", "gomoku", "onecard"]);
     expect(gamesBody.games).toContainEqual(
       expect.objectContaining({
         gameId: "gomoku",
@@ -27,7 +27,7 @@ describe("HTTP API", () => {
     await env.DB.prepare("UPDATE games SET enabled = 0 WHERE game_id = 'gomoku'").run();
     const filteredResponse = await SELF.fetch("https://bighouse.test/games");
     const filteredBody = (await filteredResponse.json()) as { games: Array<{ gameId: string }> };
-    expect(filteredBody.games.map((game) => game.gameId)).toEqual(["card-demo", "gomoku"]);
+    expect(filteredBody.games.map((game) => game.gameId)).toEqual(["card-demo", "gomoku", "onecard"]);
     const staleJoinResponse = await SELF.fetch("https://bighouse.test/games/stale-game/lobbies/default/join", {
       method: "POST",
       body: JSON.stringify({ playerId: "p1" })
