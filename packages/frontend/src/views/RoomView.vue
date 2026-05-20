@@ -364,7 +364,7 @@ function sendChat(body: string, targetPlayerId?: string): void {
 }
 
 function goToLobby(): void {
-  if (room.value?.phase === "active") {
+  if (room.value?.phase === "waiting" || room.value?.phase === "active") {
     leaveRoom();
     return;
   }
