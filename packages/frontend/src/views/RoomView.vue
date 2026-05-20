@@ -45,36 +45,28 @@
                 </UBadge>
               </div>
             </div>
-          </div>
-        </UCard>
 
-        <UCard>
-          <template #header>
-            <h2 class="font-semibold">Room controls</h2>
-          </template>
+            <div class="border-t border-default pt-3">
+              <UButton
+                v-if="!isHost"
+                :label="me?.ready ? 'Cancel ready' : 'Ready'"
+                :icon="me?.ready ? 'i-lucide-circle-x' : 'i-lucide-circle-check'"
+                :color="me?.ready ? 'neutral' : 'primary'"
+                :disabled="!room || room.phase !== 'waiting'"
+                block
+                @click="sendReady(!me?.ready)"
+              />
+              <UButton
+                v-if="isHost"
+                label="Start"
+                icon="i-lucide-play"
+                :disabled="!canStart"
+                block
+                @click="startGame"
+              />
+            </div>
 
-          <div class="space-y-3">
-            <UButton
-              v-if="!isHost"
-              :label="me?.ready ? 'Cancel ready' : 'Ready'"
-              :icon="me?.ready ? 'i-lucide-circle-x' : 'i-lucide-circle-check'"
-              :color="me?.ready ? 'neutral' : 'primary'"
-              :disabled="!room || room.phase !== 'waiting'"
-              block
-              @click="sendReady(!me?.ready)"
-            />
-            <UButton
-              v-if="isHost"
-              label="Start"
-              icon="i-lucide-play"
-              :disabled="!canStart"
-              block
-              @click="startGame"
-            />
-          </div>
-
-          <template #footer>
-            <div class="space-y-2">
+            <div v-if="delegatablePlayers.length > 0" class="space-y-2 border-t border-default pt-3">
               <div class="text-xs text-muted">Delegate host</div>
               <div class="flex flex-wrap gap-2">
                 <UButton
@@ -88,7 +80,7 @@
                 />
               </div>
             </div>
-          </template>
+          </div>
         </UCard>
       </div>
 
