@@ -14,6 +14,9 @@ importers:
       '@bighouse/gomoku':
         specifier: workspace:*
         version: link:packages/gomoku
+      '@bighouse/onecard':
+        specifier: workspace:*
+        version: link:packages/onecard
       zod:
         specifier: ^3.25.76
         version: 3.25.76
@@ -45,6 +48,9 @@ importers:
       '@bighouse/gomoku':
         specifier: workspace:*
         version: link:../gomoku
+      '@bighouse/onecard':
+        specifier: workspace:*
+        version: link:../onecard
       '@iconify-json/lucide':
         specifier: ^1.2.108
         version: 1.2.108
@@ -81,6 +87,16 @@ importers:
         version: 5.9.3
 
   packages/gomoku:
+    dependencies:
+      '@bighouse/game-sdk':
+        specifier: workspace:*
+        version: link:../game-sdk
+    devDependencies:
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+
+  packages/onecard:
     dependencies:
       '@bighouse/game-sdk':
         specifier: workspace:*

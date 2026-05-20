@@ -11,6 +11,7 @@
   "dependencies": {
     "@bighouse/game-sdk": "workspace:*",
     "@bighouse/gomoku": "workspace:*",
+    "@bighouse/onecard": "workspace:*",
     "@iconify-json/lucide": "^1.2.108",
     "@nuxt/ui": "^4.7.1",
     "tailwindcss": "^4.3.0",
