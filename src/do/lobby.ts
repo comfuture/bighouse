@@ -64,6 +64,7 @@ export class LobbyDO extends DurableObject<Env> {
   async join(input: LobbyJoinInput): Promise<LobbyJoinResult> {
     const repo = new D1Repository(this.env.DB);
     const definition = getGameDefinition(input.gameId);
+    await repo.upsertGame(definition.metadata);
     const minPlayers = input.minPlayers ?? definition.minPlayers;
     const maxPlayers = input.maxPlayers ?? definition.maxPlayers;
     if (minPlayers < 1 || maxPlayers < minPlayers || maxPlayers > definition.maxPlayers) {
@@ -104,6 +105,7 @@ export class LobbyDO extends DurableObject<Env> {
   async createRoom(input: LobbyCreateRoomInput): Promise<LobbyJoinResult> {
     const repo = new D1Repository(this.env.DB);
     const definition = getGameDefinition(input.gameId);
+    await repo.upsertGame(definition.metadata);
     const minPlayers = input.minPlayers ?? definition.minPlayers;
     const maxPlayers = input.maxPlayers ?? definition.maxPlayers;
     if (minPlayers < 1 || maxPlayers < minPlayers || maxPlayers > definition.maxPlayers) {

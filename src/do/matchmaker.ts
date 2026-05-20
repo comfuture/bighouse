@@ -45,6 +45,7 @@ export class MatchmakerDO extends DurableObject<Env> {
   async enqueue(input: EnqueueTicketInput): Promise<MatchmakerResult> {
     const definition = getGameDefinition(input.gameId);
     const repo = new D1Repository(this.env.DB);
+    await repo.upsertGame(definition.metadata);
     const ticket: MatchmakerTicket = {
       ticketId: createId("ticket"),
       gameId: input.gameId,

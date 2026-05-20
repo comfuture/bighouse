@@ -288,7 +288,7 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
           const topSuit = isTopJoker ? "J" : topCard.slice(-1);
           const topRank = isTopJoker ? topCard : topCard.slice(0, -1);
 
-          if (isTopJoker && pub.chosenSuit) {
+          if ((isTopJoker || topRank === "7") && pub.chosenSuit) {
             if (cardSuit === pub.chosenSuit) playable.push(card);
           } else {
             if (cardSuit === topSuit || cardRank === topRank) playable.push(card);
@@ -393,13 +393,11 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
         statusBar.textContent = pub.winnerPlayerId === state.playerId ? "🏆 You Won!" : "Game Over";
       } else if (pub.activeAttackCount > 0) {
         statusBar.className = "onecard-status-bar active-attack";
-        statusBar.innerHTML = `🔥 Attack Stacking: <strong>+${pub.activeAttackCount} Cards!</strong> (Play an attack card or Draw!)`;
+        statusBar.innerHTML = `Attack <strong>+${pub.activeAttackCount}</strong>: defend or draw`;
       } else {
         statusBar.className = "onecard-status-bar";
         if (isMyTurn) {
-          statusBar.innerHTML = pub.hasExtraTurn
-            ? "🌟 Extra turn! Play another matching card or click <strong>Pass</strong>."
-            : "🟢 It's your turn! Play a card or click the <strong>Draw pile</strong>.";
+          statusBar.textContent = pub.hasExtraTurn ? "Extra turn: play or pass" : "Your turn: play or draw";
         } else {
           const activeName = getPlayerName(pub.currentPlayerId);
           statusBar.textContent = `Waiting for ${activeName}...`;
@@ -419,18 +417,15 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
         if (isPlayable) {
           cardEl.classList.add("is-playable");
           cardEl.addEventListener("click", () => {
-            // If it's a Joker, trigger suit picker modal
-            if (card === "BJ" || card === "CJ") {
+            const rank = card === "BJ" || card === "CJ" ? card : card.slice(0, -1);
+            if (card === "BJ" || card === "CJ" || rank === "7") {
               pendingJokerCard = card;
               suitPicker?.classList.remove("is-hidden");
             } else {
-              // Trigger local fly animation instantly
               if (discardEl) {
                 triggerFlyAnimation(cardEl, discardEl, card);
               }
-              setTimeout(() => {
-                client.sendAction({ type: "playCard", payload: { card } });
-              }, 150);
+              client.sendAction({ type: "playCard", payload: { card } });
             }
           });
         }

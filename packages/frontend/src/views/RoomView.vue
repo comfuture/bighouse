@@ -40,13 +40,13 @@
                 <UBadge v-if="player.playerId === room?.hostPlayerId" color="neutral" variant="subtle">
                   host
                 </UBadge>
-                <UBadge v-else :color="player.ready ? 'success' : 'warning'" variant="subtle">
+                <UBadge v-else-if="room?.phase === 'waiting'" :color="player.ready ? 'success' : 'warning'" variant="subtle">
                   {{ player.ready ? "ready" : "not ready" }}
                 </UBadge>
               </div>
             </div>
 
-            <div class="border-t border-default pt-3">
+            <div v-if="room?.phase === 'waiting'" class="border-t border-default pt-3">
               <UButton
                 v-if="!isHost"
                 :label="me?.ready ? 'Cancel ready' : 'Ready'"
@@ -66,7 +66,7 @@
               />
             </div>
 
-            <div v-if="delegatablePlayers.length > 0" class="space-y-2 border-t border-default pt-3">
+            <div v-if="room?.phase === 'waiting' && delegatablePlayers.length > 0" class="space-y-2 border-t border-default pt-3">
               <div class="text-xs text-muted">Delegate host</div>
               <div class="flex flex-wrap gap-2">
                 <UButton

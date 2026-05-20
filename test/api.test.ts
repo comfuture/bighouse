@@ -74,6 +74,17 @@ describe("HTTP API", () => {
     expect(fullListBody.rooms.some((room) => room.roomId === createBody.roomId)).toBe(false);
   });
 
+  it("creates one card lobby rooms before players are seated", async () => {
+    const mode = `onecard-rooms-${crypto.randomUUID()}`;
+    const createResponse = await SELF.fetch(`https://bighouse.test/games/onecard/lobbies/${mode}/rooms`, {
+      method: "POST",
+      body: JSON.stringify({ playerId: "onecard-owner", displayName: "Owner" })
+    });
+    expect(createResponse.status).toBe(200);
+    const createBody = (await createResponse.json()) as { roomId: string; summary: { phase: string; hostPlayerId: string; playerCount: number } };
+    expect(createBody.summary).toMatchObject({ phase: "waiting", hostPlayerId: "onecard-owner", playerCount: 1 });
+  });
+
   it("rejects new room joins after the game leaves the waiting phase", async () => {
     const mode = `active-join-${crypto.randomUUID()}`;
     const createResponse = await SELF.fetch(`https://bighouse.test/games/card-demo/lobbies/${mode}/rooms`, {
