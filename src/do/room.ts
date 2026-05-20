@@ -98,6 +98,8 @@ export class RoomDO extends DurableObject<Env> {
   }
 
   async initialize(input: InitializeRoomInput): Promise<RoomSummary> {
+    const definition = getGameDefinition(input.gameId);
+    await new D1Repository(this.env.DB).upsertGame(definition.metadata);
     const existing = this.loadState();
     if (existing) {
       return this.toSummary(existing);
@@ -120,7 +122,6 @@ export class RoomDO extends DurableObject<Env> {
       config,
       createdAt: now
     };
-    const definition = getGameDefinition(input.gameId);
     const state: RoomState = {
       room,
       phase: "waiting",
@@ -978,8 +979,6 @@ export class RoomDO extends DurableObject<Env> {
 
   private async persistRoomIndex(state: RoomState): Promise<void> {
     const repo = new D1Repository(this.env.DB);
-    const definition = getGameDefinition(state.room.gameId);
-    await repo.upsertGame(definition.metadata);
     const status =
       state.phase === "closed"
         ? "closed"
@@ -1090,8 +1089,6 @@ export class RoomDO extends DurableObject<Env> {
 
   private async persistClosedRoom(state: RoomState, events: GameEvent[]): Promise<void> {
     const repo = new D1Repository(this.env.DB);
-    const definition = getGameDefinition(state.room.gameId);
-    await repo.upsertGame(definition.metadata);
     const closedAt = new Date(state.closedAt ?? Date.now()).toISOString();
     await repo.upsertRoom({
       roomId: state.room.roomId,
@@ -1121,8 +1118,6 @@ export class RoomDO extends DurableObject<Env> {
 
   private async persistFinishedResult(state: RoomState, events: GameEvent[]): Promise<void> {
     const repo = new D1Repository(this.env.DB);
-    const definition = getGameDefinition(state.room.gameId);
-    await repo.upsertGame(definition.metadata);
     const finishedAt = new Date(state.updatedAt).toISOString();
     const winnerPlayerId = findWinnerPlayerId(events);
     await repo.insertMatchResult({
@@ -1141,8 +1136,6 @@ export class RoomDO extends DurableObject<Env> {
 
   private async persistAbandonedRoom(state: RoomState, reason: string): Promise<void> {
     const repo = new D1Repository(this.env.DB);
-    const definition = getGameDefinition(state.room.gameId);
-    await repo.upsertGame(definition.metadata);
     const closedAt = new Date(state.closedAt ?? Date.now()).toISOString();
     await repo.upsertRoom({
       roomId: state.room.roomId,

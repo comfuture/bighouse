@@ -121,7 +121,7 @@ describe("One Card Game Logic", () => {
     expect(
       oneCardDefinition.validateAction(
         { state: cloneState(state), now: 1 },
-        { playerId: "p1", clientActionId: "a1", expectedVersion: 2, type: "playCard", payload: { card: "7S" } }
+        { playerId: "p1", clientActionId: "a1", expectedVersion: 2, type: "playCard", payload: { card: "7S", chosenSuit: "S" } }
       )
     ).toMatchObject({ ok: true });
 
@@ -196,7 +196,7 @@ describe("One Card Game Logic", () => {
     // Or play a card:
     const playNextResult = oneCardDefinition.applyAction(
       { state: cloneState(result.state), now: 1 },
-      { playerId: "p1", clientActionId: "a2", expectedVersion: 2, type: "playCard", payload: { card: "7S" } }
+      { playerId: "p1", clientActionId: "a2", expectedVersion: 2, type: "playCard", payload: { card: "7S", chosenSuit: "S" } }
     );
     expect(playNextResult.state.stageState).toMatchObject({
       currentPlayerId: "p2",
@@ -258,6 +258,13 @@ describe("One Card Game Logic", () => {
         { state: cloneState(afterDraw.state), now: 1 },
         { playerId: "p1", clientActionId: "a3", expectedVersion: 2, type: "playCard", payload: { card: "7H" } }
       )
+    ).toMatchObject({ ok: false, code: "invalid_action", message: "chosenSuit is required for a 7 or Joker" });
+
+    expect(
+      oneCardDefinition.validateAction(
+        { state: cloneState(afterDraw.state), now: 1 },
+        { playerId: "p1", clientActionId: "a4", expectedVersion: 2, type: "playCard", payload: { card: "7H", chosenSuit: "H" } }
+      )
     ).toMatchObject({ ok: true });
   });
 
@@ -282,6 +289,20 @@ describe("One Card Game Logic", () => {
         { playerId: "p1", clientActionId: "bad-suit", expectedVersion: 2, type: "playCard", payload: { card: "BJ", chosenSuit: "X" } }
       )
     ).toMatchObject({ ok: false, code: "invalid_action", message: "chosenSuit must be S, H, C, or D" });
+
+    expect(
+      oneCardDefinition.validateAction(
+        { state: cloneState(state), now: 1 },
+        { playerId: "p1", clientActionId: "missing-joker-suit", expectedVersion: 2, type: "playCard", payload: { card: "BJ" } }
+      )
+    ).toMatchObject({ ok: false, code: "invalid_action", message: "chosenSuit is required for a 7 or Joker" });
+
+    expect(
+      oneCardDefinition.validateAction(
+        { state: cloneState(state), now: 1 },
+        { playerId: "p1", clientActionId: "missing-seven-suit", expectedVersion: 2, type: "playCard", payload: { card: "7S" } }
+      )
+    ).toMatchObject({ ok: false, code: "invalid_action", message: "chosenSuit is required for a 7 or Joker" });
 
     expect(
       oneCardDefinition.validateAction(
@@ -439,7 +460,7 @@ describe("One Card Game Logic", () => {
     // Win check: p1 plays their last card
     const result = oneCardDefinition.applyAction(
       { state: cloneState(state), now: 1 },
-      { playerId: "p1", clientActionId: "a1", expectedVersion: 2, type: "playCard", payload: { card: "7S" } }
+      { playerId: "p1", clientActionId: "a1", expectedVersion: 2, type: "playCard", payload: { card: "7S", chosenSuit: "S" } }
     );
     expect(result.state.phase).toBe("finished");
     expect(result.state.stageState).toMatchObject({
