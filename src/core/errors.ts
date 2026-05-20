@@ -9,6 +9,7 @@ export type ErrorCode =
   | "invalid_room_phase"
   | "not_enough_players"
   | "players_not_ready"
+  | "game_interrupted"
   | "duplicate_action"
   | "stale_action"
   | "invalid_action"

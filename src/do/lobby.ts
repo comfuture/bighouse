@@ -87,14 +87,23 @@ export class LobbyDO extends DurableObject<Env> {
       playerId: input.playerId,
       ...(input.displayName ? { displayName: input.displayName } : {})
     });
+    const status = summary.activeInterruption
+      ? summary.playerCount >= summary.minPlayers
+        ? "matching"
+        : "open"
+      : summary.phase === "active"
+        ? "active"
+        : summary.playerCount >= summary.minPlayers
+          ? "matching"
+          : "open";
     await this.recordRoom({
       ...roomRecord,
-      status: summary.phase === "active" ? "active" : summary.playerCount >= summary.minPlayers ? "matching" : "open",
+      status,
       playerCount: summary.playerCount
     });
     await repo.upsertRoom({
       ...roomRecord,
-      status: summary.phase === "active" ? "active" : summary.playerCount >= summary.minPlayers ? "matching" : "open",
+      status,
       playerCount: summary.playerCount
     });
 

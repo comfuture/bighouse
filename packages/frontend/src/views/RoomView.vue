@@ -8,11 +8,53 @@
         <UBadge v-else color="neutral" variant="subtle">Connecting</UBadge>
       </div>
       <div>
-        <UButton label="Lobby" icon="i-lucide-arrow-left" color="neutral" variant="subtle" :to="lobbyPath" />
+        <UButton label="Lobby" icon="i-lucide-arrow-left" color="neutral" variant="subtle" @click="goToLobby" />
       </div>
     </div>
 
     <UAlert v-if="error" color="error" icon="i-lucide-circle-alert" :title="error" />
+    <UAlert
+      v-if="activeInterruption && !isHost"
+      color="warning"
+      icon="i-lucide-triangle-alert"
+      :title="`${interruptedPlayerName} left the game`"
+      :description="`${hostName} is deciding whether to reset and start a new game.`"
+    />
+
+    <UModal
+      v-model:open="restartDialogOpen"
+      title="Player left the game"
+      :description="`${interruptedPlayerName} left. Reset the game and start over with the remaining players?`"
+      :ui="{ close: 'hidden' }"
+    >
+      <template #body>
+        <div class="space-y-3">
+          <UAlert
+            v-if="!canRestartInterruptedGame"
+            color="warning"
+            variant="subtle"
+            icon="i-lucide-users"
+            :title="`Need at least ${room?.minPlayers ?? 0} players to restart`"
+            description="Wait for another player to join from the lobby or leave this room."
+          />
+          <p class="text-sm text-muted">
+            The current game state will be discarded and the stage will be dealt from a fresh state.
+          </p>
+        </div>
+      </template>
+
+      <template #footer>
+        <div class="flex w-full justify-end gap-2">
+          <UButton label="Leave room" color="neutral" variant="subtle" icon="i-lucide-log-out" @click="leaveRoom" />
+          <UButton
+            label="Start new game"
+            icon="i-lucide-refresh-cw"
+            :disabled="!canRestartInterruptedGame"
+            @click="restartGame"
+          />
+        </div>
+      </template>
+    </UModal>
 
     <div class="grid gap-6 lg:grid-cols-[360px_1fr]">
       <div class="order-1 space-y-6 lg:order-1">
@@ -63,6 +105,17 @@
                 :disabled="!canStart"
                 block
                 @click="startGame"
+              />
+            </div>
+
+            <div v-if="room?.phase === 'active'" class="border-t border-default pt-3">
+              <UButton
+                label="Leave game"
+                icon="i-lucide-log-out"
+                color="error"
+                variant="subtle"
+                block
+                @click="leaveRoom"
               />
             </div>
 
@@ -124,11 +177,30 @@ let ws: WebSocket | undefined;
 let gameInstance: MountedGameClient | undefined;
 let mountedGameId: string | undefined;
 let reconnectTimer: ReturnType<typeof window.setTimeout> | undefined;
+let leaveFallbackTimer: ReturnType<typeof window.setTimeout> | undefined;
 let reconnectAttempt = 0;
 let closingRoom = false;
+let leavingRoom = false;
 
 const me = computed(() => room.value?.players.find((player) => player.playerId === identity.playerId));
 const isHost = computed(() => room.value?.hostPlayerId === identity.playerId);
+const activeInterruption = computed(() => room.value?.activeInterruption);
+const restartDialogOpen = computed({
+  get: () => Boolean(activeInterruption.value && isHost.value),
+  set: () => {
+    // The server owns this dialog state; it closes when a fresh snapshot clears activeInterruption.
+  }
+});
+const canRestartInterruptedGame = computed(() => {
+  const snapshot = room.value;
+  return Boolean(activeInterruption.value && isHost.value && snapshot && snapshot.players.length >= snapshot.minPlayers);
+});
+const interruptedPlayerName = computed(() => {
+  const interruption = activeInterruption.value;
+  if (!interruption) return "A player";
+  return interruption.displayName || interruption.playerId;
+});
+const hostName = computed(() => playerName(room.value?.hostPlayerId));
 const canStart = computed(() => {
   const snapshot = room.value;
   if (!snapshot || !isHost.value || snapshot.phase !== "waiting") return false;
@@ -156,6 +228,7 @@ watch(identityReady, (ready) => {
 onBeforeUnmount(() => {
   closingRoom = true;
   clearReconnectTimer();
+  clearLeaveFallbackTimer();
   ws?.close();
   gameInstance?.destroy();
 });
@@ -200,6 +273,14 @@ async function handleRoomMessage(message: ServerMessage): Promise<void> {
     return;
   }
   if (message.type === "event" || message.type === "privateEvent") return;
+  if (message.type === "ack") {
+    const payload = message.payload as { command?: string };
+    if (payload.command === "leaveRoom" && leavingRoom) {
+      clearLeaveFallbackTimer();
+      void router.push(lobbyPath.value);
+    }
+    return;
+  }
   if (message.type === "chat") {
     chat.value.push((message.payload as { message: ChatMessage }).message);
     return;
@@ -270,12 +351,40 @@ function startGame(): void {
   ws?.send(JSON.stringify({ type: "startGame", playerId: identity.playerId }));
 }
 
+function restartGame(): void {
+  ws?.send(JSON.stringify({ type: "restartGame", playerId: identity.playerId }));
+}
+
 function transferHost(targetPlayerId: string): void {
   ws?.send(JSON.stringify({ type: "transferHost", playerId: identity.playerId, targetPlayerId }));
 }
 
 function sendChat(body: string, targetPlayerId?: string): void {
   ws?.send(JSON.stringify({ type: "chat", playerId: identity.playerId, targetPlayerId, body }));
+}
+
+function goToLobby(): void {
+  if (room.value?.phase === "active") {
+    leaveRoom();
+    return;
+  }
+  void router.push(lobbyPath.value);
+}
+
+function leaveRoom(): void {
+  if (leavingRoom) return;
+  leavingRoom = true;
+  closingRoom = true;
+  ws?.send(JSON.stringify({ type: "leaveRoom", playerId: identity.playerId }));
+  leaveFallbackTimer = window.setTimeout(() => {
+    void router.push(lobbyPath.value);
+  }, 500);
+}
+
+function playerName(playerId?: string): string {
+  if (!playerId) return "the host";
+  const player = room.value?.players.find((candidate) => candidate.playerId === playerId);
+  return player?.displayName || player?.playerId || playerId;
 }
 
 function scheduleReconnect(): void {
@@ -293,6 +402,13 @@ function clearReconnectTimer(): void {
   if (reconnectTimer) {
     window.clearTimeout(reconnectTimer);
     reconnectTimer = undefined;
+  }
+}
+
+function clearLeaveFallbackTimer(): void {
+  if (leaveFallbackTimer) {
+    window.clearTimeout(leaveFallbackTimer);
+    leaveFallbackTimer = undefined;
   }
 }
 </script>

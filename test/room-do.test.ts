@@ -6,6 +6,7 @@ import type { RoomDO } from "../src/do/room";
 
 type RoomDOTestAccess = {
   scheduleDisconnect(playerId: string, delayMs?: number): Promise<void>;
+  confirmDisconnect(playerId: string): Promise<void>;
 };
 
 type OneCardPublicViewForTest = {
@@ -313,7 +314,7 @@ describe("RoomDO", () => {
     await room.setReady("guest", true);
     await room.startGame("host");
 
-    await testRoom.scheduleDisconnect("guest", 100);
+    await testRoom.scheduleDisconnect("guest", -1);
     await room.submitAction({
       playerId: "host",
       clientActionId: "disconnect-grace-move",
@@ -322,10 +323,102 @@ describe("RoomDO", () => {
       payload: { x: 0, y: 0 }
     });
 
-    await new Promise((resolve) => setTimeout(resolve, 110));
-    await expect(runDurableObjectAlarm(roomStub)).resolves.toBe(true);
+    await testRoom.confirmDisconnect("guest");
     const snapshot = await room.getSnapshot("host");
-    expect(snapshot.players.find((player) => player.playerId === "guest")).toMatchObject({ connected: false });
+    expect(snapshot.players.some((player) => player.playerId === "guest")).toBe(false);
+    expect(snapshot.activeInterruption).toMatchObject({ reason: "player_left", playerId: "guest", hostPlayerId: "host" });
+  });
+
+  it("interrupts active games when a player leaves and lets the host restart", async () => {
+    const room = env.ROOM_DO.getByName("room:test-active-leave") as unknown as RoomDO;
+    await room.initialize({
+      roomId: "test-active-leave",
+      gameId: "gomoku",
+      mode: "default",
+      minPlayers: 2,
+      maxPlayers: 3
+    });
+    await room.join({ playerId: "host" });
+    await room.join({ playerId: "guest" });
+    await room.join({ playerId: "third" });
+    await room.setReady("guest", true);
+    await room.setReady("third", true);
+    await room.startGame("host");
+
+    const interrupted = await room.leave("guest");
+    expect(interrupted).toMatchObject({ phase: "active", playerCount: 2, hostPlayerId: "host" });
+    const snapshot = await room.getSnapshot("host");
+    expect(snapshot.players.map((player) => player.playerId)).toEqual(["host", "third"]);
+    expect(snapshot.activeInterruption).toMatchObject({
+      reason: "player_left",
+      playerId: "guest",
+      hostPlayerId: "host"
+    });
+    await expect(
+      room.trySubmitAction({
+        playerId: "host",
+        clientActionId: "blocked-after-leave",
+        expectedVersion: snapshot.version,
+        type: "placeStone",
+        payload: { x: 0, y: 0 }
+      })
+    ).resolves.toMatchObject({ ok: false, error: { code: "game_interrupted" } });
+
+    const restarted = await room.restartGame("host");
+    expect(restarted).toMatchObject({ phase: "active", playerCount: 2, hostPlayerId: "host" });
+    const restartedSnapshot = await room.getSnapshot("third");
+    expect(restartedSnapshot.activeInterruption).toBeUndefined();
+    expect(restartedSnapshot.publicView).toMatchObject({ moveCount: 0 });
+  });
+
+  it("transfers host before prompting restart when the active host leaves", async () => {
+    const room = env.ROOM_DO.getByName("room:test-active-host-leave") as unknown as RoomDO;
+    await room.initialize({
+      roomId: "test-active-host-leave",
+      gameId: "gomoku",
+      mode: "default",
+      minPlayers: 2,
+      maxPlayers: 3
+    });
+    await room.join({ playerId: "host" });
+    await room.join({ playerId: "guest" });
+    await room.join({ playerId: "third" });
+    await room.setReady("guest", true);
+    await room.setReady("third", true);
+    await room.startGame("host");
+
+    const interrupted = await room.leave("host");
+    expect(interrupted).toMatchObject({ phase: "active", playerCount: 2, hostPlayerId: "guest" });
+    const snapshot = await room.getSnapshot("guest");
+    expect(snapshot.activeInterruption).toMatchObject({
+      reason: "player_left",
+      playerId: "host",
+      hostPlayerId: "guest"
+    });
+    await expect(room.tryRestartGame("host")).resolves.toMatchObject({ ok: false, error: { code: "forbidden" } });
+    await expect(room.restartGame("guest")).resolves.toMatchObject({ phase: "active", playerCount: 2, hostPlayerId: "guest" });
+  });
+
+  it("allows replacement players to join an interrupted active game before restart", async () => {
+    const room = env.ROOM_DO.getByName("room:test-active-leave-replacement") as unknown as RoomDO;
+    await room.initialize({
+      roomId: "test-active-leave-replacement",
+      gameId: "gomoku",
+      mode: "default",
+      minPlayers: 2,
+      maxPlayers: 2
+    });
+    await room.join({ playerId: "host" });
+    await room.join({ playerId: "guest" });
+    await room.setReady("guest", true);
+    await room.startGame("host");
+
+    await room.leave("guest");
+    await expect(room.tryRestartGame("host")).resolves.toMatchObject({ ok: false, error: { code: "not_enough_players" } });
+    await expect(room.join({ playerId: "replacement" })).resolves.toMatchObject({ phase: "active", playerCount: 2, hostPlayerId: "host" });
+    const waitingForRestart = await room.getSnapshot("replacement");
+    expect(waitingForRestart.activeInterruption).toMatchObject({ playerId: "guest", hostPlayerId: "host" });
+    await expect(room.restartGame("host")).resolves.toMatchObject({ phase: "active", playerCount: 2, hostPlayerId: "host" });
   });
 
   it("supports rematch requests and finished-game leaves", async () => {

@@ -12,6 +12,7 @@ export type {
   PlayerIdentity,
   PlayerSeat,
   RoomConfig,
+  RoomInterruption,
   RoomPhase,
   RoomState,
   ServerGamePlugin,
