@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { cloneState, privateEventsFor, publicEvents, type RoomState } from "../src/core/game";
 import { cardDemoDefinition } from "../src/games/card-demo";
+import { chessDefinition } from "@bighouse/chess/server";
 import { gomokuDefinition } from "@bighouse/gomoku/server";
 
 function baseState(gameId: string): RoomState {
@@ -27,6 +28,98 @@ function baseState(gameId: string): RoomState {
 }
 
 describe("game adapters", () => {
+  it("initializes chess with public board state and private colors", () => {
+    const state = baseState("chess");
+    state.stageState = chessDefinition.initialStageState({ room: state.room, players: state.players, now: 1 });
+    state.playerStates.p1 = chessDefinition.initialPlayerState(state.players[0]!, { room: state.room, now: 1 });
+    state.playerStates.p2 = chessDefinition.initialPlayerState(state.players[1]!, { room: state.room, now: 1 });
+
+    expect(chessDefinition.getPublicView({ state, now: 1 })).toMatchObject({
+      turn: "w",
+      currentPlayerId: "p1",
+      moveCount: 0,
+      check: false,
+      checkmate: false,
+      stalemate: false
+    });
+    expect(chessDefinition.getPrivateView({ state, now: 1 }, "p1")).toEqual({ color: "white" });
+    expect(chessDefinition.getPrivateView({ state, now: 1 }, "p2")).toEqual({ color: "black" });
+    expect(JSON.stringify(chessDefinition.getPublicView({ state, now: 1 }))).not.toContain("white");
+  });
+
+  it("applies chess moves and rejects invalid turns", () => {
+    const state = baseState("chess");
+    state.stageState = chessDefinition.initialStageState({ room: state.room, players: state.players, now: 1 });
+    state.playerStates.p1 = chessDefinition.initialPlayerState(state.players[0]!, { room: state.room, now: 1 });
+    state.playerStates.p2 = chessDefinition.initialPlayerState(state.players[1]!, { room: state.room, now: 1 });
+
+    expect(
+      chessDefinition.validateAction(
+        { state: cloneState(state), now: 10 },
+        { playerId: "p2", clientActionId: "bad-turn", expectedVersion: 2, type: "move", payload: { from: "e7", to: "e5" } }
+      )
+    ).toMatchObject({ ok: false, code: "invalid_turn" });
+
+    expect(
+      chessDefinition.validateAction(
+        { state: cloneState(state), now: 10 },
+        { playerId: "p1", clientActionId: "good", expectedVersion: 2, type: "move", payload: { from: "e2", to: "e4" } }
+      )
+    ).toEqual({ ok: true });
+
+    const result = chessDefinition.applyAction(
+      { state: cloneState(state), now: 10 },
+      { playerId: "p1", clientActionId: "good", expectedVersion: 2, type: "move", payload: { from: "e2", to: "e4" } }
+    );
+    expect(result.events[0]).toMatchObject({
+      type: "chess.moveMade",
+      visibility: "public",
+      payload: { playerId: "p1", from: "e2", to: "e4", san: "e4" }
+    });
+    expect(chessDefinition.getPublicView({ state: result.state, now: 10 })).toMatchObject({
+      currentPlayerId: "p2",
+      turn: "b",
+      moveCount: 1,
+      history: ["e4"],
+      lastMove: { from: "e2", to: "e4" }
+    });
+  });
+
+  it("finishes chess on checkmate", () => {
+    let state = baseState("chess");
+    state.stageState = chessDefinition.initialStageState({ room: state.room, players: state.players, now: 1 });
+    state.playerStates.p1 = chessDefinition.initialPlayerState(state.players[0]!, { room: state.room, now: 1 });
+    state.playerStates.p2 = chessDefinition.initialPlayerState(state.players[1]!, { room: state.room, now: 1 });
+    const moves = [
+      ["p1", "f2", "f3"],
+      ["p2", "e7", "e5"],
+      ["p1", "g2", "g4"],
+      ["p2", "d8", "h4"]
+    ] as const;
+
+    let result = { state, events: [] as Array<{ type: string }> };
+    for (const [playerId, from, to] of moves) {
+      result = chessDefinition.applyAction(
+        { state: cloneState(result.state), now: 10 },
+        { playerId, clientActionId: `${from}-${to}`, expectedVersion: 2, type: "move", payload: { from, to } }
+      );
+      state = result.state;
+    }
+
+    expect(result.state).toMatchObject({ phase: "finished" });
+    expect(chessDefinition.getPublicView({ state: result.state, now: 10 })).toMatchObject({
+      result: "checkmate",
+      check: true,
+      checkmate: true,
+      winnerPlayerId: "p2"
+    });
+    expect(result.events).toContainEqual(expect.objectContaining({
+      type: "chess.gameWon",
+      visibility: "system",
+      payload: { winnerPlayerId: "p2", reason: "checkmate" }
+    }));
+  });
+
   it("applies gomoku moves and rejects invalid turns", () => {
     const state = baseState("gomoku");
     state.stageState = gomokuDefinition.initialStageState({ room: state.room, players: state.players, now: 1 });

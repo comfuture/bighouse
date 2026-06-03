@@ -9,6 +9,7 @@
     "typecheck": "vue-tsc --noEmit"
   },
   "dependencies": {
+    "@bighouse/chess": "workspace:*",
     "@bighouse/game-sdk": "workspace:*",
     "@bighouse/gomoku": "workspace:*",
     "@bighouse/onecard": "workspace:*",

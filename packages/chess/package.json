@@ -1,0 +1,24 @@
+{
+  "name": "@bighouse/chess",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./client": "./src/client.ts",
+    "./client-metadata": "./src/client-metadata.ts",
+    "./server": "./src/server.ts",
+    "./metadata": "./src/metadata.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@bighouse/game-sdk": "workspace:*",
+    "chess.js": "^1.4.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  }
+}
