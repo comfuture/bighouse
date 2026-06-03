@@ -1,4 +1,5 @@
 import type { GameClientModule, GameMetadata } from "@bighouse/game-sdk/client";
+import { gameMetadata as chessMetadata } from "@bighouse/chess/client-metadata";
 import { gameMetadata as gomokuMetadata } from "@bighouse/gomoku/client-metadata";
 import { gameMetadata as onecardMetadata } from "@bighouse/onecard/client-metadata";
 
@@ -8,6 +9,10 @@ type ClientGamePlugin = {
 };
 
 const clientGamePlugins = {
+  [chessMetadata.gameId]: {
+    metadata: chessMetadata,
+    load: () => import("@bighouse/chess/client")
+  },
   [gomokuMetadata.gameId]: {
     metadata: gomokuMetadata,
     load: () => import("@bighouse/gomoku/client")
