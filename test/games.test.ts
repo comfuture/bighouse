@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { cloneState, privateEventsFor, publicEvents, type RoomState } from "../src/core/game";
 import { cardDemoDefinition } from "../src/games/card-demo";
+import { moveDestinationHints } from "@bighouse/chess/move-hints";
 import { chessDefinition } from "@bighouse/chess/server";
 import { gomokuDefinition } from "@bighouse/gomoku/server";
 
@@ -194,6 +195,15 @@ describe("game adapters", () => {
       visibility: "system",
       payload: { reason: "threefold_repetition" }
     }));
+  });
+
+  it("marks chess destinations that expose the king as unsafe hints", () => {
+    const hints = moveDestinationHints("k3r3/8/8/8/8/8/4R3/4K3 w - - 0 1", "e2");
+
+    expect(hints.legal).toContain("e8");
+    expect(hints.unsafe).toContain("d2");
+    expect(hints.unsafe).toContain("f2");
+    expect(hints.legal).not.toContain("d2");
   });
 
   it("applies gomoku moves and rejects invalid turns", () => {
