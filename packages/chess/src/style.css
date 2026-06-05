@@ -377,7 +377,7 @@
 
 @keyframes chess-piece-move {
   0% {
-    transform: translate(calc(var(--chess-move-x) * 100%), calc(var(--chess-move-y) * 100%));
+    transform: translate(var(--chess-move-x), var(--chess-move-y));
   }
   100% {
     transform: translate(0, 0);
