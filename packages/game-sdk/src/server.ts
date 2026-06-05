@@ -110,6 +110,7 @@ export type GameDefinition = GameMetadata & {
   initialPlayerState(player: PlayerSeat, context: { room: RoomConfig; now: number }): JsonObject;
   validateAction(context: GameContext, action: ClientGameAction): ValidationResult;
   applyAction(context: GameContext, action: ClientGameAction): ActionResult;
+  applyTimer?(context: GameContext, timer: TimerIntent): ActionResult;
   getPublicView(context: GameContext): JsonObject;
   getPrivateView(context: GameContext, playerId: string): JsonObject;
   nextTimers(context: GameContext): TimerIntent[];
