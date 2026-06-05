@@ -38,7 +38,9 @@ describe("game adapters", () => {
     expect(chessDefinition.getPublicView({ state, now: 1_000 })).toMatchObject({
       turn: "w",
       currentPlayerId: "p1",
-      turnDeadline: 61_000,
+      clocks: { white: 900_000, black: 900_000 },
+      activeClockStartedAt: 1_000,
+      turnDeadline: 901_000,
       moveCount: 0,
       check: false,
       checkmate: false,
@@ -46,7 +48,7 @@ describe("game adapters", () => {
     });
     expect(chessDefinition.getPrivateView({ state, now: 1 }, "p1")).toEqual({ color: "white" });
     expect(chessDefinition.getPrivateView({ state, now: 1 }, "p2")).toEqual({ color: "black" });
-    expect(JSON.stringify(chessDefinition.getPublicView({ state, now: 1 }))).not.toContain("white");
+    expect(JSON.stringify(chessDefinition.getPublicView({ state, now: 1 }))).not.toContain("\"color\":\"white\"");
   });
 
   it("rejects malformed chess move payloads without throwing", () => {
@@ -95,10 +97,26 @@ describe("game adapters", () => {
     expect(chessDefinition.getPublicView({ state: result.state, now: 10 })).toMatchObject({
       currentPlayerId: "p2",
       turn: "b",
-      turnDeadline: 60_010,
+      clocks: { white: 899_991, black: 900_000 },
+      activeClockStartedAt: 10,
+      turnDeadline: 900_010,
       moveCount: 1,
       history: ["e4"],
       lastMove: { from: "e2", to: "e4" }
+    });
+
+    const secondResult = chessDefinition.applyAction(
+      { state: cloneState(result.state), now: 1_010 },
+      { playerId: "p2", clientActionId: "good-2", expectedVersion: 3, type: "move", payload: { from: "e7", to: "e5" } }
+    );
+    expect(chessDefinition.getPublicView({ state: secondResult.state, now: 1_010 })).toMatchObject({
+      currentPlayerId: "p1",
+      turn: "w",
+      clocks: { white: 899_991, black: 899_000 },
+      activeClockStartedAt: 1_010,
+      turnDeadline: 901_001,
+      moveCount: 2,
+      history: ["e4", "e5"]
     });
   });
 
@@ -109,14 +127,15 @@ describe("game adapters", () => {
     state.playerStates.p2 = chessDefinition.initialPlayerState(state.players[1]!, { room: state.room, now: 1 });
 
     const result = chessDefinition.applyTimer!(
-      { state: cloneState(state), now: 61_000 },
-      { id: "turn-timeout", kind: "turn_timeout", runAt: 61_000, payload: { playerId: "p1" } }
+      { state: cloneState(state), now: 901_000 },
+      { id: "turn-timeout", kind: "turn_timeout", runAt: 901_000, payload: { playerId: "p1", color: "white" } }
     );
 
     expect(result.state).toMatchObject({ phase: "finished" });
-    expect(chessDefinition.getPublicView({ state: result.state, now: 61_000 })).toMatchObject({
+    expect(chessDefinition.getPublicView({ state: result.state, now: 901_000 })).toMatchObject({
       result: "timeout",
-      winnerPlayerId: "p2"
+      winnerPlayerId: "p2",
+      clocks: { white: 0, black: 900_000 }
     });
     expect(result.events).toContainEqual(expect.objectContaining({
       type: "chess.gameWon",

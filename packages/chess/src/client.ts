@@ -30,6 +30,9 @@ type ChessPublicView = {
   board: Array<Array<ChessPieceView | null>>;
   currentPlayerId?: string;
   turn: ChessColor;
+  clocks?: Record<"white" | "black", number>;
+  activeClockStartedAt?: number;
+  turnDeadline?: number;
   moveCount: number;
   history: string[];
   lastMove?: { from: ChessSquare; to: ChessSquare; san: string; playerId: string };
@@ -46,6 +49,7 @@ type ChessPrivateView = {
 type ChessClient = {
   playerId: string;
   version: number;
+  serverTime: number;
   publicView: ChessPublicView;
   privateView: ChessPrivateView;
   sendAction(action: { type: string; payload: Record<string, unknown> }): void;
@@ -81,7 +85,7 @@ export function mountGame(container: HTMLElement, context: GameClientContext): M
 }
 
 export function createChessGame(container: HTMLElement, client: ChessClient) {
-  const state = { ...client };
+  const state = { ...client, receivedAt: performance.now() };
   let selected: ChessSquare | undefined;
   let pendingPromotion: { from: ChessSquare; to: ChessSquare } | undefined;
   let seenLastMoveKey = moveKey(client.publicView);
@@ -90,14 +94,26 @@ export function createChessGame(container: HTMLElement, client: ChessClient) {
   let checkOverlayTimer: ReturnType<typeof setTimeout> | undefined;
   container.classList.add("chess-game");
   container.innerHTML = `
-    <div class="chess-status" data-role="status"></div>
+    <div class="chess-header">
+      <div class="chess-status" data-role="status"></div>
+      <div class="chess-turn-notice is-hidden" data-role="turn-notice" aria-live="polite">
+        <span class="chess-turn-dot" aria-hidden="true"></span>
+        <span>Your move</span>
+        <span class="chess-turn-color" data-role="turn-color"></span>
+      </div>
+    </div>
+    <div class="chess-clocks" aria-label="Chess clocks">
+      <div class="chess-clock" data-role="clock-white">
+        <span class="chess-clock-label">White</span>
+        <span class="chess-clock-time" data-role="clock-white-time">15:00</span>
+      </div>
+      <div class="chess-clock" data-role="clock-black">
+        <span class="chess-clock-label">Black</span>
+        <span class="chess-clock-time" data-role="clock-black-time">15:00</span>
+      </div>
+    </div>
     <div class="chess-layout">
       <div class="chess-board-frame" data-role="board-frame">
-        <div class="chess-turn-notice is-hidden" data-role="turn-notice" aria-live="polite">
-          <span class="chess-turn-dot" aria-hidden="true"></span>
-          <span>Your move</span>
-          <span class="chess-turn-color" data-role="turn-color"></span>
-        </div>
         <div class="chess-check-overlay is-hidden" data-role="check-overlay" aria-live="assertive">Check</div>
         <div class="chess-board" data-role="board" aria-label="Chess board"></div>
         <div class="chess-move-ghost-layer" data-role="move-ghost-layer" aria-hidden="true"></div>
@@ -130,6 +146,10 @@ export function createChessGame(container: HTMLElement, client: ChessClient) {
   const board = requireElement<HTMLElement>(container, "[data-role='board']");
   const moveGhostLayer = requireElement<HTMLElement>(container, "[data-role='move-ghost-layer']");
   const history = requireElement<HTMLOListElement>(container, "[data-role='history']");
+  const whiteClock = requireElement<HTMLElement>(container, "[data-role='clock-white']");
+  const blackClock = requireElement<HTMLElement>(container, "[data-role='clock-black']");
+  const whiteClockTime = requireElement<HTMLElement>(container, "[data-role='clock-white-time']");
+  const blackClockTime = requireElement<HTMLElement>(container, "[data-role='clock-black-time']");
   const modal = requireElement<HTMLElement>(container, "[data-role='result-modal']");
   const resultTitle = requireElement<HTMLElement>(container, "[data-role='result-title']");
   const resultMessage = requireElement<HTMLElement>(container, "[data-role='result-message']");
@@ -138,6 +158,9 @@ export function createChessGame(container: HTMLElement, client: ChessClient) {
   const promotionModal = requireElement<HTMLElement>(container, "[data-role='promotion-modal']");
   const promotionPanel = requireElement<HTMLElement>(container, "[data-role='promotion-panel']");
   let moveGhostCleanupTimer: ReturnType<typeof setTimeout> | undefined;
+  const clockTimer = setInterval(() => {
+    renderClocks();
+  }, 1_000);
 
   playAgainButton.addEventListener("click", () => {
     client.requestPlayAgain();
@@ -157,6 +180,7 @@ export function createChessGame(container: HTMLElement, client: ChessClient) {
     turnColor.textContent = colorLabel;
     boardFrame.classList.toggle("is-my-turn", myTurn);
     board.classList.toggle("is-black-perspective", privateView.color === "black");
+    renderClocks();
     updateCheckOverlay(publicView.check);
     clearMoveGhost();
     board.innerHTML = "";
@@ -366,11 +390,35 @@ export function createChessGame(container: HTMLElement, client: ChessClient) {
     moveGhostLayer.innerHTML = "";
   }
 
+  function renderClocks(now = serverNow()): void {
+    renderClock("white", whiteClock, whiteClockTime, now);
+    renderClock("black", blackClock, blackClockTime, now);
+  }
+
+  function renderClock(color: "white" | "black", containerEl: HTMLElement, timeEl: HTMLElement, now: number): void {
+    const remaining = clockRemainingMs(state.publicView, color, now);
+    const active = state.publicView.roomPhase === "active" && !state.publicView.result && colorForTurn(state.publicView.turn) === color;
+    containerEl.classList.toggle("is-active", active);
+    containerEl.classList.toggle("is-low", remaining <= 60_000);
+    timeEl.textContent = formatClock(remaining);
+    containerEl.ariaLabel = `${color} ${formatClock(remaining)}${active ? " running" : ""}`;
+  }
+
+  function serverNow(): number {
+    return state.serverTime + Math.max(0, performance.now() - state.receivedAt);
+  }
+
   render();
 
   return {
     update(input: Omit<ChessClient, "sendAction" | "requestPlayAgain" | "leaveFinishedGame">) {
-      if (state.version === input.version) return;
+      const sameVersion = state.version === input.version;
+      state.serverTime = input.serverTime;
+      state.receivedAt = performance.now();
+      if (sameVersion) {
+        renderClocks();
+        return;
+      }
       state.playerId = input.playerId;
       state.version = input.version;
       state.publicView = input.publicView;
@@ -384,6 +432,7 @@ export function createChessGame(container: HTMLElement, client: ChessClient) {
       pendingMoveAnimationKey = undefined;
     },
     destroy() {
+      clearInterval(clockTimer);
       if (checkOverlayTimer) {
         clearTimeout(checkOverlayTimer);
       }
@@ -398,6 +447,7 @@ function toChessClient(context: GameClientContext): ChessClient {
   return {
     playerId: context.playerId,
     version: context.version,
+    serverTime: context.serverTime,
     publicView: {
       ...(context.publicView as ChessPublicView),
       roomPhase: context.phase
@@ -478,6 +528,31 @@ function statusText(publicView: ChessPublicView, playerId: string, myTurn: boole
   return publicView.roomPhase === "active" || publicView.roomPhase === undefined
     ? `Waiting for ${publicView.currentPlayerId ?? "opponent"}`
     : "Waiting for opponent";
+}
+
+function clockRemainingMs(publicView: ChessPublicView, color: "white" | "black", serverNow: number): number {
+  const clocks = publicView.clocks ?? { white: 15 * 60 * 1000, black: 15 * 60 * 1000 };
+  const base = Number.isFinite(clocks[color]) ? clocks[color] : 15 * 60 * 1000;
+  if (
+    publicView.roomPhase === "active" &&
+    !publicView.result &&
+    colorForTurn(publicView.turn) === color &&
+    publicView.activeClockStartedAt !== undefined
+  ) {
+    return Math.max(0, base - Math.max(0, serverNow - publicView.activeClockStartedAt));
+  }
+  return Math.max(0, base);
+}
+
+function colorForTurn(turn: ChessColor): "white" | "black" {
+  return turn === "w" ? "white" : "black";
+}
+
+function formatClock(ms: number): string {
+  const totalSeconds = Math.max(0, Math.ceil(ms / 1_000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}:${String(seconds).padStart(2, "0")}`;
 }
 
 function resultTitleFor(result: ChessPublicView["result"]): string {

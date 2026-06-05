@@ -28,6 +28,8 @@ export type ChessStageState = {
   board: Array<Array<ChessPieceView | null>>;
   currentPlayerId?: string;
   turn: Color;
+  clocks: ChessClockState;
+  activeClockStartedAt?: number;
   turnDeadline?: number;
   moveCount: number;
   history: string[];
@@ -44,6 +46,8 @@ export type ChessStageState = {
 export type ChessPlayerState = {
   color: ChessColor;
 };
+
+export type ChessClockState = Record<ChessColor, number>;
 
 export type ChessMovePayload = {
   playerId: string;
@@ -65,7 +69,7 @@ type ChessMoveRecord = {
   promotion?: PromotionPiece;
 };
 
-const turnMs = 60_000;
+const playerClockMs = 15 * 60 * 1000;
 const promotionPieces = new Set(["q", "r", "b", "n"]);
 
 export const gameMetadata = baseGameMetadata;
@@ -75,10 +79,11 @@ export const chessDefinition = defineGameDefinition(gameMetadata, {
     const chess = new Chess();
     const stage = buildStage(chess, {
       players: context.players,
-      moveCount: 0
+      moveCount: 0,
+      clocks: initialClocks()
     });
     if (stage.currentPlayerId) {
-      stage.turnDeadline = context.now + turnMs;
+      startClock(stage, context.now);
     }
     return stage as unknown as JsonObject;
   },
@@ -98,6 +103,9 @@ export const chessDefinition = defineGameDefinition(gameMetadata, {
     const currentPlayerId = stage.currentPlayerId ?? playerIdForTurn(context.state.players, stage.turn);
     if (action.playerId !== currentPlayerId) {
       return { ok: false, code: "invalid_turn", message: "It is not this player's turn" };
+    }
+    if (remainingClockMs(stage, colorName(stage.turn), context.now) <= 0) {
+      return { ok: false, code: "invalid_action", message: "Player clock has expired" };
     }
     const playerColor = colorForPlayer(context.state.playerStates[action.playerId]);
     if (playerColor !== colorName(stage.turn)) {
@@ -135,13 +143,15 @@ export const chessDefinition = defineGameDefinition(gameMetadata, {
     }
     const chess = chessFromStage(stage);
     const move = chess.move(chessMoveInput(parsed), { strict: true });
+    const nextClocks = stopClock(stage, context.now);
     const moveHistory = [...(stage.moveHistory ?? []), moveRecord(move)];
     const nextStage = buildStage(chess, {
       players: state.players,
       moveCount: stage.moveCount + 1,
       history: [...stage.history, move.san],
       moveHistory,
-      lastMove: movePayload(action.playerId, move)
+      lastMove: movePayload(action.playerId, move),
+      clocks: nextClocks
     });
     const events: GameEvent[] = [
       {
@@ -155,6 +165,7 @@ export const chessDefinition = defineGameDefinition(gameMetadata, {
 
     if (nextStage.result) {
       delete nextStage.turnDeadline;
+      delete nextStage.activeClockStartedAt;
       state.phase = "finished";
       if (nextStage.winnerPlayerId) {
         events.push({
@@ -174,7 +185,7 @@ export const chessDefinition = defineGameDefinition(gameMetadata, {
         });
       }
     } else {
-      nextStage.turnDeadline = context.now + turnMs;
+      startClock(nextStage, context.now);
     }
 
     state.stageState = nextStage as unknown as JsonObject;
@@ -189,22 +200,26 @@ export const chessDefinition = defineGameDefinition(gameMetadata, {
     const stage = chessStage(state.stageState);
     const currentPlayerId = stage.currentPlayerId ?? playerIdForTurn(state.players, stage.turn);
     const timedOutPlayerId = timerPayloadPlayerId(timer.payload) ?? currentPlayerId;
+    const timedOutColor = timerPayloadColor(timer.payload) ?? colorName(stage.turn);
     if (
       stage.result ||
       !stage.turnDeadline ||
       context.now < stage.turnDeadline ||
       !currentPlayerId ||
-      timedOutPlayerId !== currentPlayerId
+      timedOutPlayerId !== currentPlayerId ||
+      timedOutColor !== colorName(stage.turn)
     ) {
       return { state, events: [] };
     }
 
     const winnerPlayerId = playerIdForTurn(state.players, oppositeColor(stage.turn));
+    stage.clocks = { ...normalizedClocks(stage.clocks), [colorName(stage.turn)]: 0 };
     stage.result = "timeout";
     if (winnerPlayerId) {
       stage.winnerPlayerId = winnerPlayerId;
     }
     delete stage.turnDeadline;
+    delete stage.activeClockStartedAt;
     state.phase = "finished";
     state.stageState = stage as unknown as JsonObject;
 
@@ -236,6 +251,8 @@ export const chessDefinition = defineGameDefinition(gameMetadata, {
       board: stage.board,
       currentPlayerId: stage.currentPlayerId ?? playerIdForTurn(context.state.players, stage.turn),
       turn: stage.turn,
+      clocks: stage.clocks,
+      activeClockStartedAt: stage.activeClockStartedAt,
       turnDeadline: stage.turnDeadline,
       moveCount: stage.moveCount,
       history: stage.history,
@@ -263,7 +280,7 @@ export const chessDefinition = defineGameDefinition(gameMetadata, {
         id: "turn-timeout",
         kind: "turn_timeout",
         runAt: stage.turnDeadline,
-        payload: { playerId: stage.currentPlayerId }
+        payload: { playerId: stage.currentPlayerId, color: colorName(stage.turn) }
       }
     ];
   }
@@ -282,6 +299,7 @@ function buildStage(
     history?: string[];
     moveHistory?: ChessMoveRecord[];
     lastMove?: ChessMovePayload;
+    clocks?: ChessClockState;
   }
 ): ChessStageState {
   const turn = chess.turn();
@@ -297,6 +315,7 @@ function buildStage(
     board: chess.board().map((row) => row.map((piece) => piece ? { square: piece.square, type: piece.type, color: piece.color } : null)),
     ...(currentPlayerId ? { currentPlayerId } : {}),
     turn,
+    clocks: normalizedClocks(options.clocks),
     moveCount: options.moveCount,
     history: options.history ?? [],
     moveHistory: options.moveHistory ?? [],
@@ -393,6 +412,50 @@ function moveRecord(move: Move): ChessMoveRecord {
 
 function timerPayloadPlayerId(payload: JsonObject | undefined): string | undefined {
   return typeof payload?.playerId === "string" ? payload.playerId : undefined;
+}
+
+function timerPayloadColor(payload: JsonObject | undefined): ChessColor | undefined {
+  return payload?.color === "white" || payload?.color === "black" ? payload.color : undefined;
+}
+
+function initialClocks(): ChessClockState {
+  return { white: playerClockMs, black: playerClockMs };
+}
+
+function normalizedClocks(clocks: ChessClockState | undefined): ChessClockState {
+  const white = clocks?.white;
+  const black = clocks?.black;
+  return {
+    white: Math.max(0, Number.isFinite(white) ? Number(white) : playerClockMs),
+    black: Math.max(0, Number.isFinite(black) ? Number(black) : playerClockMs)
+  };
+}
+
+function startClock(stage: ChessStageState, now: number): void {
+  const color = colorName(stage.turn);
+  stage.clocks = normalizedClocks(stage.clocks);
+  stage.activeClockStartedAt = now;
+  stage.turnDeadline = now + stage.clocks[color];
+}
+
+function stopClock(stage: ChessStageState, now: number): ChessClockState {
+  const color = colorName(stage.turn);
+  const clocks = normalizedClocks(stage.clocks);
+  if (stage.activeClockStartedAt === undefined) {
+    return clocks;
+  }
+  return {
+    ...clocks,
+    [color]: Math.max(0, clocks[color] - Math.max(0, now - stage.activeClockStartedAt))
+  };
+}
+
+function remainingClockMs(stage: ChessStageState, color: ChessColor, now: number): number {
+  const clocks = normalizedClocks(stage.clocks);
+  if (color !== colorName(stage.turn) || stage.activeClockStartedAt === undefined) {
+    return clocks[color];
+  }
+  return Math.max(0, clocks[color] - Math.max(0, now - stage.activeClockStartedAt));
 }
 
 function colorForPlayer(state: JsonObject | undefined): ChessColor {
