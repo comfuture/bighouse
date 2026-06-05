@@ -225,7 +225,9 @@
 .chess-move-ghost-piece {
   position: absolute;
   display: block;
+  box-sizing: border-box;
   object-fit: contain;
+  padding: 4px;
   pointer-events: none;
   animation: chess-piece-move 320ms ease-in-out both;
   filter: drop-shadow(0 10px 12px rgba(12, 18, 22, 0.22));
