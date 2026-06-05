@@ -115,6 +115,32 @@ describe("chat", () => {
     closeAll(alice.ws, bob.ws);
   });
 
+  it("rejects rebinding a URL-bound lobby socket with hello", async () => {
+    const suffix = crypto.randomUUID();
+    const lobbyBase = `https://bighouse.test/games/gomoku/lobbies/rebind-lobby-${suffix}/ws`;
+    const alice = await connect(`${lobbyBase}?playerId=rebind-alice-${suffix}&displayName=Alice`);
+    const bob = await connect(`${lobbyBase}?playerId=rebind-bob-${suffix}&displayName=Bob`);
+
+    alice.ws.send(JSON.stringify({ type: "hello", playerId: `rebind-bob-${suffix}`, displayName: "Bob" }));
+    await expectMessage(
+      alice.messages,
+      (message) => message.type === "error" && message.payload.code === "forbidden",
+      "lobby rebind forbidden error"
+    );
+
+    alice.ws.send(
+      JSON.stringify({
+        type: "chat",
+        playerId: `rebind-bob-${suffix}`,
+        body: "rebound lobby message"
+      })
+    );
+
+    await expectNoChat(bob.messages, "rebound lobby message");
+
+    closeAll(alice.ws, bob.ws);
+  });
+
   it("broadcasts public room chat and targets private room chat", async () => {
     const suffix = crypto.randomUUID();
     const mode = `chat-${suffix}`;
