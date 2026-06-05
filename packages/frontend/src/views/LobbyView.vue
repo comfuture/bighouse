@@ -58,6 +58,9 @@ const chat = ref<ChatMessage[]>([]);
 const error = ref("");
 let ws: WebSocket | undefined;
 let pollId: number | undefined;
+let reconnectTimer: number | undefined;
+let reconnectAttempt = 0;
+let closingLobby = false;
 
 onMounted(() => {
   void refreshRooms();
@@ -70,6 +73,8 @@ watch(identityReady, (ready) => {
 });
 
 onBeforeUnmount(() => {
+  closingLobby = true;
+  clearReconnectTimer();
   ws?.close();
   if (pollId !== undefined) window.clearInterval(pollId);
 });
@@ -101,13 +106,31 @@ async function joinExisting(roomId: string): Promise<void> {
 }
 
 function connectLobby(): void {
+  clearReconnectTimer();
+  closingLobby = false;
   ws?.close();
-  ws = new WebSocket(lobbyWebsocketUrl(gameId.value, mode.value));
-  ws.addEventListener("message", (event) => {
+  const socket = new WebSocket(lobbyWebsocketUrl(gameId.value, mode.value));
+  ws = socket;
+  socket.addEventListener("open", () => {
+    if (ws !== socket) return;
+    reconnectAttempt = 0;
+    error.value = "";
+  });
+  socket.addEventListener("message", (event) => {
+    if (ws !== socket) return;
     const message = parseServerMessage(event.data);
     if (!message) return;
     if (message.type === "chat") {
       chat.value.push((message.payload as { message: ChatMessage }).message);
+    }
+  });
+  socket.addEventListener("error", () => {
+    if (ws !== socket) return;
+    error.value = "Lobby WebSocket failed";
+  });
+  socket.addEventListener("close", () => {
+    if (!closingLobby && ws === socket) {
+      scheduleReconnect();
     }
   });
 }
@@ -115,5 +138,23 @@ function connectLobby(): void {
 function sendChat(body: string, targetPlayerId?: string): void {
   if (!ws || ws.readyState !== WebSocket.OPEN) return;
   ws.send(JSON.stringify({ type: "chat", playerId: identity.playerId, targetPlayerId, body }));
+}
+
+function scheduleReconnect(): void {
+  if (!identityReady.value || reconnectTimer) return;
+  const delay = Math.min(500 * 2 ** reconnectAttempt, 5000);
+  reconnectAttempt += 1;
+  error.value = "Lobby connection lost. Reconnecting...";
+  reconnectTimer = window.setTimeout(() => {
+    reconnectTimer = undefined;
+    connectLobby();
+  }, delay);
+}
+
+function clearReconnectTimer(): void {
+  if (reconnectTimer !== undefined) {
+    window.clearTimeout(reconnectTimer);
+    reconnectTimer = undefined;
+  }
 }
 </script>
