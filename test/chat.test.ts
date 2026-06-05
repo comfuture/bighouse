@@ -55,7 +55,7 @@ describe("chat", () => {
     const mode = `chat-${suffix}`;
     const joins: Array<{ wsUrl: string }> = [];
     for (const name of ["alice", "bob"]) {
-      const response = await SELF.fetch(`https://bighouse.test/games/card-demo/lobbies/${mode}/join`, {
+      const response = await SELF.fetch(`https://bighouse.test/games/gomoku/lobbies/${mode}/join`, {
         method: "POST",
         body: JSON.stringify({ playerId: `${name}-${suffix}`, displayName: name })
       });

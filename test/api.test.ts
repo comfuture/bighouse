@@ -10,7 +10,7 @@ describe("HTTP API", () => {
     const gamesResponse = await SELF.fetch("https://bighouse.test/games");
     expect(gamesResponse.status).toBe(200);
     const gamesBody = (await gamesResponse.json()) as { games: Array<{ gameId: string; description: string; minPlayers: number; maxPlayers: number }> };
-    expect(gamesBody.games.map((game) => game.gameId)).toEqual(["card-demo", "chess", "gomoku", "onecard"]);
+    expect(gamesBody.games.map((game) => game.gameId)).toEqual(["chess", "gomoku", "onecard"]);
     expect(gamesBody.games).toContainEqual(
       expect.objectContaining({
         gameId: "gomoku",
@@ -27,12 +27,17 @@ describe("HTTP API", () => {
     await env.DB.prepare("UPDATE games SET enabled = 0 WHERE game_id = 'gomoku'").run();
     const filteredResponse = await SELF.fetch("https://bighouse.test/games");
     const filteredBody = (await filteredResponse.json()) as { games: Array<{ gameId: string }> };
-    expect(filteredBody.games.map((game) => game.gameId)).toEqual(["card-demo", "chess", "gomoku", "onecard"]);
+    expect(filteredBody.games.map((game) => game.gameId)).toEqual(["chess", "gomoku", "onecard"]);
     const staleJoinResponse = await SELF.fetch("https://bighouse.test/games/stale-game/lobbies/default/join", {
       method: "POST",
       body: JSON.stringify({ playerId: "p1" })
     });
     expect(staleJoinResponse.status).toBe(404);
+    const cardDemoJoinResponse = await SELF.fetch("https://bighouse.test/games/card-demo/lobbies/default/join", {
+      method: "POST",
+      body: JSON.stringify({ playerId: "p1" })
+    });
+    expect(cardDemoJoinResponse.status).toBe(404);
 
     const joinResponse = await SELF.fetch("https://bighouse.test/games/gomoku/lobbies/default/join", {
       method: "POST",
@@ -113,7 +118,7 @@ describe("HTTP API", () => {
 
   it("rejects new room joins after the game leaves the waiting phase", async () => {
     const mode = `active-join-${crypto.randomUUID()}`;
-    const createResponse = await SELF.fetch(`https://bighouse.test/games/card-demo/lobbies/${mode}/rooms`, {
+    const createResponse = await SELF.fetch(`https://bighouse.test/games/gomoku/lobbies/${mode}/rooms`, {
       method: "POST",
       body: JSON.stringify({ playerId: "active-host", displayName: "Host" })
     });
@@ -182,7 +187,7 @@ describe("HTTP API", () => {
   });
 
   it("upgrades room WebSockets through the room route", async () => {
-    const joinResponse = await SELF.fetch("https://bighouse.test/games/card-demo/lobbies/default/join", {
+    const joinResponse = await SELF.fetch("https://bighouse.test/games/gomoku/lobbies/default/join", {
       method: "POST",
       body: JSON.stringify({ playerId: "ws-p1" })
     });

@@ -218,37 +218,6 @@ describe("RoomDO", () => {
     await expect(room.join({ playerId: "replacement" })).resolves.toMatchObject({ phase: "waiting", playerCount: 2 });
   });
 
-  it("returns private card state only to the matching player", async () => {
-    const room = env.ROOM_DO.getByName("room:test-card") as unknown as RoomDO;
-    await room.initialize({
-      roomId: "test-card",
-      gameId: "card-demo",
-      mode: "default",
-      minPlayers: 2,
-      maxPlayers: 4
-    });
-    await room.join({ playerId: "p1" });
-    await room.join({ playerId: "p2" });
-    await room.setReady("p2", true);
-    await room.startGame("p1");
-
-    const p1 = await room.getSnapshot("p1");
-    const p2 = await room.getSnapshot("p2");
-    expect(JSON.stringify(p1.publicView)).not.toContain("AS");
-    expect(p1.privateView).toMatchObject({ hand: ["AS", "7H", "3C"] });
-    expect(p2.privateView).toMatchObject({ hand: ["KD", "5S", "2H"] });
-
-    const ack = await room.submitAction({
-      playerId: "p1",
-      clientActionId: "play-as",
-      expectedVersion: 4,
-      type: "playCard",
-      payload: { card: "AS" }
-    });
-    expect(ack.events).toHaveLength(1);
-    expect(ack.events[0]).toMatchObject({ type: "card.played", visibility: "public", payload: { card: "AS" } });
-  });
-
   it("starts one card rooms and accepts validated card actions", async () => {
     const room = env.ROOM_DO.getByName("room:test-onecard") as unknown as RoomDO;
     await room.initialize({
