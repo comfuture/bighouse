@@ -224,6 +224,7 @@ const leaveConfirmOpen = ref(false);
 const qrModalOpen = ref(false);
 const qrCodeDataUrl = ref("");
 const gameHost = ref<HTMLElement>();
+const lastSnapshotServerTime = ref(Date.now());
 let ws: WebSocket | undefined;
 let gameInstance: MountedGameClient | undefined;
 let mountedGameId: string | undefined;
@@ -367,6 +368,7 @@ function connectRoom(): void {
 
 async function handleRoomMessage(message: ServerMessage): Promise<void> {
   if (message.type === "snapshot") {
+    lastSnapshotServerTime.value = message.serverTime;
     room.value = message.payload as unknown as RoomSnapshot;
     await mountOrUpdateGame();
     return;
@@ -412,6 +414,7 @@ async function mountOrUpdateGame(): Promise<void> {
   const client = {
     playerId: identity.playerId,
     version: snapshot.version,
+    serverTime: lastSnapshotServerTime.value,
     phase: snapshot.phase,
     publicView: snapshot.publicView,
     privateView: snapshot.privateView,

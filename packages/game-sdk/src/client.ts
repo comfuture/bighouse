@@ -10,6 +10,7 @@ export type GameClientAction = {
 export type GameClientContext = {
   playerId: string;
   version: number;
+  serverTime: number;
   phase: RoomPhase;
   publicView: JsonObject;
   privateView: JsonObject;

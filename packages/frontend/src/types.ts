@@ -66,6 +66,7 @@ export type ServerMessage = {
   type: string;
   roomId: string;
   version: number;
+  serverTime: number;
   payload: Record<string, unknown>;
 };
 
