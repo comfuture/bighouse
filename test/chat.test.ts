@@ -5,6 +5,7 @@ import "../src";
 type ServerMessage = {
   type: string;
   payload: {
+    code?: string;
     message?: {
       scope: "lobby" | "room";
       visibility: "public" | "private";
@@ -50,6 +51,56 @@ describe("chat", () => {
     closeAll(alice.ws, bob.ws, carol.ws);
   });
 
+  it("keeps lobby chat targetable after identity is attached by hello", async () => {
+    const suffix = crypto.randomUUID();
+    const lobbyBase = `https://bighouse.test/games/gomoku/lobbies/late-lobby-${suffix}/ws`;
+    const alice = await connect(lobbyBase);
+    const bob = await connect(lobbyBase);
+
+    alice.ws.send(JSON.stringify({ type: "hello", playerId: `late-alice-${suffix}`, displayName: "Alice" }));
+    bob.ws.send(JSON.stringify({ type: "hello", playerId: `late-bob-${suffix}`, displayName: "Bob" }));
+    await expectMessage(alice.messages, (message) => message.type === "ack", "alice hello ack");
+    await expectMessage(bob.messages, (message) => message.type === "ack", "bob hello ack");
+
+    alice.ws.send(
+      JSON.stringify({
+        type: "chat",
+        playerId: `late-alice-${suffix}`,
+        targetPlayerId: `late-bob-${suffix}`,
+        body: "late-bound lobby secret"
+      })
+    );
+
+    await expectChat(alice.messages, "private", "late-bound lobby secret");
+    await expectChat(bob.messages, "private", "late-bound lobby secret");
+
+    closeAll(alice.ws, bob.ws);
+  });
+
+  it("rejects lobby chat when the message player does not match the socket attachment", async () => {
+    const suffix = crypto.randomUUID();
+    const lobbyBase = `https://bighouse.test/games/gomoku/lobbies/spoof-lobby-${suffix}/ws`;
+    const alice = await connect(`${lobbyBase}?playerId=spoof-alice-${suffix}&displayName=Alice`);
+    const bob = await connect(`${lobbyBase}?playerId=spoof-bob-${suffix}&displayName=Bob`);
+
+    alice.ws.send(
+      JSON.stringify({
+        type: "chat",
+        playerId: `spoof-bob-${suffix}`,
+        body: "spoofed lobby message"
+      })
+    );
+
+    await expectMessage(
+      alice.messages,
+      (message) => message.type === "error" && message.payload.code === "forbidden",
+      "lobby spoof forbidden error"
+    );
+    await expectNoChat(bob.messages, "spoofed lobby message");
+
+    closeAll(alice.ws, bob.ws);
+  });
+
   it("broadcasts public room chat and targets private room chat", async () => {
     const suffix = crypto.randomUUID();
     const mode = `chat-${suffix}`;
@@ -85,6 +136,41 @@ describe("chat", () => {
     );
     await expectChat(alice.messages, "private", "secret room");
     await expectChat(bob.messages, "private", "secret room");
+
+    closeAll(alice.ws, bob.ws);
+  });
+
+  it("keeps room private chat targetable after identity is attached by joinRoom", async () => {
+    const suffix = crypto.randomUUID();
+    const mode = `late-room-${suffix}`;
+    const joins: Array<{ roomId: string; wsUrl: string }> = [];
+    for (const name of ["alice", "bob"]) {
+      const response = await SELF.fetch(`https://bighouse.test/games/gomoku/lobbies/${mode}/join`, {
+        method: "POST",
+        body: JSON.stringify({ playerId: `late-${name}-${suffix}`, displayName: name })
+      });
+      joins.push((await response.json()) as { roomId: string; wsUrl: string });
+    }
+    const bareRoomUrl = `https://bighouse.test/rooms/${joins[0]!.roomId}/ws`;
+    const alice = await connect(bareRoomUrl);
+    const bob = await connect(bareRoomUrl);
+
+    alice.ws.send(JSON.stringify({ type: "joinRoom", playerId: `late-alice-${suffix}`, displayName: "Alice" }));
+    bob.ws.send(JSON.stringify({ type: "joinRoom", playerId: `late-bob-${suffix}`, displayName: "Bob" }));
+    await expectMessage(alice.messages, (message) => message.type === "snapshot", "alice room snapshot");
+    await expectMessage(bob.messages, (message) => message.type === "snapshot", "bob room snapshot");
+
+    alice.ws.send(
+      JSON.stringify({
+        type: "chat",
+        playerId: `late-alice-${suffix}`,
+        targetPlayerId: `late-bob-${suffix}`,
+        body: "late-bound room secret"
+      })
+    );
+
+    await expectChat(alice.messages, "private", "late-bound room secret");
+    await expectChat(bob.messages, "private", "late-bound room secret");
 
     closeAll(alice.ws, bob.ws);
   });

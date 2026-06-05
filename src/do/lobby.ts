@@ -58,7 +58,10 @@ type LobbyMetaRow = {
 export class LobbyDO extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
-    ctx.blockConcurrencyWhile(async () => this.migrate());
+    ctx.blockConcurrencyWhile(async () => {
+      this.migrate();
+      this.ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair("ping", "pong"));
+    });
   }
 
   async join(input: LobbyJoinInput): Promise<LobbyJoinResult> {
@@ -243,7 +246,14 @@ export class LobbyDO extends DurableObject<Env> {
         roomId: this.lobbyScopeId(),
         version: 0,
         serverTime: Date.now(),
-        payload: { code: "bad_request", message: error instanceof Error ? error.message : "Bad request" }
+        payload:
+          error instanceof GameServerError
+            ? {
+                code: error.code,
+                message: error.message,
+                ...(error.details === undefined ? {} : { details: error.details })
+              }
+            : { code: "bad_request", message: error instanceof Error ? error.message : "Bad request" }
       });
     }
   }
@@ -251,9 +261,9 @@ export class LobbyDO extends DurableObject<Env> {
   async webSocketClose(ws: WebSocket, code: number, reason: string, wasClean: boolean): Promise<void> {
     const attachment = ws.deserializeAttachment() as LobbySocketAttachment | undefined;
     if (attachment?.playerId) {
-      const activeSibling = this.ctx
-        .getWebSockets(`player:${attachment.playerId}`)
-        .some((candidate) => candidate !== ws && candidate.readyState === WebSocket.OPEN);
+      const activeSibling = this.getPlayerSockets(attachment.playerId).some(
+        (candidate) => candidate !== ws && candidate.readyState === WebSocket.OPEN
+      );
       if (!activeSibling) {
         this.ctx.storage.sql.exec("UPDATE lobby_players SET connected = 0, updated_at = ? WHERE player_id = ?", Date.now(), attachment.playerId);
       }
@@ -263,9 +273,9 @@ export class LobbyDO extends DurableObject<Env> {
   async webSocketError(ws: WebSocket, error: unknown): Promise<void> {
     const attachment = ws.deserializeAttachment() as LobbySocketAttachment | undefined;
     if (attachment?.playerId) {
-      const activeSibling = this.ctx
-        .getWebSockets(`player:${attachment.playerId}`)
-        .some((candidate) => candidate !== ws && candidate.readyState === WebSocket.OPEN);
+      const activeSibling = this.getPlayerSockets(attachment.playerId).some(
+        (candidate) => candidate !== ws && candidate.readyState === WebSocket.OPEN
+      );
       if (!activeSibling) {
         this.ctx.storage.sql.exec("UPDATE lobby_players SET connected = 0, updated_at = ? WHERE player_id = ?", Date.now(), attachment.playerId);
       }
@@ -348,8 +358,9 @@ export class LobbyDO extends DurableObject<Env> {
       return;
     }
     if (message.type === "chat") {
+      const playerId = this.requireSocketPlayer(ws, message.playerId);
       const chat = await this.sendChat({
-        playerId: message.playerId,
+        playerId,
         body: message.body,
         ...(message.targetPlayerId ? { targetPlayerId: message.targetPlayerId } : {})
       });
@@ -388,7 +399,7 @@ export class LobbyDO extends DurableObject<Env> {
   }
 
   private hasOnlinePlayer(playerId: string): boolean {
-    return this.ctx.getWebSockets(`player:${playerId}`).some((socket) => socket.readyState === WebSocket.OPEN);
+    return this.getPlayerSockets(playerId).some((socket) => socket.readyState === WebSocket.OPEN);
   }
 
   private insertChat(message: ChatMessage): void {
@@ -440,9 +451,43 @@ export class LobbyDO extends DurableObject<Env> {
   }
 
   private broadcastToPlayer(playerId: string, message: ServerMessage): void {
-    for (const ws of this.ctx.getWebSockets(`player:${playerId}`)) {
+    for (const ws of this.getPlayerSockets(playerId)) {
       this.sendToSocket(ws, message);
     }
+  }
+
+  private requireSocketPlayer(ws: WebSocket, messagePlayerId?: string): string {
+    const attachment = ws.deserializeAttachment() as LobbySocketAttachment | undefined;
+    const playerId = attachment?.playerId;
+    if (!playerId) {
+      throw new GameServerError("forbidden", "Socket is not bound to a player", 403);
+    }
+    if (messagePlayerId && messagePlayerId !== playerId) {
+      throw new GameServerError("forbidden", "Socket player does not match message player", 403);
+    }
+    return playerId;
+  }
+
+  private getPlayerSockets(playerId: string): WebSocket[] {
+    const sockets: WebSocket[] = [];
+    const seen = new Set<WebSocket>();
+    const addSocket = (socket: WebSocket): void => {
+      if (!seen.has(socket)) {
+        seen.add(socket);
+        sockets.push(socket);
+      }
+    };
+
+    for (const socket of this.ctx.getWebSockets(`player:${playerId}`)) {
+      addSocket(socket);
+    }
+    for (const socket of this.ctx.getWebSockets()) {
+      const attachment = socket.deserializeAttachment() as LobbySocketAttachment | undefined;
+      if (attachment?.playerId === playerId) {
+        addSocket(socket);
+      }
+    }
+    return sockets;
   }
 
   private sendToSocket(ws: WebSocket, message: ServerMessage): void {

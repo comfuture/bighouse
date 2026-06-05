@@ -723,9 +723,9 @@ export class RoomDO extends DurableObject<Env> {
   async webSocketClose(ws: WebSocket, code: number, reason: string, wasClean: boolean): Promise<void> {
     const attachment = ws.deserializeAttachment() as SocketAttachment | undefined;
     if (attachment?.playerId) {
-      const activeSibling = this.ctx
-        .getWebSockets(`player:${attachment.playerId}`)
-        .some((candidate) => candidate !== ws && candidate.readyState === WebSocket.OPEN);
+      const activeSibling = this.getPlayerSockets(attachment.playerId).some(
+        (candidate) => candidate !== ws && candidate.readyState === WebSocket.OPEN
+      );
       if (activeSibling) {
         return;
       }
@@ -736,9 +736,9 @@ export class RoomDO extends DurableObject<Env> {
   async webSocketError(ws: WebSocket, error: unknown): Promise<void> {
     const attachment = ws.deserializeAttachment() as SocketAttachment | undefined;
     if (attachment?.playerId) {
-      const activeSibling = this.ctx
-        .getWebSockets(`player:${attachment.playerId}`)
-        .some((candidate) => candidate !== ws && candidate.readyState === WebSocket.OPEN);
+      const activeSibling = this.getPlayerSockets(attachment.playerId).some(
+        (candidate) => candidate !== ws && candidate.readyState === WebSocket.OPEN
+      );
       if (activeSibling) {
         return;
       }
@@ -1124,7 +1124,7 @@ export class RoomDO extends DurableObject<Env> {
 
   private broadcastSnapshots(state: RoomState): void {
     for (const player of state.players) {
-      for (const ws of this.ctx.getWebSockets(`player:${player.playerId}`)) {
+      for (const ws of this.getPlayerSockets(player.playerId)) {
         this.sendToSocket(ws, this.message(state, "snapshot", this.createSnapshot(state, player.playerId)));
       }
     }
@@ -1164,7 +1164,7 @@ export class RoomDO extends DurableObject<Env> {
   }
 
   private broadcastToPlayer(playerId: string, message: ServerMessage): void {
-    for (const ws of this.ctx.getWebSockets(`player:${playerId}`)) {
+    for (const ws of this.getPlayerSockets(playerId)) {
       this.sendToSocket(ws, message);
     }
   }
@@ -1181,9 +1181,7 @@ export class RoomDO extends DurableObject<Env> {
   }
 
   private async confirmDisconnect(playerId: string): Promise<void> {
-    const activeSibling = this.ctx
-      .getWebSockets(`player:${playerId}`)
-      .some((candidate) => candidate.readyState === WebSocket.OPEN);
+    const activeSibling = this.getPlayerSockets(playerId).some((candidate) => candidate.readyState === WebSocket.OPEN);
     if (activeSibling) {
       return;
     }
@@ -1221,6 +1219,28 @@ export class RoomDO extends DurableObject<Env> {
       throw new GameServerError("forbidden", "Socket player does not match message player", 403);
     }
     return playerId;
+  }
+
+  private getPlayerSockets(playerId: string): WebSocket[] {
+    const sockets: WebSocket[] = [];
+    const seen = new Set<WebSocket>();
+    const addSocket = (socket: WebSocket): void => {
+      if (!seen.has(socket)) {
+        seen.add(socket);
+        sockets.push(socket);
+      }
+    };
+
+    for (const socket of this.ctx.getWebSockets(`player:${playerId}`)) {
+      addSocket(socket);
+    }
+    for (const socket of this.ctx.getWebSockets()) {
+      const attachment = socket.deserializeAttachment() as SocketAttachment | undefined;
+      if (attachment?.playerId === playerId) {
+        addSocket(socket);
+      }
+    }
+    return sockets;
   }
 
   private toCommandError(error: unknown): RoomCommandResultEnvelope {
