@@ -155,6 +155,7 @@ export function createChessGame(container: HTMLElement, client: ChessClient) {
     boardFrame.classList.toggle("is-my-turn", myTurn);
     board.classList.toggle("is-black-perspective", privateView.color === "black");
     updateCheckOverlay(publicView.check);
+    const cellSize = board.getBoundingClientRect().width / 8;
     board.innerHTML = "";
 
     for (const square of orderedSquares(privateView.color === "black")) {
@@ -186,8 +187,8 @@ export function createChessGame(container: HTMLElement, client: ChessClient) {
         if (animateMove && publicView.lastMove) {
           const offset = moveAnimationOffset(publicView.lastMove.from, publicView.lastMove.to, privateView.color === "black");
           img.classList.add("is-moving-piece");
-          img.style.setProperty("--chess-move-x", String(offset.x));
-          img.style.setProperty("--chess-move-y", String(offset.y));
+          img.style.setProperty("--chess-move-x", `${offset.x * cellSize}px`);
+          img.style.setProperty("--chess-move-y", `${offset.y * cellSize}px`);
         }
         cell.append(img);
       }
