@@ -23,7 +23,7 @@
           icon="i-lucide-qr-code"
           color="neutral"
           variant="ghost"
-          :disabled="!room || roomIsFull"
+          :disabled="!roomCanShareQr"
           @click="openQrModal"
         />
       </template>
@@ -270,6 +270,10 @@ const roomIsFull = computed(() => {
   const snapshot = room.value;
   return Boolean(snapshot && snapshot.players.length >= snapshot.maxPlayers);
 });
+const roomCanShareQr = computed(() => {
+  const snapshot = room.value;
+  return Boolean(snapshot && !roomIsFull.value && (snapshot.phase === "waiting" || snapshot.activeInterruption));
+});
 const lobbyPath = computed(() => {
   const gameId = room.value?.gameId ?? String(route.params.gameId);
   const mode = room.value?.mode ?? "default";
@@ -277,8 +281,11 @@ const lobbyPath = computed(() => {
 });
 const publicRoomUrl = computed(() => {
   if (typeof window === "undefined") return "";
-  const path = `/game/${encodeURIComponent(displayGameId.value)}/${encodeURIComponent(roomId.value)}`;
-  return new URL(path, window.location.origin).toString();
+  const href = router.resolve({
+    name: "room",
+    params: { gameId: displayGameId.value, roomId: roomId.value }
+  }).href;
+  return new URL(href, window.location.origin).toString();
 });
 
 onMounted(() => {
@@ -289,17 +296,23 @@ watch(identityReady, (ready) => {
   if (ready && !ws) connectRoom();
 });
 
-watch(roomIsFull, (full) => {
-  if (full) qrModalOpen.value = false;
+watch(roomCanShareQr, (canShare) => {
+  if (!canShare) qrModalOpen.value = false;
 });
 
 watch(qrModalOpen, async (open) => {
   if (!open || qrCodeDataUrl.value) return;
-  qrCodeDataUrl.value = await toDataURL(publicRoomUrl.value, {
-    errorCorrectionLevel: "M",
-    margin: 1,
-    width: 320
-  });
+  try {
+    qrCodeDataUrl.value = await toDataURL(publicRoomUrl.value, {
+      errorCorrectionLevel: "M",
+      margin: 1,
+      width: 320
+    });
+  } catch (cause) {
+    console.error("Failed to generate room QR code", cause);
+    error.value = "Failed to generate room QR code";
+    qrModalOpen.value = false;
+  }
 });
 
 onBeforeRouteLeave((to) => {
@@ -454,7 +467,7 @@ function sendChat(body: string, targetPlayerId?: string): void {
 }
 
 function goToLobby(): void {
-  leaveRoom(lobbyPath.value);
+  void router.replace(lobbyPath.value);
 }
 
 function leaveRoom(destination = lobbyPath.value): void {
@@ -495,7 +508,7 @@ async function replaceRoomRoute(destination: string): Promise<void> {
 }
 
 function openQrModal(): void {
-  if (roomIsFull.value) return;
+  if (!roomCanShareQr.value) return;
   qrModalOpen.value = true;
 }
 
