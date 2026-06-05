@@ -16,7 +16,7 @@
   position: absolute;
   top: 10px;
   left: 10px;
-  z-index: 4;
+  z-index: 30;
   min-height: 34px;
   display: flex;
   align-items: center;
@@ -181,9 +181,8 @@
   z-index: 1;
 }
 
-.chess-cell img.is-moving-piece {
-  animation: chess-piece-move 260ms ease-in-out both;
-  z-index: 4;
+.chess-cell img.is-move-target-hidden {
+  opacity: 0;
 }
 
 .chess-cell.is-in-check img {
@@ -195,7 +194,7 @@
 .chess-check-overlay {
   position: absolute;
   inset: 0;
-  z-index: 5;
+  z-index: 35;
   display: grid;
   place-items: center;
   color: #ffffff;
@@ -214,6 +213,22 @@
 
 .chess-check-overlay.is-flashing {
   animation: chess-check-flash 1.15s ease both;
+}
+
+.chess-move-ghost-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  pointer-events: none;
+}
+
+.chess-move-ghost-piece {
+  position: absolute;
+  display: block;
+  object-fit: contain;
+  pointer-events: none;
+  animation: chess-piece-move 320ms ease-in-out both;
+  filter: drop-shadow(0 10px 12px rgba(12, 18, 22, 0.22));
 }
 
 .chess-side {
@@ -245,11 +260,11 @@
 }
 
 .chess-result-modal {
-  z-index: 8;
+  z-index: 50;
 }
 
 .chess-promotion-modal {
-  z-index: 9;
+  z-index: 50;
 }
 
 .chess-result-modal.is-hidden,
@@ -389,7 +404,7 @@
   .chess-board,
   .chess-check-overlay,
   .chess-cell.is-in-check img,
-  .chess-cell img.is-moving-piece {
+  .chess-move-ghost-piece {
     animation: none;
     transition: none;
   }

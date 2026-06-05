@@ -100,6 +100,7 @@ export function createChessGame(container: HTMLElement, client: ChessClient) {
         </div>
         <div class="chess-check-overlay is-hidden" data-role="check-overlay" aria-live="assertive">Check</div>
         <div class="chess-board" data-role="board" aria-label="Chess board"></div>
+        <div class="chess-move-ghost-layer" data-role="move-ghost-layer" aria-hidden="true"></div>
       </div>
       <aside class="chess-side">
         <div class="chess-side-title">Moves</div>
@@ -127,6 +128,7 @@ export function createChessGame(container: HTMLElement, client: ChessClient) {
   const boardFrame = requireElement<HTMLElement>(container, "[data-role='board-frame']");
   const checkOverlay = requireElement<HTMLElement>(container, "[data-role='check-overlay']");
   const board = requireElement<HTMLElement>(container, "[data-role='board']");
+  const moveGhostLayer = requireElement<HTMLElement>(container, "[data-role='move-ghost-layer']");
   const history = requireElement<HTMLOListElement>(container, "[data-role='history']");
   const modal = requireElement<HTMLElement>(container, "[data-role='result-modal']");
   const resultTitle = requireElement<HTMLElement>(container, "[data-role='result-title']");
@@ -135,6 +137,7 @@ export function createChessGame(container: HTMLElement, client: ChessClient) {
   const leaveButton = requireElement<HTMLButtonElement>(container, "[data-role='leave-game']");
   const promotionModal = requireElement<HTMLElement>(container, "[data-role='promotion-modal']");
   const promotionPanel = requireElement<HTMLElement>(container, "[data-role='promotion-panel']");
+  let moveGhostCleanupTimer: ReturnType<typeof setTimeout> | undefined;
 
   playAgainButton.addEventListener("click", () => {
     client.requestPlayAgain();
@@ -155,7 +158,7 @@ export function createChessGame(container: HTMLElement, client: ChessClient) {
     boardFrame.classList.toggle("is-my-turn", myTurn);
     board.classList.toggle("is-black-perspective", privateView.color === "black");
     updateCheckOverlay(publicView.check);
-    const cellSize = board.getBoundingClientRect().width / 8;
+    clearMoveGhost();
     board.innerHTML = "";
 
     for (const square of orderedSquares(privateView.color === "black")) {
@@ -163,10 +166,10 @@ export function createChessGame(container: HTMLElement, client: ChessClient) {
       const legalDestination = destinations?.legal.has(square) === true && selected !== square;
       const unsafeDestination = destinations?.unsafe.has(square) === true && selected !== square;
       const checkedKing = publicView.check && piece?.type === "k" && piece.color === publicView.turn;
-      const animateMove = piece && pendingMoveAnimationKey && moveKey(publicView) === pendingMoveAnimationKey && publicView.lastMove?.to === square;
       const cell = document.createElement("button");
       const light = squareColor(square) === "light";
       cell.type = "button";
+      cell.dataset.square = square;
       cell.className = [
         "chess-cell",
         light ? "is-light" : "is-dark",
@@ -184,12 +187,6 @@ export function createChessGame(container: HTMLElement, client: ChessClient) {
         img.src = pieceUrls[`${piece.color}${piece.type}`]!;
         img.alt = pieceName(piece);
         img.draggable = false;
-        if (animateMove && publicView.lastMove) {
-          const offset = moveAnimationOffset(publicView.lastMove.from, publicView.lastMove.to, privateView.color === "black");
-          img.classList.add("is-moving-piece");
-          img.style.setProperty("--chess-move-x", `${offset.x * cellSize}px`);
-          img.style.setProperty("--chess-move-y", `${offset.y * cellSize}px`);
-        }
         cell.append(img);
       }
       board.append(cell);
@@ -204,6 +201,7 @@ export function createChessGame(container: HTMLElement, client: ChessClient) {
       item.textContent = `${moveNumber}. ${whiteMove} ${blackMove}`.trim();
       history.append(item);
     }
+    renderMoveGhost(publicView);
     renderResult();
     renderPromotion();
   }
@@ -319,6 +317,57 @@ export function createChessGame(container: HTMLElement, client: ChessClient) {
     }, 1_150);
   }
 
+  function renderMoveGhost(publicView: ChessPublicView): void {
+    const move = publicView.lastMove;
+    if (!move || !pendingMoveAnimationKey || moveKey(publicView) !== pendingMoveAnimationKey) return;
+    const piece = pieceAt(publicView.board, move.to);
+    if (!piece) return;
+    const fromCell = board.querySelector<HTMLElement>(`[data-square="${move.from}"]`);
+    const toCell = board.querySelector<HTMLElement>(`[data-square="${move.to}"]`);
+    const targetImg = toCell?.querySelector<HTMLImageElement>("img");
+    if (!fromCell || !toCell || !targetImg) return;
+
+    const boardFrameRect = boardFrame.getBoundingClientRect();
+    const fromRect = fromCell.getBoundingClientRect();
+    const toRect = toCell.getBoundingClientRect();
+    const inset = 4;
+    const ghost = document.createElement("img");
+    ghost.className = "chess-move-ghost-piece";
+    ghost.src = pieceUrls[`${piece.color}${piece.type}`]!;
+    ghost.alt = "";
+    ghost.draggable = false;
+    ghost.style.left = `${toRect.left - boardFrameRect.left + inset}px`;
+    ghost.style.top = `${toRect.top - boardFrameRect.top + inset}px`;
+    ghost.style.width = `${toRect.width - inset * 2}px`;
+    ghost.style.height = `${toRect.height - inset * 2}px`;
+    ghost.style.setProperty("--chess-move-x", `${fromRect.left - toRect.left}px`);
+    ghost.style.setProperty("--chess-move-y", `${fromRect.top - toRect.top}px`);
+    targetImg.classList.add("is-move-target-hidden");
+    moveGhostLayer.append(ghost);
+
+    const finish = (): void => {
+      ghost.remove();
+      targetImg.classList.remove("is-move-target-hidden");
+      if (moveGhostCleanupTimer) {
+        clearTimeout(moveGhostCleanupTimer);
+        moveGhostCleanupTimer = undefined;
+      }
+    };
+    ghost.addEventListener("animationend", finish, { once: true });
+    moveGhostCleanupTimer = setTimeout(finish, 360);
+  }
+
+  function clearMoveGhost(): void {
+    if (moveGhostCleanupTimer) {
+      clearTimeout(moveGhostCleanupTimer);
+      moveGhostCleanupTimer = undefined;
+    }
+    board.querySelectorAll(".is-move-target-hidden").forEach((element) => {
+      element.classList.remove("is-move-target-hidden");
+    });
+    moveGhostLayer.innerHTML = "";
+  }
+
   render();
 
   return {
@@ -340,6 +389,7 @@ export function createChessGame(container: HTMLElement, client: ChessClient) {
       if (checkOverlayTimer) {
         clearTimeout(checkOverlayTimer);
       }
+      clearMoveGhost();
       container.classList.remove("chess-game");
       container.innerHTML = "";
     }
@@ -392,23 +442,6 @@ function squareColor(square: ChessSquare): "light" | "dark" {
 function moveKey(publicView: ChessPublicView): string | undefined {
   const move = publicView.lastMove;
   return move ? `${publicView.moveCount}:${move.playerId}:${move.from}:${move.to}:${move.san}` : undefined;
-}
-
-function moveAnimationOffset(from: ChessSquare, to: ChessSquare, blackPerspective: boolean): { x: number; y: number } {
-  const start = displayPosition(from, blackPerspective);
-  const end = displayPosition(to, blackPerspective);
-  return {
-    x: start.column - end.column,
-    y: start.row - end.row
-  };
-}
-
-function displayPosition(square: ChessSquare, blackPerspective: boolean): { column: number; row: number } {
-  const file = square.charCodeAt(0) - "a".charCodeAt(0);
-  const rank = Number(square[1]) - 1;
-  return blackPerspective
-    ? { column: 7 - file, row: rank }
-    : { column: file, row: 7 - rank };
 }
 
 function pieceName(piece: ChessPieceView): string {
