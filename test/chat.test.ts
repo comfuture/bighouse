@@ -18,6 +18,20 @@ type ServerMessage = {
 };
 
 describe("chat", () => {
+  it("auto-responds to raw ping without JSON handlers", async () => {
+    const suffix = crypto.randomUUID();
+    const lobby = await connectRaw(`https://bighouse.test/games/gomoku/lobbies/ping-${suffix}/ws?playerId=ping-lobby-${suffix}`);
+    const room = await connectRaw(`https://bighouse.test/rooms/ping-room-${suffix}/ws?playerId=ping-room-${suffix}`);
+
+    lobby.ws.send("ping");
+    room.ws.send("ping");
+
+    await expectRawMessage(lobby.messages, "pong", "lobby raw pong");
+    await expectRawMessage(room.messages, "pong", "room raw pong");
+
+    closeAll(lobby.ws, room.ws);
+  });
+
   it("broadcasts public lobby chat and targets private lobby chat", async () => {
     const suffix = crypto.randomUUID();
     const lobbyBase = `https://bighouse.test/games/gomoku/lobbies/chat-${suffix}/ws`;
@@ -191,6 +205,21 @@ async function connect(url: string): Promise<{ ws: WebSocket; messages: ServerMe
   return { ws: ws!, messages };
 }
 
+async function connectRaw(url: string): Promise<{ ws: WebSocket; messages: string[] }> {
+  const response = await SELF.fetch(url.replace("wss://", "https://").replace("ws://", "http://"), {
+    headers: { Upgrade: "websocket" }
+  });
+  expect(response.status).toBe(101);
+  const ws = response.webSocket;
+  expect(ws).toBeDefined();
+  const messages: string[] = [];
+  ws!.accept();
+  ws!.addEventListener("message", (event) => {
+    messages.push(String(event.data));
+  });
+  return { ws: ws!, messages };
+}
+
 async function expectChat(messages: ServerMessage[], visibility: "public" | "private", body: string): Promise<void> {
   const message = await expectMessage(
     messages,
@@ -220,6 +249,17 @@ async function expectMessage(
     const found = messages.find(predicate);
     if (found) {
       return found;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`Timed out waiting for ${label}; saw ${JSON.stringify(messages)}`);
+}
+
+async function expectRawMessage(messages: string[], expected: string, label: string): Promise<void> {
+  const started = Date.now();
+  while (Date.now() - started < 1000) {
+    if (messages.includes(expected)) {
+      return;
     }
     await new Promise((resolve) => setTimeout(resolve, 10));
   }

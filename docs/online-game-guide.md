@@ -75,7 +75,26 @@ wss://bighouse.comfuture.workers.dev/games/gomoku/lobbies/default/ws?playerId=p1
 
 The SPA stores `playerId`, `displayName`, and lobby `mode` locally after the player information modal is submitted. If a user opens a shared room URL such as `/game/gomoku/room_abc` without saved player information, the modal is shown first and the room WebSocket is not opened until `playerId` is available.
 
-## 2. Client Message Contract
+## 2. Durable Object WebSocket Contract
+
+Bighouse room and lobby sockets use Cloudflare Durable Objects WebSocket Hibernation. A hibernated room or lobby can be evicted from memory while clients stay connected, then rebuilt when a message, close, error, request, or alarm arrives.
+
+Client rules:
+
+- Include `playerId` in the WebSocket URL whenever it is known. The server uses it to attach a player tag at `ctx.acceptWebSocket()` time for efficient targeted snapshots, private chat, and presence.
+- Send `displayName` in the URL when available, or in `hello` / `joinRoom` after opening.
+- Treat every `snapshot` as authoritative. After reconnect or hibernation wakeup, replace local room state from the latest snapshot instead of replaying local assumptions.
+- Use `hello` for lobby identity refresh or reconnect when the URL did not include identity.
+- Use `joinRoom` for room identity refresh, reconnect, or direct shared-room entry.
+- Send either a raw string `ping` for automatic hibernation-friendly `pong`, or a JSON `ping` when the client needs a typed `pong` with a `nonce`.
+
+Server rules:
+
+- Only WebSocket attachment data and Durable Object storage survive hibernation. Do not depend on in-memory socket maps in game code.
+- WebSocket tags are assigned only when the socket is accepted. If identity arrives later through `hello` or `joinRoom`, Bighouse falls back to attachment-based socket lookup.
+- Room state, processed action ids, events, timers, chat, and result summaries are persisted before broadcasting derived messages.
+
+## 3. Client Message Contract
 
 Clients send JSON messages after opening a WebSocket.
 
@@ -167,7 +186,7 @@ Important fields:
 
 Every server message includes `roomId`, `version`, and `serverTime`. Clients should replace their local room model on `snapshot`, then incrementally apply `event`, `privateEvent`, and `chat`.
 
-## 3. Frontend Package Layout
+## 4. Frontend Package Layout
 
 The browser frontend is split by responsibility.
 
@@ -198,7 +217,7 @@ The deployment uses Worker static assets from `packages/frontend/dist`, while AP
 
 Use this pattern for new games: create a package under `packages/<game-id>`, export a small mount/update API, and add a dynamic loader entry in `packages/frontend/src/main.ts`.
 
-## 4. Lobby Chat and Room Chat
+## 5. Lobby Chat and Room Chat
 
 Bighouse has two chat scopes.
 
@@ -245,7 +264,7 @@ Server chat message:
 
 Keep chat separate from game events. `event` and `privateEvent` are consequences of game rules. `chat` is player communication. For example, playing `"AS"` in a card game is a `card.played` public event; saying "I will play AS" is a chat message.
 
-## 5. Public State and Private State
+## 6. Public State and Private State
 
 Bighouse room state has three major layers.
 
@@ -269,7 +288,7 @@ Bighouse room state has three major layers.
 
 This separation is the most important rule when implementing online games. The server may hold complete authoritative state internally, but every view and event sent to clients must be filtered according to the game rules.
 
-## 6. Gomoku: Public Global State
+## 7. Gomoku: Public Global State
 
 Games like gomoku, go, chess, and checkers usually show the same board to every player. Most of their `stageState` can be public.
 
@@ -348,7 +367,7 @@ Public event:
 
 The client implementation can be simple: render `snapshot.payload.publicView.board`, disable illegal empty cells, highlight `snapshot.payload.publicView.lastMove`, then update from the next `snapshot` or `gomoku.stonePlaced` event.
 
-## 7. Card Games: Hidden Player State
+## 8. Card Games: Hidden Player State
 
 Games like poker, one-card, rummy, or board games with secret objectives must strictly separate `stageState` and `playerStates`.
 
@@ -439,7 +458,7 @@ A draw-card action should use `privateEvent` for the actual card value:
 
 The client should render shared table UI from `publicView`, and update the player's hand UI only from `snapshot.payload.privateView` and `privateEvent`.
 
-## 8. Adding a New Game
+## 9. Adding a New Game
 
 Add a game as a package-owned plugin. A game package should export server rules from a Worker-safe entrypoint, browser UI from a browser-only entrypoint, and fixed-name metadata as `gameMetadata`.
 
@@ -537,7 +556,7 @@ const clientGamePlugins = {
 
 `GET /games` returns the server plugins registered in the current Worker build. D1 does not own the public game list; the frontend may merge matching client metadata, such as a Vite asset URL for `thumbnail.src`, before rendering the game list.
 
-## 9. Adapter Design Checklist
+## 10. Adapter Design Checklist
 
 Answer these questions before implementing a game:
 
@@ -559,7 +578,7 @@ State placement:
 | Move, visible card play, winner declaration | `GameEvent` | `visibility: "public"` or `"system"` |
 | Drawn card value, private reward | `GameEvent` | `visibility: "private"` plus `playerId` |
 
-## 10. Recommended Client Model
+## 11. Recommended Client Model
 
 Keep room state split on the client:
 
@@ -593,7 +612,7 @@ Handling rules:
 
 Use server `version` as the synchronization point. When sending an action, set `expectedVersion` to the version that the player actually saw when choosing the action.
 
-## 11. Practical Test Scenarios
+## 12. Practical Test Scenarios
 
 Operational cleanup:
 
@@ -630,4 +649,7 @@ For chat:
 - A `chat` message without `targetPlayerId` must arrive at every lobby connection.
 - A `chat` message with `targetPlayerId` must arrive only at the sender and target player.
 - Repeat the same checks on room WebSockets.
+- Connect lobby and room WebSockets without URL identity, bind with `hello` or `joinRoom`, then verify private chat and targeted events still reach that socket.
+- Send lobby chat with a `playerId` that does not match the socket attachment and verify the server returns `forbidden`.
+- Send a raw string `ping` to lobby and room sockets and verify a `pong` is returned without requiring a JSON handler.
 - Room private chat targets must be players in the same room.
