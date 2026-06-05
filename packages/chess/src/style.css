@@ -12,6 +12,23 @@
   align-items: center;
 }
 
+.chess-turn-notice {
+  width: min(100%, 560px);
+  min-height: 42px;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(26, 95, 72, 0.28);
+  border-radius: 8px;
+  background: #e7f6ef;
+  color: #124a37;
+  font-size: 1.05rem;
+  font-weight: 800;
+}
+
+.chess-turn-notice.is-hidden {
+  display: none;
+}
+
 .chess-layout {
   position: relative;
   display: grid;
@@ -62,12 +79,27 @@
   box-shadow: inset 0 0 0 4px #f2c94c;
 }
 
+.chess-cell.is-legal-destination::before {
+  content: "O";
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: rgba(11, 45, 36, 0.4);
+  font-size: 1.75rem;
+  font-weight: 800;
+  line-height: 1;
+  pointer-events: none;
+  z-index: 2;
+}
+
 .chess-cell.is-last::after {
   content: "";
   position: absolute;
   inset: 8px;
   border: 2px solid rgba(22, 80, 118, 0.7);
   pointer-events: none;
+  z-index: 1;
 }
 
 .chess-cell img {
@@ -78,6 +110,7 @@
   object-fit: contain;
   display: block;
   pointer-events: none;
+  z-index: 1;
 }
 
 .chess-side {

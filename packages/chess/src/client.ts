@@ -1,5 +1,6 @@
 import "./style.css";
 import type { GameClientContext, MountedGameClient } from "@bighouse/game-sdk/client";
+import { Chess, type Square } from "chess.js";
 import bB from "./assets/pieces/bB.svg?url";
 import bK from "./assets/pieces/bK.svg?url";
 import bN from "./assets/pieces/bN.svg?url";
@@ -26,6 +27,7 @@ type ChessPieceView = {
 
 type ChessPublicView = {
   roomPhase?: "waiting" | "active" | "finished" | "closed";
+  fen: string;
   board: Array<Array<ChessPieceView | null>>;
   currentPlayerId?: string;
   turn: ChessColor;
@@ -86,6 +88,7 @@ export function createChessGame(container: HTMLElement, client: ChessClient) {
   container.classList.add("chess-game");
   container.innerHTML = `
     <div class="chess-status" data-role="status"></div>
+    <div class="chess-turn-notice is-hidden" data-role="turn-notice" aria-live="polite">Your Turn</div>
     <div class="chess-layout">
       <div class="chess-board" data-role="board" aria-label="Chess board"></div>
       <aside class="chess-side">
@@ -109,6 +112,7 @@ export function createChessGame(container: HTMLElement, client: ChessClient) {
   `;
 
   const status = requireElement<HTMLElement>(container, "[data-role='status']");
+  const turnNotice = requireElement<HTMLElement>(container, "[data-role='turn-notice']");
   const board = requireElement<HTMLElement>(container, "[data-role='board']");
   const history = requireElement<HTMLOListElement>(container, "[data-role='history']");
   const modal = requireElement<HTMLElement>(container, "[data-role='result-modal']");
@@ -131,12 +135,15 @@ export function createChessGame(container: HTMLElement, client: ChessClient) {
     const active = publicView.roomPhase === undefined || publicView.roomPhase === "active";
     const myTurn = active && publicView.currentPlayerId === playerId && !publicView.result;
     const colorLabel = privateView.color ?? "spectator";
+    const legalDestinations = selected && myTurn ? legalMoveDestinations(publicView.fen, selected) : new Set<ChessSquare>();
     status.textContent = statusText(publicView, playerId, myTurn, colorLabel);
+    turnNotice.classList.toggle("is-hidden", !myTurn);
     board.classList.toggle("is-black-perspective", privateView.color === "black");
     board.innerHTML = "";
 
     for (const square of orderedSquares(privateView.color === "black")) {
       const piece = pieceAt(publicView.board, square);
+      const legalDestination = legalDestinations.has(square) && selected !== square;
       const cell = document.createElement("button");
       const light = squareColor(square) === "light";
       cell.type = "button";
@@ -144,10 +151,11 @@ export function createChessGame(container: HTMLElement, client: ChessClient) {
         "chess-cell",
         light ? "is-light" : "is-dark",
         selected === square ? "is-selected" : "",
+        legalDestination ? "is-legal-destination" : "",
         publicView.lastMove?.from === square || publicView.lastMove?.to === square ? "is-last" : ""
       ].join(" ");
       cell.disabled = !active || Boolean(publicView.result);
-      cell.ariaLabel = piece ? `${pieceName(piece)} on ${square}` : `empty ${square}`;
+      cell.ariaLabel = `${piece ? `${pieceName(piece)} on ${square}` : `empty ${square}`}${legalDestination ? ", legal move" : ""}`;
       cell.addEventListener("click", () => handleSquareClick(square, piece));
       if (piece) {
         const img = document.createElement("img");
@@ -190,6 +198,9 @@ export function createChessGame(container: HTMLElement, client: ChessClient) {
     if (piece?.color === myColor) {
       selected = square;
       render();
+      return;
+    }
+    if (!legalMoveDestinations(state.publicView.fen, selected).has(square)) {
       return;
     }
     const movingPiece = pieceAt(state.publicView.board, selected);
@@ -314,6 +325,15 @@ function pieceAt(board: ChessPublicView["board"], square: ChessSquare): ChessPie
     if (piece) return piece;
   }
   return undefined;
+}
+
+function legalMoveDestinations(fen: string, square: ChessSquare): Set<ChessSquare> {
+  try {
+    const chess = new Chess(fen);
+    return new Set(chess.moves({ square: square as Square, verbose: true }).map((move) => move.to as ChessSquare));
+  } catch {
+    return new Set();
+  }
 }
 
 function squareColor(square: ChessSquare): "light" | "dark" {
