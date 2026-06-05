@@ -30,13 +30,14 @@ function baseState(gameId: string): RoomState {
 describe("game adapters", () => {
   it("initializes chess with public board state and private colors", () => {
     const state = baseState("chess");
-    state.stageState = chessDefinition.initialStageState({ room: state.room, players: state.players, now: 1 });
+    state.stageState = chessDefinition.initialStageState({ room: state.room, players: state.players, now: 1_000 });
     state.playerStates.p1 = chessDefinition.initialPlayerState(state.players[0]!, { room: state.room, now: 1 });
     state.playerStates.p2 = chessDefinition.initialPlayerState(state.players[1]!, { room: state.room, now: 1 });
 
-    expect(chessDefinition.getPublicView({ state, now: 1 })).toMatchObject({
+    expect(chessDefinition.getPublicView({ state, now: 1_000 })).toMatchObject({
       turn: "w",
       currentPlayerId: "p1",
+      turnDeadline: 61_000,
       moveCount: 0,
       check: false,
       checkmate: false,
@@ -45,6 +46,20 @@ describe("game adapters", () => {
     expect(chessDefinition.getPrivateView({ state, now: 1 }, "p1")).toEqual({ color: "white" });
     expect(chessDefinition.getPrivateView({ state, now: 1 }, "p2")).toEqual({ color: "black" });
     expect(JSON.stringify(chessDefinition.getPublicView({ state, now: 1 }))).not.toContain("white");
+  });
+
+  it("rejects malformed chess move payloads without throwing", () => {
+    const state = baseState("chess");
+    state.stageState = chessDefinition.initialStageState({ room: state.room, players: state.players, now: 1 });
+    state.playerStates.p1 = chessDefinition.initialPlayerState(state.players[0]!, { room: state.room, now: 1 });
+    state.playerStates.p2 = chessDefinition.initialPlayerState(state.players[1]!, { room: state.room, now: 1 });
+
+    expect(
+      chessDefinition.validateAction(
+        { state: cloneState(state), now: 10 },
+        { playerId: "p1", clientActionId: "bad-payload", expectedVersion: 2, type: "move", payload: null as unknown as Record<string, unknown> }
+      )
+    ).toMatchObject({ ok: false, code: "invalid_action", message: "Payload must be an object" });
   });
 
   it("applies chess moves and rejects invalid turns", () => {
@@ -79,10 +94,34 @@ describe("game adapters", () => {
     expect(chessDefinition.getPublicView({ state: result.state, now: 10 })).toMatchObject({
       currentPlayerId: "p2",
       turn: "b",
+      turnDeadline: 60_010,
       moveCount: 1,
       history: ["e4"],
       lastMove: { from: "e2", to: "e4" }
     });
+  });
+
+  it("finishes chess when a turn timer expires", () => {
+    const state = baseState("chess");
+    state.stageState = chessDefinition.initialStageState({ room: state.room, players: state.players, now: 1_000 });
+    state.playerStates.p1 = chessDefinition.initialPlayerState(state.players[0]!, { room: state.room, now: 1 });
+    state.playerStates.p2 = chessDefinition.initialPlayerState(state.players[1]!, { room: state.room, now: 1 });
+
+    const result = chessDefinition.applyTimer!(
+      { state: cloneState(state), now: 61_000 },
+      { id: "turn-timeout", kind: "turn_timeout", runAt: 61_000, payload: { playerId: "p1" } }
+    );
+
+    expect(result.state).toMatchObject({ phase: "finished" });
+    expect(chessDefinition.getPublicView({ state: result.state, now: 61_000 })).toMatchObject({
+      result: "timeout",
+      winnerPlayerId: "p2"
+    });
+    expect(result.events).toContainEqual(expect.objectContaining({
+      type: "chess.gameWon",
+      visibility: "system",
+      payload: { winnerPlayerId: "p2", reason: "timeout" }
+    }));
   });
 
   it("finishes chess on checkmate", () => {
@@ -117,6 +156,43 @@ describe("game adapters", () => {
       type: "chess.gameWon",
       visibility: "system",
       payload: { winnerPlayerId: "p2", reason: "checkmate" }
+    }));
+  });
+
+  it("preserves chess move history for threefold repetition draws", () => {
+    let state = baseState("chess");
+    state.stageState = chessDefinition.initialStageState({ room: state.room, players: state.players, now: 1 });
+    state.playerStates.p1 = chessDefinition.initialPlayerState(state.players[0]!, { room: state.room, now: 1 });
+    state.playerStates.p2 = chessDefinition.initialPlayerState(state.players[1]!, { room: state.room, now: 1 });
+    const moves = [
+      ["p1", "g1", "f3"],
+      ["p2", "g8", "f6"],
+      ["p1", "f3", "g1"],
+      ["p2", "f6", "g8"],
+      ["p1", "g1", "f3"],
+      ["p2", "g8", "f6"],
+      ["p1", "f3", "g1"],
+      ["p2", "f6", "g8"]
+    ] as const;
+
+    let result = { state, events: [] as Array<{ type: string }> };
+    for (const [index, [playerId, from, to]] of moves.entries()) {
+      result = chessDefinition.applyAction(
+        { state: cloneState(result.state), now: 10 + index },
+        { playerId, clientActionId: `${from}-${to}-${index}`, expectedVersion: 2 + index, type: "move", payload: { from, to } }
+      );
+      state = result.state;
+    }
+
+    expect(result.state).toMatchObject({ phase: "finished" });
+    expect(chessDefinition.getPublicView({ state: result.state, now: 20 })).toMatchObject({
+      result: "draw",
+      drawReason: "threefold_repetition"
+    });
+    expect(result.events).toContainEqual(expect.objectContaining({
+      type: "chess.gameDrawn",
+      visibility: "system",
+      payload: { reason: "threefold_repetition" }
     }));
   });
 

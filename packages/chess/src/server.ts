@@ -7,13 +7,14 @@ import type {
   JsonObject,
   PlayerSeat,
   ServerGamePlugin,
+  TimerIntent,
   ValidationResult
 } from "@bighouse/game-sdk/server";
 import { createGameEventId, defineGameDefinition } from "@bighouse/game-sdk/server";
 import { baseGameMetadata } from "./metadata";
 
 type ChessColor = "white" | "black";
-type GameResult = "checkmate" | "stalemate" | "draw";
+type GameResult = "checkmate" | "stalemate" | "draw" | "timeout";
 type PromotionPiece = Extract<PieceSymbol, "q" | "r" | "b" | "n">;
 
 export type ChessPieceView = {
@@ -30,6 +31,7 @@ export type ChessStageState = {
   turnDeadline?: number;
   moveCount: number;
   history: string[];
+  moveHistory?: ChessMoveRecord[];
   lastMove?: ChessMovePayload;
   winnerPlayerId?: string;
   result?: GameResult;
@@ -57,6 +59,12 @@ export type ChessMovePayload = {
   after: string;
 };
 
+type ChessMoveRecord = {
+  from: Square;
+  to: Square;
+  promotion?: PromotionPiece;
+};
+
 const turnMs = 60_000;
 const promotionPieces = new Set(["q", "r", "b", "n"]);
 
@@ -65,10 +73,14 @@ export const gameMetadata = baseGameMetadata;
 export const chessDefinition = defineGameDefinition(gameMetadata, {
   initialStageState(context): JsonObject {
     const chess = new Chess();
-    return buildStage(chess, {
+    const stage = buildStage(chess, {
       players: context.players,
       moveCount: 0
-    }) as unknown as JsonObject;
+    });
+    if (stage.currentPlayerId) {
+      stage.turnDeadline = context.now + turnMs;
+    }
+    return stage as unknown as JsonObject;
   },
 
   initialPlayerState(player: PlayerSeat): JsonObject {
@@ -95,7 +107,7 @@ export const chessDefinition = defineGameDefinition(gameMetadata, {
     if (!parsed.ok) {
       return parsed;
     }
-    const chess = chessFromFen(stage.fen);
+    const chess = chessFromStage(stage);
     const piece = chess.get(parsed.from);
     if (!piece) {
       return { ok: false, code: "invalid_action", message: "No piece on source square" };
@@ -121,12 +133,14 @@ export const chessDefinition = defineGameDefinition(gameMetadata, {
     if (!parsed.ok) {
       throw new Error("Chess move payload must be validated before applying");
     }
-    const chess = chessFromFen(stage.fen);
+    const chess = chessFromStage(stage);
     const move = chess.move(chessMoveInput(parsed), { strict: true });
+    const moveHistory = [...(stage.moveHistory ?? []), moveRecord(move)];
     const nextStage = buildStage(chess, {
       players: state.players,
       moveCount: stage.moveCount + 1,
       history: [...stage.history, move.san],
+      moveHistory,
       lastMove: movePayload(action.playerId, move)
     });
     const events: GameEvent[] = [
@@ -164,6 +178,54 @@ export const chessDefinition = defineGameDefinition(gameMetadata, {
     }
 
     state.stageState = nextStage as unknown as JsonObject;
+    return { state, events };
+  },
+
+  applyTimer(context: GameContext, timer: TimerIntent): ActionResult {
+    if (timer.kind !== "turn_timeout") {
+      return { state: context.state, events: [] };
+    }
+    const state = context.state;
+    const stage = chessStage(state.stageState);
+    const currentPlayerId = stage.currentPlayerId ?? playerIdForTurn(state.players, stage.turn);
+    const timedOutPlayerId = timerPayloadPlayerId(timer.payload) ?? currentPlayerId;
+    if (
+      stage.result ||
+      !stage.turnDeadline ||
+      context.now < stage.turnDeadline ||
+      !currentPlayerId ||
+      timedOutPlayerId !== currentPlayerId
+    ) {
+      return { state, events: [] };
+    }
+
+    const winnerPlayerId = playerIdForTurn(state.players, oppositeColor(stage.turn));
+    stage.result = "timeout";
+    if (winnerPlayerId) {
+      stage.winnerPlayerId = winnerPlayerId;
+    }
+    delete stage.turnDeadline;
+    state.phase = "finished";
+    state.stageState = stage as unknown as JsonObject;
+
+    const events: GameEvent[] = [
+      {
+        id: createGameEventId(),
+        type: "chess.turnTimedOut",
+        visibility: "system",
+        payload: { playerId: currentPlayerId, ...(winnerPlayerId ? { winnerPlayerId } : {}) },
+        createdAt: context.now
+      }
+    ];
+    if (winnerPlayerId) {
+      events.push({
+        id: createGameEventId(),
+        type: "chess.gameWon",
+        visibility: "system",
+        payload: { winnerPlayerId, reason: "timeout" },
+        createdAt: context.now
+      });
+    }
     return { state, events };
   },
 
@@ -218,6 +280,7 @@ function buildStage(
     players: PlayerSeat[];
     moveCount: number;
     history?: string[];
+    moveHistory?: ChessMoveRecord[];
     lastMove?: ChessMovePayload;
   }
 ): ChessStageState {
@@ -236,6 +299,7 @@ function buildStage(
     turn,
     moveCount: options.moveCount,
     history: options.history ?? [],
+    moveHistory: options.moveHistory ?? [],
     ...(options.lastMove ? { lastMove: options.lastMove } : {}),
     ...(winnerPlayerId ? { winnerPlayerId } : {}),
     ...(result ? { result } : {}),
@@ -250,13 +314,23 @@ function chessStage(value: JsonObject): ChessStageState {
   return value as unknown as ChessStageState;
 }
 
-function chessFromFen(fen: string): Chess {
-  return new Chess(fen);
+function chessFromStage(stage: ChessStageState): Chess {
+  if (!stage.moveHistory?.length) {
+    return new Chess(stage.fen);
+  }
+  const chess = new Chess();
+  for (const move of stage.moveHistory) {
+    chess.move(chessMoveInput(move), { strict: true });
+  }
+  return chess;
 }
 
-function parseMovePayload(payload: JsonObject):
+function parseMovePayload(payload: unknown):
   | ({ ok: true; from: Square; to: Square; promotion?: PromotionPiece })
   | ({ ok: false; code: string; message: string }) {
+  if (!isJsonRecord(payload)) {
+    return { ok: false, code: "invalid_action", message: "Payload must be an object" };
+  }
   const from = payload.from;
   const to = payload.to;
   const promotion = payload.promotion;
@@ -267,6 +341,10 @@ function parseMovePayload(payload: JsonObject):
     return { ok: false, code: "invalid_action", message: "promotion must be q, r, b, or n" };
   }
   return { ok: true, from, to, ...(promotion ? { promotion } : {}) };
+}
+
+function isJsonRecord(value: unknown): value is JsonObject {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 function isSquare(value: unknown): value is Square {
@@ -303,6 +381,18 @@ function movePayload(playerId: string, move: Move): ChessMovePayload {
     before: move.before,
     after: move.after
   };
+}
+
+function moveRecord(move: Move): ChessMoveRecord {
+  return {
+    from: move.from,
+    to: move.to,
+    ...(isPromotionPiece(move.promotion) ? { promotion: move.promotion } : {})
+  };
+}
+
+function timerPayloadPlayerId(payload: JsonObject | undefined): string | undefined {
+  return typeof payload?.playerId === "string" ? payload.playerId : undefined;
 }
 
 function colorForPlayer(state: JsonObject | undefined): ChessColor {

@@ -33,7 +33,7 @@ type ChessPublicView = {
   history: string[];
   lastMove?: { from: ChessSquare; to: ChessSquare; san: string; playerId: string };
   winnerPlayerId?: string;
-  result?: "checkmate" | "stalemate" | "draw";
+  result?: "checkmate" | "stalemate" | "draw" | "timeout";
   drawReason?: string;
   check: boolean;
 };
@@ -160,9 +160,12 @@ export function createChessGame(container: HTMLElement, client: ChessClient) {
     }
 
     history.innerHTML = "";
-    for (const [index, san] of publicView.history.entries()) {
+    for (let index = 0; index < publicView.history.length; index += 2) {
+      const moveNumber = Math.floor(index / 2) + 1;
+      const whiteMove = publicView.history[index];
+      const blackMove = publicView.history[index + 1] ?? "";
       const item = document.createElement("li");
-      item.textContent = `${index + 1}. ${san}`;
+      item.textContent = `${moveNumber}. ${whiteMove} ${blackMove}`.trim();
       history.append(item);
     }
     renderResult();
@@ -231,18 +234,28 @@ export function createChessGame(container: HTMLElement, client: ChessClient) {
   }
 
   function renderResult(): void {
-    const { publicView, playerId } = state;
+    const { publicView, privateView, playerId } = state;
     if (!publicView.result || publicView.roomPhase !== "finished") {
       modal.classList.add("is-hidden");
+      playAgainButton.style.display = "";
       return;
     }
+    const isSpectator = !privateView.color;
     if (publicView.winnerPlayerId) {
-      resultTitle.textContent = publicView.winnerPlayerId === playerId ? "Checkmate" : "Game Over";
-      resultMessage.textContent = publicView.winnerPlayerId === playerId ? "You won by checkmate." : "You lost by checkmate.";
+      if (isSpectator) {
+        resultTitle.textContent = "Game Over";
+        resultMessage.textContent = resultMessageFor(publicView.result);
+      } else {
+        resultTitle.textContent = publicView.winnerPlayerId === playerId ? resultTitleFor(publicView.result) : "Game Over";
+        resultMessage.textContent = publicView.winnerPlayerId === playerId
+          ? winningMessageFor(publicView.result)
+          : losingMessageFor(publicView.result);
+      }
     } else {
       resultTitle.textContent = "Draw";
       resultMessage.textContent = publicView.drawReason ? `Draw by ${publicView.drawReason.replaceAll("_", " ")}.` : "The game ended in a draw.";
     }
+    playAgainButton.style.display = isSpectator ? "none" : "";
     modal.classList.remove("is-hidden");
   }
 
@@ -325,6 +338,9 @@ function pieceName(piece: ChessPieceView): string {
 function statusText(publicView: ChessPublicView, playerId: string, myTurn: boolean, colorLabel: string): string {
   if (publicView.result) {
     if (publicView.winnerPlayerId) {
+      if (colorLabel === "spectator") {
+        return "Game Over";
+      }
       return publicView.winnerPlayerId === playerId ? "You Win!" : "You Lose!";
     }
     return "Draw";
@@ -334,4 +350,20 @@ function statusText(publicView: ChessPublicView, playerId: string, myTurn: boole
   return publicView.roomPhase === "active" || publicView.roomPhase === undefined
     ? `Waiting for ${publicView.currentPlayerId ?? "opponent"}`
     : "Waiting for opponent";
+}
+
+function resultTitleFor(result: ChessPublicView["result"]): string {
+  return result === "timeout" ? "Time Forfeit" : "Checkmate";
+}
+
+function resultMessageFor(result: ChessPublicView["result"]): string {
+  return result === "timeout" ? "The game ended on time." : "The game ended in checkmate.";
+}
+
+function winningMessageFor(result: ChessPublicView["result"]): string {
+  return result === "timeout" ? "You won on time." : "You won by checkmate.";
+}
+
+function losingMessageFor(result: ChessPublicView["result"]): string {
+  return result === "timeout" ? "You lost on time." : "You lost by checkmate.";
 }

@@ -762,16 +762,44 @@ export class RoomDO extends DurableObject<Env> {
         this.ctx.storage.sql.exec("DELETE FROM timers WHERE id = ?", timer.id);
       }
       if (timer.kind === "turn_timeout" && state.phase === "active") {
-        const event: GameEvent = {
-          id: createId("evt"),
-          type: "turn.timeout",
-          visibility: "system",
-          payload: timer.payload_json ? JSON.parse(timer.payload_json) : {},
-          createdAt: now
+        const definition = getGameDefinition(state.room.gameId);
+        const timerIntent: TimerIntent = {
+          id: timer.id,
+          kind: timer.kind,
+          runAt: timer.run_at,
+          payload: timer.payload_json ? JSON.parse(timer.payload_json) : {}
         };
-        this.insertEvent(state.version, event);
-        this.deliverEvents(state, [event]);
-        this.ctx.storage.sql.exec("DELETE FROM timers WHERE id = ?", timer.id);
+        if (definition.applyTimer) {
+          const applied = definition.applyTimer({ state: cloneState(state), now }, timerIntent);
+          applied.state.version = state.version + 1;
+          applied.state.updatedAt = now;
+          this.saveState(applied.state);
+          for (const event of applied.events) {
+            this.insertEvent(applied.state.version, event);
+          }
+          await this.rescheduleTimers(definition.nextTimers({ state: applied.state, now }));
+          if (applied.state.phase === "closed") {
+            await this.persistClosedRoom(applied.state, applied.events);
+          }
+          if (applied.state.phase === "finished") {
+            await this.persistFinishedResult(applied.state, applied.events);
+            await this.persistRoomIndex(applied.state);
+          }
+          this.deliverEvents(applied.state, applied.events);
+          this.broadcastSnapshots(applied.state);
+          Object.assign(state, applied.state);
+        } else {
+          const event: GameEvent = {
+            id: createId("evt"),
+            type: "turn.timeout",
+            visibility: "system",
+            payload: timerIntent.payload ?? {},
+            createdAt: now
+          };
+          this.insertEvent(state.version, event);
+          this.deliverEvents(state, [event]);
+          this.ctx.storage.sql.exec("DELETE FROM timers WHERE id = ?", timer.id);
+        }
       }
       if (timer.kind === "disconnect_grace") {
         this.ctx.storage.sql.exec("DELETE FROM timers WHERE id = ?", timer.id);
