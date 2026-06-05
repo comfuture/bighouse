@@ -322,26 +322,24 @@ export function createChessGame(container: HTMLElement, client: ChessClient) {
     if (!move || !pendingMoveAnimationKey || moveKey(publicView) !== pendingMoveAnimationKey) return;
     const piece = pieceAt(publicView.board, move.to);
     if (!piece) return;
-    const fromCell = board.querySelector<HTMLElement>(`[data-square="${move.from}"]`);
     const toCell = board.querySelector<HTMLElement>(`[data-square="${move.to}"]`);
     const targetImg = toCell?.querySelector<HTMLImageElement>("img");
-    if (!fromCell || !toCell || !targetImg) return;
+    if (!targetImg) return;
 
-    const boardFrameRect = boardFrame.getBoundingClientRect();
-    const fromRect = fromCell.getBoundingClientRect();
-    const toRect = toCell.getBoundingClientRect();
-    const inset = 4;
+    const blackPerspective = state.privateView.color === "black";
+    const fromPosition = displayPosition(move.from, blackPerspective);
+    const toPosition = displayPosition(move.to, blackPerspective);
     const ghost = document.createElement("img");
     ghost.className = "chess-move-ghost-piece";
     ghost.src = pieceUrls[`${piece.color}${piece.type}`]!;
     ghost.alt = "";
     ghost.draggable = false;
-    ghost.style.left = `${toRect.left - boardFrameRect.left + inset}px`;
-    ghost.style.top = `${toRect.top - boardFrameRect.top + inset}px`;
-    ghost.style.width = `${toRect.width - inset * 2}px`;
-    ghost.style.height = `${toRect.height - inset * 2}px`;
-    ghost.style.setProperty("--chess-move-x", `${fromRect.left - toRect.left}px`);
-    ghost.style.setProperty("--chess-move-y", `${fromRect.top - toRect.top}px`);
+    ghost.style.left = `${toPosition.column * 12.5}%`;
+    ghost.style.top = `${toPosition.row * 12.5}%`;
+    ghost.style.width = "12.5%";
+    ghost.style.height = "12.5%";
+    ghost.style.setProperty("--chess-move-x", `${(fromPosition.column - toPosition.column) * 100}%`);
+    ghost.style.setProperty("--chess-move-y", `${(fromPosition.row - toPosition.row) * 100}%`);
     targetImg.classList.add("is-move-target-hidden");
     moveGhostLayer.append(ghost);
 
@@ -442,6 +440,14 @@ function squareColor(square: ChessSquare): "light" | "dark" {
 function moveKey(publicView: ChessPublicView): string | undefined {
   const move = publicView.lastMove;
   return move ? `${publicView.moveCount}:${move.playerId}:${move.from}:${move.to}:${move.san}` : undefined;
+}
+
+function displayPosition(square: ChessSquare, blackPerspective: boolean): { column: number; row: number } {
+  const file = square.charCodeAt(0) - "a".charCodeAt(0);
+  const rank = Number(square[1]) - 1;
+  return blackPerspective
+    ? { column: 7 - file, row: rank }
+    : { column: file, row: 7 - rank };
 }
 
 function pieceName(piece: ChessPieceView): string {
