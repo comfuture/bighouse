@@ -1,6 +1,6 @@
 import "./style.css";
 import type { GameClientContext, MountedGameClient } from "@bighouse/game-sdk/client";
-import { Chess, type Square } from "chess.js";
+import { moveDestinationHints, type ChessSquare } from "./move-hints";
 import bB from "./assets/pieces/bB.svg?url";
 import bK from "./assets/pieces/bK.svg?url";
 import bN from "./assets/pieces/bN.svg?url";
@@ -17,7 +17,6 @@ export { gameMetadata } from "./client-metadata";
 
 type ChessColor = "w" | "b";
 type ChessPiece = "p" | "n" | "b" | "r" | "q" | "k";
-type ChessSquare = `${"a" | "b" | "c" | "d" | "e" | "f" | "g" | "h"}${"1" | "2" | "3" | "4" | "5" | "6" | "7" | "8"}`;
 
 type ChessPieceView = {
   square: ChessSquare;
@@ -85,12 +84,23 @@ export function createChessGame(container: HTMLElement, client: ChessClient) {
   const state = { ...client };
   let selected: ChessSquare | undefined;
   let pendingPromotion: { from: ChessSquare; to: ChessSquare } | undefined;
+  let seenLastMoveKey = moveKey(client.publicView);
+  let pendingMoveAnimationKey: string | undefined;
+  let checkWasActive = false;
+  let checkOverlayTimer: ReturnType<typeof setTimeout> | undefined;
   container.classList.add("chess-game");
   container.innerHTML = `
     <div class="chess-status" data-role="status"></div>
-    <div class="chess-turn-notice is-hidden" data-role="turn-notice" aria-live="polite">Your Turn</div>
     <div class="chess-layout">
-      <div class="chess-board" data-role="board" aria-label="Chess board"></div>
+      <div class="chess-board-frame" data-role="board-frame">
+        <div class="chess-turn-notice is-hidden" data-role="turn-notice" aria-live="polite">
+          <span class="chess-turn-dot" aria-hidden="true"></span>
+          <span>Your move</span>
+          <span class="chess-turn-color" data-role="turn-color"></span>
+        </div>
+        <div class="chess-check-overlay is-hidden" data-role="check-overlay" aria-live="assertive">Check</div>
+        <div class="chess-board" data-role="board" aria-label="Chess board"></div>
+      </div>
       <aside class="chess-side">
         <div class="chess-side-title">Moves</div>
         <ol class="chess-history" data-role="history"></ol>
@@ -113,6 +123,9 @@ export function createChessGame(container: HTMLElement, client: ChessClient) {
 
   const status = requireElement<HTMLElement>(container, "[data-role='status']");
   const turnNotice = requireElement<HTMLElement>(container, "[data-role='turn-notice']");
+  const turnColor = requireElement<HTMLElement>(container, "[data-role='turn-color']");
+  const boardFrame = requireElement<HTMLElement>(container, "[data-role='board-frame']");
+  const checkOverlay = requireElement<HTMLElement>(container, "[data-role='check-overlay']");
   const board = requireElement<HTMLElement>(container, "[data-role='board']");
   const history = requireElement<HTMLOListElement>(container, "[data-role='history']");
   const modal = requireElement<HTMLElement>(container, "[data-role='result-modal']");
@@ -135,15 +148,21 @@ export function createChessGame(container: HTMLElement, client: ChessClient) {
     const active = publicView.roomPhase === undefined || publicView.roomPhase === "active";
     const myTurn = active && publicView.currentPlayerId === playerId && !publicView.result;
     const colorLabel = privateView.color ?? "spectator";
-    const legalDestinations = selected && myTurn ? legalMoveDestinations(publicView.fen, selected) : new Set<ChessSquare>();
+    const destinations = selected && myTurn ? moveDestinationHints(publicView.fen, selected) : undefined;
     status.textContent = statusText(publicView, playerId, myTurn, colorLabel);
     turnNotice.classList.toggle("is-hidden", !myTurn);
+    turnColor.textContent = colorLabel;
+    boardFrame.classList.toggle("is-my-turn", myTurn);
     board.classList.toggle("is-black-perspective", privateView.color === "black");
+    updateCheckOverlay(publicView.check);
     board.innerHTML = "";
 
     for (const square of orderedSquares(privateView.color === "black")) {
       const piece = pieceAt(publicView.board, square);
-      const legalDestination = legalDestinations.has(square) && selected !== square;
+      const legalDestination = destinations?.legal.has(square) === true && selected !== square;
+      const unsafeDestination = destinations?.unsafe.has(square) === true && selected !== square;
+      const checkedKing = publicView.check && piece?.type === "k" && piece.color === publicView.turn;
+      const animateMove = piece && pendingMoveAnimationKey && moveKey(publicView) === pendingMoveAnimationKey && publicView.lastMove?.to === square;
       const cell = document.createElement("button");
       const light = squareColor(square) === "light";
       cell.type = "button";
@@ -152,16 +171,24 @@ export function createChessGame(container: HTMLElement, client: ChessClient) {
         light ? "is-light" : "is-dark",
         selected === square ? "is-selected" : "",
         legalDestination ? "is-legal-destination" : "",
+        unsafeDestination ? "is-unsafe-destination" : "",
+        checkedKing ? "is-in-check" : "",
         publicView.lastMove?.from === square || publicView.lastMove?.to === square ? "is-last" : ""
       ].join(" ");
       cell.disabled = !active || Boolean(publicView.result);
-      cell.ariaLabel = `${piece ? `${pieceName(piece)} on ${square}` : `empty ${square}`}${legalDestination ? ", legal move" : ""}`;
+      cell.ariaLabel = `${piece ? `${pieceName(piece)} on ${square}` : `empty ${square}`}${legalDestination ? ", legal move" : ""}${unsafeDestination ? ", unsafe move would leave king in check" : ""}`;
       cell.addEventListener("click", () => handleSquareClick(square, piece));
       if (piece) {
         const img = document.createElement("img");
         img.src = pieceUrls[`${piece.color}${piece.type}`]!;
         img.alt = pieceName(piece);
         img.draggable = false;
+        if (animateMove && publicView.lastMove) {
+          const offset = moveAnimationOffset(publicView.lastMove.from, publicView.lastMove.to, privateView.color === "black");
+          img.classList.add("is-moving-piece");
+          img.style.setProperty("--chess-move-x", String(offset.x));
+          img.style.setProperty("--chess-move-y", String(offset.y));
+        }
         cell.append(img);
       }
       board.append(cell);
@@ -200,7 +227,7 @@ export function createChessGame(container: HTMLElement, client: ChessClient) {
       render();
       return;
     }
-    if (!legalMoveDestinations(state.publicView.fen, selected).has(square)) {
+    if (!moveDestinationHints(state.publicView.fen, selected).legal.has(square)) {
       return;
     }
     const movingPiece = pieceAt(state.publicView.board, selected);
@@ -270,6 +297,27 @@ export function createChessGame(container: HTMLElement, client: ChessClient) {
     modal.classList.remove("is-hidden");
   }
 
+  function updateCheckOverlay(check: boolean): void {
+    if (check && !checkWasActive) {
+      flashCheckOverlay();
+    }
+    checkWasActive = check;
+  }
+
+  function flashCheckOverlay(): void {
+    if (checkOverlayTimer) {
+      clearTimeout(checkOverlayTimer);
+    }
+    checkOverlay.classList.remove("is-hidden", "is-flashing");
+    void checkOverlay.offsetWidth;
+    checkOverlay.classList.add("is-flashing");
+    checkOverlayTimer = setTimeout(() => {
+      checkOverlay.classList.add("is-hidden");
+      checkOverlay.classList.remove("is-flashing");
+      checkOverlayTimer = undefined;
+    }, 1_150);
+  }
+
   render();
 
   return {
@@ -279,11 +327,18 @@ export function createChessGame(container: HTMLElement, client: ChessClient) {
       state.version = input.version;
       state.publicView = input.publicView;
       state.privateView = input.privateView;
+      const nextLastMoveKey = moveKey(input.publicView);
+      pendingMoveAnimationKey = nextLastMoveKey && nextLastMoveKey !== seenLastMoveKey ? nextLastMoveKey : undefined;
+      seenLastMoveKey = nextLastMoveKey;
       selected = undefined;
       pendingPromotion = undefined;
       render();
+      pendingMoveAnimationKey = undefined;
     },
     destroy() {
+      if (checkOverlayTimer) {
+        clearTimeout(checkOverlayTimer);
+      }
       container.classList.remove("chess-game");
       container.innerHTML = "";
     }
@@ -327,19 +382,32 @@ function pieceAt(board: ChessPublicView["board"], square: ChessSquare): ChessPie
   return undefined;
 }
 
-function legalMoveDestinations(fen: string, square: ChessSquare): Set<ChessSquare> {
-  try {
-    const chess = new Chess(fen);
-    return new Set(chess.moves({ square: square as Square, verbose: true }).map((move) => move.to as ChessSquare));
-  } catch {
-    return new Set();
-  }
-}
-
 function squareColor(square: ChessSquare): "light" | "dark" {
   const file = square.charCodeAt(0) - "a".charCodeAt(0);
   const rank = Number(square[1]) - 1;
   return (file + rank) % 2 === 0 ? "dark" : "light";
+}
+
+function moveKey(publicView: ChessPublicView): string | undefined {
+  const move = publicView.lastMove;
+  return move ? `${publicView.moveCount}:${move.playerId}:${move.from}:${move.to}:${move.san}` : undefined;
+}
+
+function moveAnimationOffset(from: ChessSquare, to: ChessSquare, blackPerspective: boolean): { x: number; y: number } {
+  const start = displayPosition(from, blackPerspective);
+  const end = displayPosition(to, blackPerspective);
+  return {
+    x: start.column - end.column,
+    y: start.row - end.row
+  };
+}
+
+function displayPosition(square: ChessSquare, blackPerspective: boolean): { column: number; row: number } {
+  const file = square.charCodeAt(0) - "a".charCodeAt(0);
+  const rank = Number(square[1]) - 1;
+  return blackPerspective
+    ? { column: 7 - file, row: rank }
+    : { column: file, row: 7 - rank };
 }
 
 function pieceName(piece: ChessPieceView): string {
