@@ -1235,6 +1235,7 @@ export class RoomDO extends DurableObject<Env> {
       addSocket(socket);
     }
     for (const socket of this.ctx.getWebSockets()) {
+      if (seen.has(socket)) continue;
       const attachment = socket.deserializeAttachment() as SocketAttachment | undefined;
       if (attachment?.playerId === playerId) {
         addSocket(socket);

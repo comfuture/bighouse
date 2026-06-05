@@ -349,11 +349,8 @@ export class LobbyDO extends DurableObject<Env> {
       return;
     }
     if (message.type === "hello") {
-      ws.serializeAttachment({
-        playerId: message.playerId,
-        ...(message.displayName ? { displayName: message.displayName } : {})
-      } satisfies LobbySocketAttachment);
-      this.recordIdentity(message.playerId, message.displayName);
+      const playerId = this.bindSocketPlayer(ws, message.playerId, message.displayName);
+      this.recordIdentity(playerId, message.displayName);
       this.sendToSocket(ws, this.message("ack", { command: "hello" }));
       return;
     }
@@ -468,6 +465,15 @@ export class LobbyDO extends DurableObject<Env> {
     return playerId;
   }
 
+  private bindSocketPlayer(ws: WebSocket, playerId: string, displayName?: string): string {
+    const attachment = ws.deserializeAttachment() as LobbySocketAttachment | undefined;
+    if (attachment?.playerId && attachment.playerId !== playerId) {
+      throw new GameServerError("forbidden", "Socket player does not match message player", 403);
+    }
+    ws.serializeAttachment({ playerId, ...(displayName ? { displayName } : {}) } satisfies LobbySocketAttachment);
+    return playerId;
+  }
+
   private getPlayerSockets(playerId: string): WebSocket[] {
     const sockets: WebSocket[] = [];
     const seen = new Set<WebSocket>();
@@ -482,6 +488,7 @@ export class LobbyDO extends DurableObject<Env> {
       addSocket(socket);
     }
     for (const socket of this.ctx.getWebSockets()) {
+      if (seen.has(socket)) continue;
       const attachment = socket.deserializeAttachment() as LobbySocketAttachment | undefined;
       if (attachment?.playerId === playerId) {
         addSocket(socket);
