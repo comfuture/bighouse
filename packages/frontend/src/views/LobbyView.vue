@@ -1,16 +1,25 @@
 <template>
   <div class="space-y-6">
-    <div class="flex flex-wrap items-center justify-between gap-3">
-      <div class="flex items-center gap-2">
-        <h1 class="text-lg font-semibold text-highlighted">{{ gameId }}</h1>
+    <UHeader
+      title="Lobby"
+      :toggle="false"
+      class="rounded-lg"
+      :ui="{ root: 'static', container: 'px-3 sm:px-4', left: 'flex-1', center: 'flex flex-1 justify-center', right: 'flex-1' }"
+    >
+      <template #left>
+        <UButton label="Games" icon="i-lucide-arrow-left" color="neutral" variant="ghost" @click="goToGames" />
+      </template>
+
+      <div class="flex min-w-0 items-center justify-center gap-2">
+        <h1 class="truncate text-lg font-semibold text-highlighted">{{ gameId }}</h1>
         <UBadge color="neutral" variant="subtle">{{ mode }}</UBadge>
         <UBadge color="neutral" variant="outline">Lobby</UBadge>
       </div>
-      <div class="flex gap-2">
-        <UButton label="Games" icon="i-lucide-arrow-left" color="neutral" variant="subtle" to="/" />
+
+      <template #right>
         <UButton label="Create room" icon="i-lucide-plus" @click="createRoom" />
-      </div>
-    </div>
+      </template>
+    </UHeader>
 
     <UAlert v-if="error" color="error" icon="i-lucide-circle-alert" :title="error" />
 
@@ -94,6 +103,10 @@ async function createRoom(): Promise<void> {
   } catch (cause) {
     error.value = cause instanceof Error ? cause.message : "Failed to create room";
   }
+}
+
+async function goToGames(): Promise<void> {
+  await router.replace("/");
 }
 
 async function joinExisting(roomId: string): Promise<void> {
