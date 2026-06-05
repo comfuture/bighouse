@@ -8,6 +8,7 @@ Bighouse is a Cloudflare Workers multiplayer game server prototype using D1 for 
 - `LobbyDO` owns joinable room discovery for a game/mode shard and routes lobby joins to a room.
 - `MatchmakerDO` owns pending tickets for a game/mode/region/skill shard and creates rooms when enough players are queued.
 - D1 stores queryable metadata only: games, room index rows, match tickets, and match result summaries.
+- Room and lobby WebSockets use the Durable Objects WebSocket Hibernation API. The DO accepts sockets with `ctx.acceptWebSocket()`, persists per-socket identity in `serializeAttachment()`, and reconstructs live socket routing from `ctx.getWebSockets()` after hibernation instead of relying on in-memory connection maps.
 
 ## Local Development
 
@@ -126,6 +127,10 @@ ws://localhost:8787/rooms/room_id/ws?playerId=p1
 
 ## WebSocket Messages
 
+Pass `playerId` in the WebSocket URL whenever it is known. That lets the Durable Object attach player tags at accept time, which is the fastest path for targeted snapshots, private chat, and presence. `displayName` may also be supplied in the URL.
+
+`hello` and room `joinRoom` still bind identity after the socket is open for reconnect and legacy clients. This path is supported through the socket attachment that survives hibernation, but URL identity is preferred because WebSocket tags cannot be added after `ctx.acceptWebSocket()`.
+
 Client messages:
 
 - `hello`: `{ "type": "hello", "playerId": "p1", "displayName": "Alice" }`
@@ -150,6 +155,8 @@ Server messages include `roomId`, `version`, and `serverTime` and use these type
 - `presence`
 - `roomClosed`
 - `pong`
+
+The application-level string message `ping` receives an automatic `pong` response in room and lobby Durable Objects without waking a hibernated object. JSON `ping` messages are also accepted and return typed `pong` messages.
 
 `playerId` can be any stable unique value for the player. A human-readable `displayName` is recommended so chat messages and presence UI can show a friendly label without treating it as identity.
 
