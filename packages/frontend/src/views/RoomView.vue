@@ -1,16 +1,33 @@
 <template>
   <div class="space-y-6">
-    <div class="flex flex-wrap items-center justify-between gap-3">
-      <div class="flex items-center gap-2">
-        <h1 class="text-lg font-semibold text-highlighted">{{ displayGameId }}</h1>
+    <UHeader
+      title="Room"
+      :toggle="false"
+      class="rounded-lg"
+      :ui="{ root: 'static', container: 'px-3 sm:px-4', left: 'flex-1', center: 'flex flex-1 justify-center', right: 'flex-1' }"
+    >
+      <template #left>
+        <UButton label="Lobby" icon="i-lucide-arrow-left" color="neutral" variant="ghost" @click="goToLobby" />
+      </template>
+
+      <div class="flex min-w-0 items-center justify-center gap-2">
+        <h1 class="truncate text-lg font-semibold text-highlighted">{{ displayGameId }}</h1>
         <UBadge v-if="room?.mode" color="neutral" variant="subtle">{{ room.mode }}</UBadge>
         <UBadge v-if="room" :color="room.phase === 'active' ? 'success' : room.phase === 'finished' ? 'neutral' : 'warning'" variant="subtle">{{ room.phase }}</UBadge>
         <UBadge v-else color="neutral" variant="subtle">Connecting</UBadge>
       </div>
-      <div>
-        <UButton label="Lobby" icon="i-lucide-arrow-left" color="neutral" variant="subtle" @click="goToLobby" />
-      </div>
-    </div>
+
+      <template #right>
+        <UButton
+          aria-label="Share room QR code"
+          icon="i-lucide-qr-code"
+          color="neutral"
+          variant="ghost"
+          :disabled="!room || roomIsFull"
+          @click="openQrModal"
+        />
+      </template>
+    </UHeader>
 
     <UAlert v-if="error" color="error" icon="i-lucide-circle-alert" :title="error" />
     <UAlert
@@ -52,6 +69,36 @@
             :disabled="!canRestartInterruptedGame"
             @click="restartGame"
           />
+        </div>
+      </template>
+    </UModal>
+
+    <UModal
+      v-model:open="leaveConfirmOpen"
+      title="Leave room?"
+      description="Other players are still in this room. Leave anyway?"
+      :dismissible="false"
+      :ui="{ close: 'hidden' }"
+    >
+      <template #footer>
+        <div class="flex w-full justify-end gap-2">
+          <UButton label="Stay" color="neutral" variant="subtle" @click="cancelGuardedLeave" />
+          <UButton label="Leave" color="error" icon="i-lucide-log-out" @click="confirmGuardedLeave" />
+        </div>
+      </template>
+    </UModal>
+
+    <UModal
+      v-model:open="qrModalOpen"
+      title="Share room"
+      description="Scan this code to join the room."
+      dismissible
+    >
+      <template #body>
+        <div class="flex flex-col items-center gap-4">
+          <img v-if="qrCodeDataUrl" class="size-64 rounded-md border border-default bg-white p-3" :src="qrCodeDataUrl" alt="Room QR code" />
+          <UAlert v-else color="neutral" variant="subtle" title="Preparing QR code" />
+          <p class="max-w-full break-all text-center text-xs text-muted">{{ publicRoomUrl }}</p>
         </div>
       </template>
     </UModal>
@@ -155,8 +202,9 @@
 </template>
 
 <script setup lang="ts">
+import { toDataURL } from "qrcode";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { useRoute, useRouter } from "vue-router";
+import { onBeforeRouteLeave, useRoute, useRouter } from "vue-router";
 import type { GameClientContext, MountedGameClient } from "@bighouse/game-sdk/client";
 import ChatPanel from "../components/ChatPanel.vue";
 import { identity, identityReady } from "../identity";
@@ -172,15 +220,21 @@ const displayGameId = computed(() => room.value?.gameId ?? String(route.params.g
 const room = ref<RoomSnapshot>();
 const chat = ref<ChatMessage[]>([]);
 const error = ref("");
+const leaveConfirmOpen = ref(false);
+const qrModalOpen = ref(false);
+const qrCodeDataUrl = ref("");
 const gameHost = ref<HTMLElement>();
 let ws: WebSocket | undefined;
 let gameInstance: MountedGameClient | undefined;
 let mountedGameId: string | undefined;
-let reconnectTimer: ReturnType<typeof window.setTimeout> | undefined;
-let leaveFallbackTimer: ReturnType<typeof window.setTimeout> | undefined;
+let reconnectTimer: number | undefined;
+let leaveFallbackTimer: number | undefined;
 let reconnectAttempt = 0;
 let closingRoom = false;
 let leavingRoom = false;
+let leaveDestination: string | undefined;
+let pendingGuardDestination: string | undefined;
+let guardNavigationAllowed = false;
 
 const me = computed(() => room.value?.players.find((player) => player.playerId === identity.playerId));
 const isHost = computed(() => room.value?.hostPlayerId === identity.playerId);
@@ -211,10 +265,20 @@ const delegatablePlayers = computed<Player[]>(() => {
   if (!room.value || !isHost.value) return [];
   return room.value.players.filter((player) => player.playerId !== identity.playerId);
 });
+const hasOtherPlayers = computed(() => room.value?.players.some((player) => player.playerId !== identity.playerId) ?? false);
+const roomIsFull = computed(() => {
+  const snapshot = room.value;
+  return Boolean(snapshot && snapshot.players.length >= snapshot.maxPlayers);
+});
 const lobbyPath = computed(() => {
   const gameId = room.value?.gameId ?? String(route.params.gameId);
   const mode = room.value?.mode ?? "default";
   return `/game/${encodeURIComponent(gameId)}/${encodeURIComponent(mode)}`;
+});
+const publicRoomUrl = computed(() => {
+  if (typeof window === "undefined") return "";
+  const path = `/game/${encodeURIComponent(displayGameId.value)}/${encodeURIComponent(roomId.value)}`;
+  return new URL(path, window.location.origin).toString();
 });
 
 onMounted(() => {
@@ -223,6 +287,32 @@ onMounted(() => {
 
 watch(identityReady, (ready) => {
   if (ready && !ws) connectRoom();
+});
+
+watch(roomIsFull, (full) => {
+  if (full) qrModalOpen.value = false;
+});
+
+watch(qrModalOpen, async (open) => {
+  if (!open || qrCodeDataUrl.value) return;
+  qrCodeDataUrl.value = await toDataURL(publicRoomUrl.value, {
+    errorCorrectionLevel: "M",
+    margin: 1,
+    width: 320
+  });
+});
+
+onBeforeRouteLeave((to) => {
+  if (guardNavigationAllowed || leavingRoom || closingRoom) return true;
+
+  pendingGuardDestination = to.fullPath;
+  if (hasOtherPlayers.value) {
+    leaveConfirmOpen.value = true;
+    return false;
+  }
+
+  leaveRoom(to.fullPath);
+  return false;
 });
 
 onBeforeUnmount(() => {
@@ -277,7 +367,7 @@ async function handleRoomMessage(message: ServerMessage): Promise<void> {
     const payload = message.payload as { command?: string };
     if (payload.command === "leaveRoom" && leavingRoom) {
       clearLeaveFallbackTimer();
-      void router.push(lobbyPath.value);
+      replaceAfterLeave();
     }
     return;
   }
@@ -335,7 +425,7 @@ async function mountOrUpdateGame(): Promise<void> {
       },
       leaveFinishedGame() {
         ws?.send(JSON.stringify({ type: "leaveFinishedGame", playerId: identity.playerId }));
-        void router.push(lobbyPath.value);
+        void replaceRoomRoute(lobbyPath.value);
       }
     });
     return;
@@ -364,21 +454,49 @@ function sendChat(body: string, targetPlayerId?: string): void {
 }
 
 function goToLobby(): void {
-  if (room.value?.phase === "waiting" || room.value?.phase === "active") {
-    leaveRoom();
-    return;
-  }
-  void router.push(lobbyPath.value);
+  leaveRoom(lobbyPath.value);
 }
 
-function leaveRoom(): void {
+function leaveRoom(destination = lobbyPath.value): void {
   if (leavingRoom) return;
   leavingRoom = true;
   closingRoom = true;
-  ws?.send(JSON.stringify({ type: "leaveRoom", playerId: identity.playerId }));
+  leaveDestination = destination;
+  leaveConfirmOpen.value = false;
   leaveFallbackTimer = window.setTimeout(() => {
-    void router.push(lobbyPath.value);
+    replaceAfterLeave();
   }, 500);
+  if (ws?.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: "leaveRoom", playerId: identity.playerId }));
+  }
+}
+
+function cancelGuardedLeave(): void {
+  leaveConfirmOpen.value = false;
+  pendingGuardDestination = undefined;
+}
+
+function confirmGuardedLeave(): void {
+  leaveRoom(pendingGuardDestination ?? lobbyPath.value);
+  pendingGuardDestination = undefined;
+}
+
+function replaceAfterLeave(): void {
+  const destination = leaveDestination ?? lobbyPath.value;
+  clearLeaveFallbackTimer();
+  void replaceRoomRoute(destination);
+}
+
+async function replaceRoomRoute(destination: string): Promise<void> {
+  guardNavigationAllowed = true;
+  await router.replace(destination).finally(() => {
+    guardNavigationAllowed = false;
+  });
+}
+
+function openQrModal(): void {
+  if (roomIsFull.value) return;
+  qrModalOpen.value = true;
 }
 
 function playerName(playerId?: string): string {

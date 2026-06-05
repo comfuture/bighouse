@@ -189,7 +189,7 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
   // State variable for pending suit choice
   let pendingJokerCard: string | null = null;
   let drawNotice: { playerId: string; count: number; wasAttack: boolean; version: number } | null = null;
-  let drawNoticeTimer: ReturnType<typeof window.setTimeout> | undefined;
+  let drawNoticeTimer: number | undefined;
 
   // Set event listeners
   deckEl?.addEventListener("click", () => {
