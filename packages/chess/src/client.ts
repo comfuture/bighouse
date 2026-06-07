@@ -1,5 +1,6 @@
 import "./style.css";
 import type { GameClientContext, MountedGameClient } from "@bighouse/game-sdk/client";
+import { triggerPlacementFeedback, triggerSelectionFeedback } from "@bighouse/game-sdk/feedback";
 import { moveDestinationHints, type ChessSquare } from "./move-hints";
 import bB from "./assets/pieces/bB.svg?url";
 import bK from "./assets/pieces/bK.svg?url";
@@ -235,17 +236,20 @@ export function createChessGame(container: HTMLElement, client: ChessClient) {
     const myColor = state.privateView.color === "black" ? "b" : "w";
     if (!selected) {
       if (piece?.color === myColor) {
+        triggerSelectionFeedback();
         selected = square;
         render();
       }
       return;
     }
     if (selected === square) {
+      triggerSelectionFeedback();
       selected = undefined;
       render();
       return;
     }
     if (piece?.color === myColor) {
+      triggerSelectionFeedback();
       selected = square;
       render();
       return;
@@ -255,11 +259,13 @@ export function createChessGame(container: HTMLElement, client: ChessClient) {
     }
     const movingPiece = pieceAt(state.publicView.board, selected);
     if (movingPiece?.type === "p" && (square.endsWith("8") || square.endsWith("1"))) {
+      triggerSelectionFeedback();
       pendingPromotion = { from: selected, to: square };
       selected = undefined;
       render();
       return;
     }
+    triggerPlacementFeedback();
     client.sendAction({ type: "move", payload: { from: selected, to: square } });
     selected = undefined;
   }
@@ -286,6 +292,7 @@ export function createChessGame(container: HTMLElement, client: ChessClient) {
         const move = pendingPromotion;
         pendingPromotion = undefined;
         if (move) {
+          triggerPlacementFeedback();
           client.sendAction({ type: "move", payload: { from: move.from, to: move.to, promotion: piece } });
         }
       });
