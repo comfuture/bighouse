@@ -3,17 +3,17 @@ type AudioContextConstructor = new () => AudioContext;
 let audioContext: AudioContext | undefined;
 
 export function triggerSelectionFeedback(): void {
-  vibrate(12);
+  safely(() => vibrate(12));
 }
 
 export function triggerPlacementFeedback(): void {
-  vibrate(16);
-  playTap();
+  safely(() => vibrate(16));
+  safely(playTap);
 }
 
 export function triggerCardSubmitFeedback(): void {
-  vibrate(18);
-  playSwoosh();
+  safely(() => vibrate(18));
+  safely(playSwoosh);
 }
 
 function getAudioContext(): AudioContext | undefined {
@@ -25,16 +25,28 @@ function getAudioContext(): AudioContext | undefined {
   const AudioContextClass = audioGlobal.AudioContext ?? audioGlobal.webkitAudioContext;
   if (!AudioContextClass) return undefined;
 
-  audioContext ??= new AudioContextClass();
-  if (audioContext.state === "suspended") {
-    void audioContext.resume();
+  try {
+    if (audioContext?.state === "closed") {
+      audioContext = undefined;
+    }
+    audioContext ??= new AudioContextClass();
+    if (audioContext.state === "suspended") {
+      void audioContext.resume().catch(() => {});
+    }
+    return audioContext;
+  } catch {
+    audioContext = undefined;
+    return undefined;
   }
-  return audioContext;
 }
 
 function vibrate(durationMs: number): void {
   if (typeof navigator === "undefined" || typeof navigator.vibrate !== "function") return;
-  navigator.vibrate(durationMs);
+  try {
+    navigator.vibrate(durationMs);
+  } catch {
+    // Vibration is optional and can be blocked by browser policy.
+  }
 }
 
 function playTap(): void {
@@ -50,7 +62,8 @@ function playTap(): void {
   bodyGain.gain.setValueAtTime(0.0001, now);
   bodyGain.gain.exponentialRampToValueAtTime(0.42, now + 0.006);
   bodyGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.105);
-  body.connect(bodyGain).connect(context.destination);
+  body.connect(bodyGain);
+  bodyGain.connect(context.destination);
   body.start(now);
   body.stop(now + 0.11);
 
@@ -61,7 +74,8 @@ function playTap(): void {
   clickGain.gain.setValueAtTime(0.0001, now);
   clickGain.gain.exponentialRampToValueAtTime(0.12, now + 0.002);
   clickGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.025);
-  click.connect(clickGain).connect(context.destination);
+  click.connect(clickGain);
+  clickGain.connect(context.destination);
   click.start(now);
   click.stop(now + 0.03);
 }
@@ -92,7 +106,17 @@ function playSwoosh(): void {
   gain.gain.exponentialRampToValueAtTime(0.26, now + 0.025);
   gain.gain.exponentialRampToValueAtTime(0.0001, now + duration);
 
-  source.connect(filter).connect(gain).connect(context.destination);
+  source.connect(filter);
+  filter.connect(gain);
+  gain.connect(context.destination);
   source.start(now);
   source.stop(now + duration);
+}
+
+function safely(callback: () => void): void {
+  try {
+    callback();
+  } catch {
+    // Feedback is best-effort; gameplay actions must continue if it fails.
+  }
 }
