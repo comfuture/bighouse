@@ -1,5 +1,6 @@
 import "./style.css";
 import type { GameClientContext, MountedGameClient } from "@bighouse/game-sdk/client";
+import { triggerCardSubmitFeedback, triggerSelectionFeedback } from "@bighouse/game-sdk/feedback";
 export { gameMetadata } from "./client-metadata";
 
 export type OneCardPublicView = {
@@ -201,6 +202,7 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
   });
 
   passButton?.addEventListener("click", () => {
+    triggerSelectionFeedback();
     client.sendAction({ type: "pass", payload: {} });
   });
 
@@ -208,6 +210,7 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
     const btn = (e.target as HTMLElement).closest<HTMLButtonElement>("[data-suit]");
     if (btn && pendingJokerCard) {
       const chosenSuit = btn.getAttribute("data-suit");
+      triggerCardSubmitFeedback();
       client.sendAction({
         type: "playCard",
         payload: { card: pendingJokerCard, chosenSuit }
@@ -370,6 +373,7 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
   function drawCard(): void {
     const isMyTurn = state.publicView.currentPlayerId === state.playerId;
     if (isMyTurn && !state.publicView.winnerPlayerId) {
+      triggerSelectionFeedback();
       client.sendAction({ type: "drawCard", payload: {} });
     }
   }
@@ -488,9 +492,11 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
           cardEl.addEventListener("click", () => {
             const rank = card === "BJ" || card === "CJ" ? card : card.slice(0, -1);
             if (card === "BJ" || card === "CJ" || rank === "7") {
+              triggerSelectionFeedback();
               pendingJokerCard = card;
               suitPicker?.classList.remove("is-hidden");
             } else {
+              triggerCardSubmitFeedback();
               if (discardEl) {
                 triggerFlyAnimation(cardEl, discardEl, card);
               }

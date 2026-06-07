@@ -1,5 +1,6 @@
 import "./style.css";
 import type { GameClientContext, JsonObject, MountedGameClient } from "@bighouse/game-sdk/client";
+import { triggerPlacementFeedback } from "@bighouse/game-sdk/feedback";
 export { gameMetadata } from "./client-metadata";
 
 export type GomokuStone = "black" | "white";
@@ -136,6 +137,7 @@ export function createGomokuGame(container: HTMLElement, client: GomokuClient): 
           if (!isLegalMove(state.publicView, state.privateView, state.playerId, x, y)) {
             return;
           }
+          triggerPlacementFeedback();
           client.sendAction({ type: "placeStone", payload: { x, y } });
         });
         boardElement.append(cell);
