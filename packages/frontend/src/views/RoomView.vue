@@ -3,7 +3,7 @@
     <UHeader
       title="Room"
       :toggle="false"
-      class="rounded-lg"
+      class="game-portal-hero rounded-[2rem] border-2 border-default/80"
       :ui="{ root: 'static', container: 'px-3 sm:px-4', left: 'flex-1', center: 'flex flex-1 justify-center', right: 'flex-1' }"
     >
       <template #left>
@@ -12,7 +12,7 @@
 
       <div class="flex min-w-0 items-center justify-center gap-2">
         <h1 class="truncate text-lg font-semibold text-highlighted">{{ displayGameId }}</h1>
-        <UBadge v-if="room?.mode" color="neutral" variant="subtle">{{ room.mode }}</UBadge>
+        <UBadge v-if="room?.mode" color="secondary" variant="subtle">{{ room.mode }}</UBadge>
         <UBadge v-if="room" :color="room.phase === 'active' ? 'success' : room.phase === 'finished' ? 'neutral' : 'warning'" variant="subtle">{{ room.phase }}</UBadge>
         <UBadge v-else color="neutral" variant="subtle">Connecting</UBadge>
       </div>
@@ -96,7 +96,7 @@
     >
       <template #body>
         <div class="flex flex-col items-center gap-4">
-          <img v-if="qrCodeDataUrl" class="size-64 rounded-md border border-default bg-white p-3" :src="qrCodeDataUrl" alt="Room QR code" />
+          <img v-if="qrCodeDataUrl" class="game-stage size-64 rounded-3xl bg-white p-3" :src="qrCodeDataUrl" alt="Room QR code" />
           <UAlert v-else color="neutral" variant="subtle" title="Preparing QR code" />
           <p class="max-w-full break-all text-center text-xs text-muted">{{ publicRoomUrl }}</p>
         </div>
@@ -135,7 +135,7 @@
               </div>
             </div>
 
-            <div v-if="room?.phase === 'waiting'" class="border-t border-default pt-3">
+            <div v-if="room?.phase === 'waiting'" class="border-t-2 border-default/70 pt-3">
               <UButton
                 v-if="!isHost"
                 :label="me?.ready ? 'Cancel ready' : 'Ready'"
@@ -155,7 +155,7 @@
               />
             </div>
 
-            <div v-if="room?.phase === 'active'" class="border-t border-default pt-3">
+            <div v-if="room?.phase === 'active'" class="border-t-2 border-default/70 pt-3">
               <UButton
                 label="Leave game"
                 icon="i-lucide-log-out"
@@ -166,7 +166,7 @@
               />
             </div>
 
-            <div v-if="room?.phase === 'waiting' && delegatablePlayers.length > 0" class="space-y-2 border-t border-default pt-3">
+            <div v-if="room?.phase === 'waiting' && delegatablePlayers.length > 0" class="space-y-2 border-t-2 border-default/70 pt-3">
               <div class="text-xs text-muted">Delegate host</div>
               <div class="flex flex-wrap gap-2">
                 <UButton
@@ -191,7 +191,7 @@
             <UBadge v-if="room" color="neutral" variant="subtle">v{{ room.version }}</UBadge>
           </div>
         </template>
-        <div ref="gameHost">
+        <div ref="gameHost" class="game-stage min-h-48 overflow-hidden rounded-3xl sm:min-h-80">
           <UAlert v-if="!room" color="neutral" variant="subtle" title="Waiting for snapshot" />
         </div>
       </UCard>

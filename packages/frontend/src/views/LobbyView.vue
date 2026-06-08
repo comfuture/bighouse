@@ -3,7 +3,7 @@
     <UHeader
       title="Lobby"
       :toggle="false"
-      class="rounded-lg"
+      class="game-portal-hero rounded-[2rem] border-2 border-default/80"
       :ui="{ root: 'static', container: 'px-3 sm:px-4', left: 'flex-1', center: 'flex flex-1 justify-center', right: 'flex-1' }"
     >
       <template #left>
@@ -12,8 +12,8 @@
 
       <div class="flex min-w-0 items-center justify-center gap-2">
         <h1 class="truncate text-lg font-semibold text-highlighted">{{ gameId }}</h1>
-        <UBadge color="neutral" variant="subtle">{{ mode }}</UBadge>
-        <UBadge color="neutral" variant="outline">Lobby</UBadge>
+        <UBadge color="secondary" variant="subtle">{{ mode }}</UBadge>
+        <UBadge color="primary" variant="outline">Lobby</UBadge>
       </div>
 
       <template #right>
@@ -33,7 +33,7 @@
       >
         <div class="mb-4 flex gap-2">
           <UBadge :color="room.status === 'matching' ? 'warning' : 'neutral'" variant="subtle">{{ room.status }}</UBadge>
-          <UBadge color="neutral" variant="outline">min {{ room.minPlayers }}</UBadge>
+          <UBadge color="info" variant="outline">min {{ room.minPlayers }}</UBadge>
         </div>
         <template #footer>
           <UButton label="Join room" icon="i-lucide-log-in" block @click="joinExisting(room.roomId)" />
