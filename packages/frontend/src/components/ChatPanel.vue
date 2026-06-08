@@ -8,7 +8,7 @@
     </template>
 
     <div class="space-y-3">
-      <div class="h-56 overflow-auto rounded-md border border-default p-3">
+      <div class="game-stage h-56 overflow-auto rounded-3xl p-3">
         <div v-if="messages.length === 0" class="text-sm text-muted">No messages.</div>
         <div v-for="message in messages.slice(-80)" :key="`${message.createdAt}-${message.playerId}-${message.body}`" class="mb-3">
           <div class="flex items-center gap-2 text-xs text-muted">

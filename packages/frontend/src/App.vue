@@ -1,9 +1,9 @@
 <template>
   <UApp>
-    <div class="min-h-screen bg-muted">
-      <UContainer class="py-6">
+    <div class="game-portal-shell">
+      <div class="game-portal-container">
         <RouterView />
-      </UContainer>
+      </div>
       <IdentityModal />
     </div>
   </UApp>
