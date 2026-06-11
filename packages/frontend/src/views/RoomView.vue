@@ -162,7 +162,7 @@
                 color="error"
                 variant="subtle"
                 block
-                @click="leaveRoom"
+                @click="goToLobby"
               />
             </div>
 

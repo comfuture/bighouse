@@ -17,10 +17,7 @@
         :aria-label="`Enter ${game.displayName} lobby`"
         :to="lobbyPath(game.gameId)"
       >
-        <UCard
-          class="h-full transition-transform duration-150 group-hover:-translate-y-1"
-          :ui="{ body: '!p-0 sm:!p-0' }"
-        >
+        <UCard class="game-plastic-card h-full" :ui="{ body: '!p-0 sm:!p-0' }">
           <img
             v-if="game.thumbnail"
             class="aspect-[16/10] w-full rounded-t-3xl object-cover"
