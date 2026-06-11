@@ -1,6 +1,8 @@
 import type {
   ActionResult,
+  BotGameContext,
   ClientGameAction,
+  GameAction,
   GameContext,
   GameEvent,
   JsonObject,
@@ -428,6 +430,10 @@ export const oneCardDefinition = defineGameDefinition(gameMetadata, {
 
   nextTimers() {
     return [];
+  },
+
+  selectBotAction(context: BotGameContext): GameAction | null {
+    return selectOneCardBotAction(context);
   }
 });
 
@@ -435,6 +441,209 @@ export const oneCardGamePlugin = {
   gameMetadata,
   gameDefinition: oneCardDefinition
 } satisfies ServerGamePlugin;
+
+function selectOneCardBotAction(context: BotGameContext): GameAction | null {
+  const stage = readStage(context.state.stageState);
+  const playerState = readPlayer(context.state.playerStates[context.player.playerId]);
+  const currentPlayerId = stage.currentPlayerId ?? context.state.players[0]?.playerId;
+  if (context.state.phase !== "active" || stage.winnerPlayerId || currentPlayerId !== context.player.playerId) {
+    return null;
+  }
+  if (stage.eliminatedPlayerIds.includes(context.player.playerId)) {
+    return null;
+  }
+
+  const playableCards = playerState.hand.filter((card) => validateCardPlay(stage, card).ok);
+  if (stage.activeAttackCount > 0) {
+    const defenseCard = chooseDefenseCard(stage, playableCards, context);
+    return defenseCard ? playCardAction(defenseCard, playerState.hand) : { type: "drawCard", payload: {} };
+  }
+
+  if (playableCards.length === 0) {
+    return stage.hasExtraTurn ? { type: "pass", payload: {} } : { type: "drawCard", payload: {} };
+  }
+
+  const seed = `${context.state.room.roomId}:${context.state.version}:${context.player.playerId}`;
+  const selected =
+    context.difficulty === "low"
+      ? pickOneCardLow(playableCards, seed)
+      : chooseScoredCard(stage, playerState.hand, playableCards, context, seed);
+  if (!selected) {
+    return stage.hasExtraTurn ? { type: "pass", payload: {} } : { type: "drawCard", payload: {} };
+  }
+  return playCardAction(selected, playerState.hand);
+}
+
+function chooseDefenseCard(stage: CardStageState, playableCards: string[], context: BotGameContext): string | undefined {
+  const ranked = playableCards
+    .map((card) => ({
+      card,
+      score: defenseCardScore(stage, card, context.difficulty)
+    }))
+    .sort((a, b) => b.score - a.score);
+  return ranked[0]?.card;
+}
+
+function defenseCardScore(stage: CardStageState, card: string, difficulty: "low" | "medium" | "high"): number {
+  const attack = attackValue(card);
+  const rank = cardRank(card);
+  let score = attack * 20;
+  if (difficulty !== "high" && card === "CJ" && stage.activeAttackCard !== "BJ") {
+    score -= 70;
+  }
+  if (difficulty === "low") {
+    score += cardRankOrder(rank);
+  }
+  return score;
+}
+
+function pickOneCardLow(cards: string[], seed: string): string {
+  const index = Math.floor(stableCardNoise(seed, "low") * cards.length) % cards.length;
+  return cards[index]!;
+}
+
+function chooseScoredCard(
+  stage: CardStageState,
+  hand: string[],
+  playableCards: string[],
+  context: BotGameContext,
+  seed: string
+): string | undefined {
+  const attackChance = context.difficulty === "high" ? 0.7 : 0.45;
+  const shouldAttack = stableCardNoise(seed, "attack") < attackChance;
+  const nextOpponentPressure = nextPlayerHandCount(context, stage);
+  return playableCards
+    .map((card) => ({
+      card,
+      score: normalCardScore(stage, hand, card, shouldAttack, nextOpponentPressure, context.difficulty) + stableCardNoise(seed, card)
+    }))
+    .sort((a, b) => b.score - a.score)[0]?.card;
+}
+
+function normalCardScore(
+  stage: CardStageState,
+  hand: string[],
+  card: string,
+  shouldAttack: boolean,
+  nextOpponentHandCount: number | undefined,
+  difficulty: "low" | "medium" | "high"
+): number {
+  const remainingCount = hand.length - 1;
+  if (remainingCount === 0) {
+    return 100_000;
+  }
+
+  const rank = cardRank(card);
+  const attack = attackValue(card);
+  const shouldSpendAttack =
+    shouldAttack && (difficulty === "high" || (nextOpponentHandCount !== undefined && nextOpponentHandCount <= 2));
+  let score = 100 - remainingCount * 8 + cardRankOrder(rank);
+  if (attack > 0) {
+    score += shouldSpendAttack ? attack * 24 : -attack * 60;
+    if (nextOpponentHandCount !== undefined && nextOpponentHandCount <= 2) {
+      score += attack * 18;
+    }
+  }
+  if (rank === "J") {
+    score += difficulty === "high" ? 45 : 25;
+  }
+  if (rank === "Q") {
+    score += difficulty === "high" ? 32 : 18;
+  }
+  if (rank === "K") {
+    score += hasNonAttackFollowUp(stage, hand, card) ? 55 : 12;
+  }
+  if (rank === "7") {
+    score += 22 + majoritySuitCount(hand.filter((held) => held !== card)) * 6;
+  }
+  if (card === "CJ" && !shouldAttack) {
+    score -= 80;
+  } else if (card === "BJ" && !shouldAttack) {
+    score -= 55;
+  }
+  if (rank === "A" && !shouldAttack) {
+    score -= 35;
+  }
+  return score;
+}
+
+function playCardAction(card: string, hand: string[]): GameAction {
+  return canChooseSuit(card)
+    ? { type: "playCard", payload: { card, chosenSuit: chooseSuitForCard(card, hand) } }
+    : { type: "playCard", payload: { card } };
+}
+
+function chooseSuitForCard(card: string, hand: string[]): "S" | "H" | "C" | "D" {
+  const remaining = hand.filter((held) => held !== card);
+  const counts = new Map<"S" | "H" | "C" | "D", number>([
+    ["S", 0],
+    ["H", 0],
+    ["C", 0],
+    ["D", 0]
+  ]);
+  for (const held of remaining) {
+    const suit = cardSuit(held);
+    if (suit !== "J") {
+      counts.set(suit, (counts.get(suit) ?? 0) + 1);
+    }
+  }
+  return [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? "S";
+}
+
+function nextPlayerHandCount(context: BotGameContext, stage: CardStageState): number | undefined {
+  const nextOpponentId = nextPlayerId(context.state.players, stage, false);
+  const publicView = oneCardDefinition.getPublicView(context) as { hands?: Record<string, { count?: unknown }> };
+  const count = publicView.hands?.[nextOpponentId]?.count;
+  return typeof count === "number" ? count : undefined;
+}
+
+function hasNonAttackFollowUp(stage: CardStageState, hand: string[], playedCard: string): boolean {
+  const remaining = hand.filter((held) => held !== playedCard);
+  return remaining.some((held) => attackValue(held) === 0 && validateCardPlay(stage, held).ok);
+}
+
+function majoritySuitCount(hand: string[]): number {
+  const counts = new Map<string, number>();
+  for (const card of hand) {
+    const suit = cardSuit(card);
+    if (suit !== "J") {
+      counts.set(suit, (counts.get(suit) ?? 0) + 1);
+    }
+  }
+  return Math.max(0, ...counts.values());
+}
+
+function attackValue(card: string): number {
+  if (card === "BJ") return 5;
+  if (card === "CJ") return 7;
+  const rank = cardRank(card);
+  const suit = cardSuit(card);
+  if (rank === "2") return 2;
+  if (rank === "A") return suit === "S" ? 5 : 3;
+  return 0;
+}
+
+function cardRank(card: string): string {
+  return card === "BJ" || card === "CJ" ? card : card.slice(0, -1);
+}
+
+function cardSuit(card: string): "S" | "H" | "C" | "D" | "J" {
+  return card === "BJ" || card === "CJ" ? "J" : card.slice(-1) as "S" | "H" | "C" | "D";
+}
+
+function cardRankOrder(rank: string): number {
+  return ["3", "4", "5", "6", "8", "9", "10", "Q", "J", "K", "7", "2", "A", "BJ", "CJ"].indexOf(rank);
+}
+
+function stableCardNoise(seed: string, key: string): number {
+  let hash = 2166136261;
+  const input = `${seed}:${key}`;
+  for (let index = 0; index < input.length; index += 1) {
+    hash ^= input.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0) / 0xffffffff;
+}
 
 function readStage(value: JsonObject): CardStageState {
   return value as unknown as CardStageState;
