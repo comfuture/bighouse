@@ -441,9 +441,9 @@ export class RoomDO extends DurableObject<Env> {
     if (state.players.length < state.room.minPlayers) {
       throw new GameServerError("not_enough_players", "Not enough players to start", 409);
     }
-    const requiredReadyPlayers = state.players.filter((candidate) => candidate.playerId !== state.room.hostPlayerId);
+    const requiredReadyPlayers = state.players.filter((candidate) => candidate.playerId !== state.room.hostPlayerId && !isBotPlayer(candidate));
     if (!requiredReadyPlayers.every((candidate) => candidate.ready)) {
-      throw new GameServerError("players_not_ready", "All non-host players must be ready before starting", 409);
+      throw new GameServerError("players_not_ready", "All non-host human players must be ready before starting", 409);
     }
 
     const now = Date.now();
@@ -544,6 +544,20 @@ export class RoomDO extends DurableObject<Env> {
         delete state.room.hostPlayerId;
       }
     }
+    const hasHumanPlayers = state.players.some((candidate) => !isBotPlayer(candidate));
+    if (state.players.length === 0 || !hasHumanPlayers) {
+      state.phase = "closed";
+      state.closedAt = now;
+      state.emptySince = now;
+      state.updatedAt = now;
+      state.version += 1;
+      this.saveState(state);
+      await this.persistRoomIndex(state);
+      await this.rescheduleTimers([]);
+      this.broadcastSnapshots(state);
+      return this.toSummary(state);
+    }
+
     const definition = getGameDefinition(state.room.gameId);
     this.resetGameState(state, definition, now);
     state.phase = "waiting";
@@ -1243,20 +1257,7 @@ export class RoomDO extends DurableObject<Env> {
   }
 
   private botTurnDelayMs(state: RoomState, difficulty: BotDifficulty): number {
-    const configured = state.room.config.botTurnDelayMs;
-    if (typeof configured === "number" && Number.isFinite(configured) && configured >= 0) {
-      return Math.floor(configured);
-    }
-    if (this.env.ENVIRONMENT === "test") {
-      return 0;
-    }
-    if (difficulty === "high") {
-      return 800;
-    }
-    if (difficulty === "medium") {
-      return 1_100;
-    }
-    return 1_600;
+    return resolveBotTurnDelayMs(state.room.config.botTurnDelayMs, difficulty, this.env.ENVIRONMENT);
   }
 
   private async clearAllTimers(): Promise<void> {
@@ -1572,6 +1573,24 @@ export class RoomDO extends DurableObject<Env> {
 }
 
 const botDifficulties = new Set<BotDifficulty>(["low", "medium", "high"]);
+const minimumBotTurnDelayMs = 500;
+
+export function resolveBotTurnDelayMs(configured: unknown, difficulty: BotDifficulty, environment?: string): number {
+  const configuredDelay = typeof configured === "number" && Number.isFinite(configured) && configured >= 0 ? Math.floor(configured) : undefined;
+  if (environment === "test") {
+    return configuredDelay ?? 0;
+  }
+  if (configuredDelay !== undefined) {
+    return Math.max(minimumBotTurnDelayMs, configuredDelay);
+  }
+  if (difficulty === "high") {
+    return 800;
+  }
+  if (difficulty === "medium") {
+    return 1_100;
+  }
+  return 1_600;
+}
 
 function normalizeBotDifficulty(value: unknown): BotDifficulty {
   return typeof value === "string" && botDifficulties.has(value as BotDifficulty) ? (value as BotDifficulty) : "medium";

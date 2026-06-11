@@ -2,7 +2,7 @@ import { env } from "cloudflare:workers";
 import { runDurableObjectAlarm } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import "../src";
-import type { RoomDO } from "../src/do/room";
+import { resolveBotTurnDelayMs, type RoomDO } from "../src/do/room";
 
 type RoomDOTestAccess = {
   scheduleDisconnect(playerId: string, delayMs?: number): Promise<void>;
@@ -174,6 +174,62 @@ describe("RoomDO", () => {
     });
 
     await expect(room.startGame("host")).resolves.toMatchObject({ phase: "active", playerCount: 2, readyCount: 0 });
+  });
+
+  it("does not require bot readiness when restarting a waiting room", async () => {
+    const room = env.ROOM_DO.getByName("room:test-bot-ready-after-reset") as unknown as RoomDO;
+    await room.initialize({
+      roomId: "test-bot-ready-after-reset",
+      gameId: "gomoku",
+      mode: "default",
+      minPlayers: 2,
+      maxPlayers: 3
+    });
+    await room.join({ playerId: "host" });
+    await room.join({ playerId: "guest" });
+    await room.setReady("guest", true);
+    await room.addBot({ hostPlayerId: "host", difficulty: "medium" });
+    await room.startGame("host");
+    const active = await room.getSnapshot("host");
+    const bot = active.players.find((player) => player.kind === "bot");
+    expect(bot).toBeTruthy();
+
+    const winningMoves = [
+      ["host", 0, 0],
+      ["guest", 0, 1],
+      [bot!.playerId, 0, 2],
+      ["host", 1, 0],
+      ["guest", 1, 1],
+      [bot!.playerId, 1, 2],
+      ["host", 2, 0],
+      ["guest", 2, 1],
+      [bot!.playerId, 2, 2],
+      ["host", 3, 0],
+      ["guest", 3, 1],
+      [bot!.playerId, 3, 2],
+      ["host", 4, 0]
+    ] as const;
+    let version = active.version;
+    for (const [playerId, x, y] of winningMoves) {
+      const result = await room.submitAction({
+        playerId,
+        clientActionId: `bot-ready-reset-${playerId}-${x}-${y}`,
+        expectedVersion: version,
+        type: "placeStone",
+        payload: { x, y }
+      });
+      version = result.version;
+    }
+
+    await expect(room.leaveFinishedGame("guest")).resolves.toMatchObject({
+      phase: "waiting",
+      playerCount: 2,
+      readyCount: 0,
+      hostPlayerId: "host"
+    });
+    const waiting = await room.getSnapshot("host");
+    expect(waiting.players.find((player) => player.playerId === bot!.playerId)).toMatchObject({ ready: false });
+    await expect(room.startGame("host")).resolves.toMatchObject({ phase: "active", playerCount: 2 });
   });
 
   it("enforces bot room capacity and removal authority", async () => {
@@ -388,7 +444,7 @@ describe("RoomDO", () => {
       payload: { x: 7, y: 7 }
     });
 
-    await new Promise((resolve) => setTimeout(resolve, 5));
+    await new Promise((resolve) => setTimeout(resolve, 550));
     await expect(runDurableObjectAlarm(roomStub)).resolves.toBe(true);
     const afterBot = await room.getSnapshot("host");
     expect(afterBot.version).toBe(beforeMove.version + 2);
@@ -615,6 +671,60 @@ describe("RoomDO", () => {
     expect(snapshot.players).toHaveLength(1);
     expect(snapshot.players[0]).toMatchObject({ playerId: "guest", seat: 0, ready: false });
     expect(snapshot.publicView).toMatchObject({ moveCount: 0 });
+  });
+
+  it("closes finished rooms when only bots remain after the host leaves", async () => {
+    const room = env.ROOM_DO.getByName("room:test-finished-host-leaves-bot") as unknown as RoomDO;
+    await room.initialize({
+      roomId: "test-finished-host-leaves-bot",
+      gameId: "gomoku",
+      mode: "default",
+      minPlayers: 2,
+      maxPlayers: 2
+    });
+    await room.join({ playerId: "host" });
+    await room.addBot({ hostPlayerId: "host", difficulty: "medium" });
+    await room.startGame("host");
+    const active = await room.getSnapshot("host");
+    const bot = active.players.find((player) => player.kind === "bot");
+    expect(bot).toBeTruthy();
+
+    const winningMoves = [
+      ["host", 0, 0],
+      [bot!.playerId, 0, 1],
+      ["host", 1, 0],
+      [bot!.playerId, 1, 1],
+      ["host", 2, 0],
+      [bot!.playerId, 2, 1],
+      ["host", 3, 0],
+      [bot!.playerId, 3, 1],
+      ["host", 4, 0]
+    ] as const;
+    let version = active.version;
+    for (const [playerId, x, y] of winningMoves) {
+      const result = await room.submitAction({
+        playerId,
+        clientActionId: `host-leaves-bot-${playerId}-${x}-${y}`,
+        expectedVersion: version,
+        type: "placeStone",
+        payload: { x, y }
+      });
+      version = result.version;
+    }
+
+    await expect(room.leaveFinishedGame("host")).resolves.toMatchObject({ phase: "closed", playerCount: 1 });
+    const row = await env.DB.prepare("SELECT status, player_count, closed_at FROM room_index WHERE room_id = ?")
+      .bind("test-finished-host-leaves-bot")
+      .first<{ status: string; player_count: number; closed_at: string | null }>();
+    expect(row).toMatchObject({ status: "closed", player_count: 1 });
+    expect(row?.closed_at).toBeTruthy();
+  });
+
+  it("keeps production bot turn delays perceptible even when room config is zero", () => {
+    expect(resolveBotTurnDelayMs(0, "high", "production")).toBe(500);
+    expect(resolveBotTurnDelayMs(1, "medium", "production")).toBe(500);
+    expect(resolveBotTurnDelayMs(undefined, "low", "production")).toBe(1_600);
+    expect(resolveBotTurnDelayMs(0, "high", "test")).toBe(0);
   });
 
   it("closes stale rooms with no live clients", async () => {
