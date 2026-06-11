@@ -1,7 +1,16 @@
 import { DurableObject } from "cloudflare:workers";
 import { normalizeChatBody, type ChatInput, type ChatMessage } from "../core/chat";
 import { GameServerError } from "../core/errors";
-import type { ClientGameAction, GameEvent, JsonObject, PlayerSeat, RoomInterruption, RoomState, TimerIntent } from "../core/game";
+import type {
+  BotDifficulty,
+  ClientGameAction,
+  GameEvent,
+  JsonObject,
+  PlayerSeat,
+  RoomInterruption,
+  RoomState,
+  TimerIntent
+} from "../core/game";
 import { cloneState, privateEventsFor, publicEvents } from "../core/game";
 import { createId, roomDoName } from "../core/ids";
 import {
@@ -27,6 +36,17 @@ export type InitializeRoomInput = {
 export type JoinRoomInput = {
   playerId: string;
   displayName?: string;
+};
+
+export type AddBotInput = {
+  hostPlayerId: string;
+  difficulty: BotDifficulty;
+  displayName?: string;
+};
+
+export type RemoveBotInput = {
+  hostPlayerId: string;
+  botPlayerId: string;
 };
 
 export type RoomSummary = {
@@ -134,7 +154,7 @@ export class RoomDO extends DurableObject<Env> {
     };
 
     this.saveState(state);
-    await this.rescheduleTimers(definition.nextTimers({ state, now }));
+    await this.rescheduleRoomTimers(state, definition, now);
     return this.toSummary(state);
   }
 
@@ -189,7 +209,7 @@ export class RoomDO extends DurableObject<Env> {
     state.version += 1;
     this.saveState(state);
     await this.persistRoomIndex(state);
-    await this.rescheduleTimers(state.activeInterruption ? [] : definition.nextTimers({ state, now }));
+    await this.rescheduleRoomTimers(state, definition, now);
     this.broadcastPresence(state, input.playerId, true);
     this.broadcastSnapshots(state);
     return this.toSummary(state);
@@ -212,7 +232,7 @@ export class RoomDO extends DurableObject<Env> {
       delete state.playerStates[playerId];
       this.resetSeats(state.players);
       if (state.room.hostPlayerId === playerId) {
-        const nextHost = state.players.find((candidate) => candidate.connected) ?? state.players[0];
+        const nextHost = nextHumanHost(state.players);
         if (nextHost) {
           state.room.hostPlayerId = nextHost.playerId;
         } else {
@@ -226,7 +246,8 @@ export class RoomDO extends DurableObject<Env> {
     }
     const now = Date.now();
     state.updatedAt = now;
-    if (state.phase === "waiting" && state.players.length === 0) {
+    const hasHumanPlayers = state.players.some((candidate) => !isBotPlayer(candidate));
+    if (state.phase === "waiting" && (state.players.length === 0 || !hasHumanPlayers)) {
       state.phase = "closed";
       state.closedAt = now;
       state.emptySince = now;
@@ -267,7 +288,7 @@ export class RoomDO extends DurableObject<Env> {
     this.resetSeats(state.players);
 
     if (state.room.hostPlayerId === playerId) {
-      const nextHost = state.players.find((candidate) => candidate.connected) ?? state.players[0];
+      const nextHost = nextHumanHost(state.players);
       if (nextHost) {
         state.room.hostPlayerId = nextHost.playerId;
       } else {
@@ -275,7 +296,8 @@ export class RoomDO extends DurableObject<Env> {
       }
     }
 
-    if (state.players.length === 0) {
+    const hasHumanPlayers = state.players.some((candidate) => !isBotPlayer(candidate));
+    if (state.players.length === 0 || !hasHumanPlayers) {
       state.phase = "closed";
       state.closedAt = now;
       delete state.activeInterruption;
@@ -324,13 +346,86 @@ export class RoomDO extends DurableObject<Env> {
     if (state.room.hostPlayerId !== playerId) {
       throw new GameServerError("forbidden", "Only the host can transfer host authority", 403);
     }
-    if (!state.players.some((candidate) => candidate.playerId === targetPlayerId)) {
+    const targetPlayer = state.players.find((candidate) => candidate.playerId === targetPlayerId);
+    if (!targetPlayer) {
       throw new GameServerError("player_not_found", "Target player is not in this room", 404);
+    }
+    if (isBotPlayer(targetPlayer)) {
+      throw new GameServerError("invalid_action", "Host authority can only be transferred to a human player", 409);
     }
     state.room.hostPlayerId = targetPlayerId;
     state.updatedAt = Date.now();
     state.version += 1;
     this.saveState(state);
+    this.broadcastSnapshots(state);
+    return this.toSummary(state);
+  }
+
+  async addBot(input: AddBotInput): Promise<RoomSummary> {
+    const state = this.requireState();
+    if (state.room.hostPlayerId !== input.hostPlayerId) {
+      throw new GameServerError("forbidden", "Only the host can add bot players", 403);
+    }
+    if (state.phase !== "waiting" && !state.activeInterruption) {
+      throw new GameServerError("invalid_room_phase", "Bot players can only be added before a game starts or while restarting", 409);
+    }
+    if (state.players.length >= state.room.maxPlayers) {
+      throw new GameServerError("room_full", "Room is full", 409);
+    }
+
+    const now = Date.now();
+    const definition = getGameDefinition(state.room.gameId);
+    const difficulty = normalizeBotDifficulty(input.difficulty);
+    const botNumber = state.players.filter(isBotPlayer).length + 1;
+    const displayName = input.displayName?.trim() || `Bot ${botNumber}`;
+    const player: PlayerSeat = {
+      playerId: createId("bot"),
+      displayName,
+      seat: state.players.length,
+      connected: true,
+      ready: true,
+      joinedAt: now,
+      kind: "bot",
+      botDifficulty: difficulty
+    };
+
+    state.players.push(player);
+    state.playerStates[player.playerId] = definition.initialPlayerState(player, { room: state.room, now });
+    delete state.emptySince;
+    state.updatedAt = now;
+    state.version += 1;
+    this.saveState(state);
+    await this.persistRoomIndex(state);
+    await this.rescheduleRoomTimers(state, definition, now);
+    this.broadcastSnapshots(state);
+    return this.toSummary(state);
+  }
+
+  async removeBot(input: RemoveBotInput): Promise<RoomSummary> {
+    const state = this.requireState();
+    if (state.room.hostPlayerId !== input.hostPlayerId) {
+      throw new GameServerError("forbidden", "Only the host can remove bot players", 403);
+    }
+    if (state.phase !== "waiting" && !state.activeInterruption) {
+      throw new GameServerError("invalid_room_phase", "Bot players can only be removed before a game starts or while restarting", 409);
+    }
+
+    const playerIndex = state.players.findIndex((candidate) => candidate.playerId === input.botPlayerId);
+    const player = playerIndex >= 0 ? state.players[playerIndex] : undefined;
+    if (!player || !isBotPlayer(player)) {
+      throw new GameServerError("player_not_found", "Bot player is not in this room", 404);
+    }
+
+    const now = Date.now();
+    const definition = getGameDefinition(state.room.gameId);
+    state.players.splice(playerIndex, 1);
+    delete state.playerStates[input.botPlayerId];
+    this.resetSeats(state.players);
+    state.updatedAt = now;
+    state.version += 1;
+    this.saveState(state);
+    await this.persistRoomIndex(state);
+    await this.rescheduleRoomTimers(state, definition, now);
     this.broadcastSnapshots(state);
     return this.toSummary(state);
   }
@@ -359,7 +454,7 @@ export class RoomDO extends DurableObject<Env> {
     state.version += 1;
     this.saveState(state);
     await this.persistRoomIndex(state);
-    await this.rescheduleTimers(definition.nextTimers({ state, now }));
+    await this.rescheduleRoomTimers(state, definition, now);
     this.broadcastSnapshots(state);
     return this.toSummary(state);
   }
@@ -384,7 +479,7 @@ export class RoomDO extends DurableObject<Env> {
     state.version += 1;
     this.saveState(state);
     await this.persistRoomIndex(state);
-    await this.rescheduleTimers(definition.nextTimers({ state, now }));
+    await this.rescheduleRoomTimers(state, definition, now);
     this.broadcastSnapshots(state);
     return this.toSummary(state);
   }
@@ -400,9 +495,12 @@ export class RoomDO extends DurableObject<Env> {
 
     const now = Date.now();
     state.rematchRequests = { ...(state.rematchRequests ?? {}), [playerId]: now };
+    for (const bot of state.players.filter(isBotPlayer)) {
+      state.rematchRequests[bot.playerId] = now;
+    }
     const everyoneRequested =
       state.players.length >= state.room.minPlayers &&
-      state.players.every((player) => state.rematchRequests?.[player.playerId]);
+      state.players.filter((player) => !isBotPlayer(player)).every((player) => state.rematchRequests?.[player.playerId]);
     if (everyoneRequested) {
       const definition = getGameDefinition(state.room.gameId);
       this.resetGameState(state, definition, now);
@@ -411,7 +509,7 @@ export class RoomDO extends DurableObject<Env> {
       state.version += 1;
       this.saveState(state);
       await this.persistRoomIndex(state);
-      await this.rescheduleTimers(definition.nextTimers({ state, now }));
+      await this.rescheduleRoomTimers(state, definition, now);
       this.broadcastSnapshots(state);
       return this.toSummary(state);
     }
@@ -439,8 +537,9 @@ export class RoomDO extends DurableObject<Env> {
     const hostLeft = state.room.hostPlayerId === playerId;
     this.resetSeats(state.players);
     if (hostLeft) {
-      if (state.players[0]) {
-        state.room.hostPlayerId = state.players[0].playerId;
+      const nextHost = nextHumanHost(state.players);
+      if (nextHost) {
+        state.room.hostPlayerId = nextHost.playerId;
       } else {
         delete state.room.hostPlayerId;
       }
@@ -556,8 +655,7 @@ export class RoomDO extends DurableObject<Env> {
     for (const event of applied.events) {
       this.insertEvent(applied.state.version, event);
     }
-    const timers = definition.nextTimers({ state: applied.state, now });
-    await this.rescheduleTimers(timers);
+    await this.rescheduleRoomTimers(applied.state, definition, now);
     if (applied.state.phase === "closed") {
       await this.persistClosedRoom(applied.state, applied.events);
     }
@@ -673,6 +771,22 @@ export class RoomDO extends DurableObject<Env> {
     }
   }
 
+  async tryAddBot(input: AddBotInput): Promise<RoomCommandResultEnvelope> {
+    try {
+      return { ok: true, summary: await this.addBot(input) };
+    } catch (error) {
+      return this.toCommandError(error);
+    }
+  }
+
+  async tryRemoveBot(input: RemoveBotInput): Promise<RoomCommandResultEnvelope> {
+    try {
+      return { ok: true, summary: await this.removeBot(input) };
+    } catch (error) {
+      return this.toCommandError(error);
+    }
+  }
+
   async fetch(request: Request): Promise<Response> {
     if (request.headers.get("Upgrade") !== "websocket") {
       return Response.json({ error: "Expected WebSocket upgrade" }, { status: 426 });
@@ -747,7 +861,7 @@ export class RoomDO extends DurableObject<Env> {
   }
 
   async alarm(): Promise<void> {
-    const state = this.loadState();
+    let state = this.loadState();
     if (!state) {
       await this.ctx.storage.deleteAlarm();
       return;
@@ -760,6 +874,10 @@ export class RoomDO extends DurableObject<Env> {
     for (const timer of due) {
       if (timer.kind === "room_cleanup" && state.phase === "closed") {
         this.ctx.storage.sql.exec("DELETE FROM timers WHERE id = ?", timer.id);
+      }
+      if (timer.kind === "bot_turn" && state.phase === "active") {
+        await this.handleBotTurnTimer(state, timer, now);
+        state = this.loadState() ?? state;
       }
       if (timer.kind === "turn_timeout" && state.phase === "active") {
         const definition = getGameDefinition(state.room.gameId);
@@ -777,7 +895,7 @@ export class RoomDO extends DurableObject<Env> {
           for (const event of applied.events) {
             this.insertEvent(applied.state.version, event);
           }
-          await this.rescheduleTimers(definition.nextTimers({ state: applied.state, now }));
+          await this.rescheduleRoomTimers(applied.state, definition, now);
           if (applied.state.phase === "closed") {
             await this.persistClosedRoom(applied.state, applied.events);
           }
@@ -787,7 +905,7 @@ export class RoomDO extends DurableObject<Env> {
           }
           this.deliverEvents(applied.state, applied.events);
           this.broadcastSnapshots(applied.state);
-          Object.assign(state, applied.state);
+          state = applied.state;
         } else {
           const event: GameEvent = {
             id: createId("evt"),
@@ -856,6 +974,22 @@ export class RoomDO extends DurableObject<Env> {
       const playerId = this.requireSocketPlayer(ws, message.playerId);
       const summary = await this.transferHost(playerId, message.targetPlayerId);
       this.sendToSocket(ws, this.message(this.requireState(), "ack", { command: "transferHost", result: { summary } }));
+      return;
+    }
+    if (message.type === "addBot") {
+      const playerId = this.requireSocketPlayer(ws, message.playerId);
+      const summary = await this.addBot({
+        hostPlayerId: playerId,
+        difficulty: normalizeBotDifficulty(message.difficulty),
+        ...(message.displayName ? { displayName: message.displayName } : {})
+      });
+      this.sendToSocket(ws, this.message(this.requireState(), "ack", { command: "addBot", result: { summary } }));
+      return;
+    }
+    if (message.type === "removeBot") {
+      const playerId = this.requireSocketPlayer(ws, message.playerId);
+      const summary = await this.removeBot({ hostPlayerId: playerId, botPlayerId: message.botPlayerId });
+      this.sendToSocket(ws, this.message(this.requireState(), "ack", { command: "removeBot", result: { summary } }));
       return;
     }
     if (message.type === "startGame") {
@@ -1015,6 +1149,60 @@ export class RoomDO extends DurableObject<Env> {
     );
   }
 
+  private async handleBotTurnTimer(state: RoomState, timer: TimerRow, now: number): Promise<void> {
+    const payload = timer.payload_json ? parseJsonRecord(timer.payload_json) : {};
+    const playerId = typeof payload.playerId === "string" ? payload.playerId : undefined;
+    const version = typeof payload.version === "number" ? payload.version : undefined;
+    if (!playerId || version !== state.version || state.activeInterruption) {
+      this.ctx.storage.sql.exec("DELETE FROM timers WHERE id = ?", timer.id);
+      return;
+    }
+
+    const definition = getGameDefinition(state.room.gameId);
+    const currentPlayerId = this.currentPlayerIdForBotTurn(state, definition, now);
+    const player = state.players.find((candidate) => candidate.playerId === playerId);
+    if (!player || !isBotPlayer(player) || currentPlayerId !== player.playerId || !definition.selectBotAction) {
+      this.ctx.storage.sql.exec("DELETE FROM timers WHERE id = ?", timer.id);
+      return;
+    }
+
+    const difficulty = botDifficultyFor(player);
+    const selected = definition.selectBotAction({
+      state: cloneState(state),
+      now,
+      player,
+      difficulty
+    });
+    if (!selected) {
+      this.ctx.storage.sql.exec("DELETE FROM timers WHERE id = ?", timer.id);
+      return;
+    }
+
+    const action: ClientGameAction = {
+      playerId: player.playerId,
+      clientActionId: timer.id,
+      expectedVersion: state.version,
+      type: selected.type,
+      payload: selected.payload
+    };
+    this.ctx.storage.sql.exec("DELETE FROM timers WHERE id = ?", timer.id);
+    const result = await this.trySubmitAction(action);
+    if (!result.ok) {
+      console.warn("Bot action rejected", {
+        roomId: state.room.roomId,
+        gameId: state.room.gameId,
+        playerId: player.playerId,
+        code: result.error.code,
+        message: result.error.message
+      });
+    }
+  }
+
+  private async rescheduleRoomTimers(state: RoomState, definition = getGameDefinition(state.room.gameId), now = Date.now()): Promise<void> {
+    const timers = state.activeInterruption ? [] : definition.nextTimers({ state, now });
+    await this.rescheduleTimers([...timers, ...this.nextBotTimers(state, definition, now)]);
+  }
+
   private async rescheduleTimers(timers: TimerIntent[]): Promise<void> {
     this.ctx.storage.sql.exec("DELETE FROM timers WHERE kind != 'disconnect_grace'");
     for (const timer of timers) {
@@ -1027,6 +1215,48 @@ export class RoomDO extends DurableObject<Env> {
       );
     }
     await this.scheduleNextAlarm();
+  }
+
+  private nextBotTimers(state: RoomState, definition = getGameDefinition(state.room.gameId), now = Date.now()): TimerIntent[] {
+    if (state.phase !== "active" || state.activeInterruption || !definition.selectBotAction) {
+      return [];
+    }
+    const currentPlayerId = this.currentPlayerIdForBotTurn(state, definition, now);
+    const player = currentPlayerId ? state.players.find((candidate) => candidate.playerId === currentPlayerId) : undefined;
+    if (!player || !isBotPlayer(player)) {
+      return [];
+    }
+    return [
+      {
+        id: botTurnTimerId(state.version, player.playerId),
+        kind: "bot_turn",
+        runAt: now + this.botTurnDelayMs(state, botDifficultyFor(player)),
+        payload: { playerId: player.playerId, version: state.version }
+      }
+    ];
+  }
+
+  private currentPlayerIdForBotTurn(state: RoomState, definition = getGameDefinition(state.room.gameId), now = Date.now()): string | undefined {
+    const publicView = definition.getPublicView({ state, now });
+    const currentPlayerId = publicView.currentPlayerId;
+    return typeof currentPlayerId === "string" ? currentPlayerId : undefined;
+  }
+
+  private botTurnDelayMs(state: RoomState, difficulty: BotDifficulty): number {
+    const configured = state.room.config.botTurnDelayMs;
+    if (typeof configured === "number" && Number.isFinite(configured) && configured >= 0) {
+      return Math.floor(configured);
+    }
+    if (this.env.ENVIRONMENT === "test") {
+      return 0;
+    }
+    if (difficulty === "high") {
+      return 800;
+    }
+    if (difficulty === "medium") {
+      return 1_100;
+    }
+    return 1_600;
   }
 
   private async clearAllTimers(): Promise<void> {
@@ -1338,6 +1568,37 @@ export class RoomDO extends DurableObject<Env> {
         closedAt
       }
     });
+  }
+}
+
+const botDifficulties = new Set<BotDifficulty>(["low", "medium", "high"]);
+
+function normalizeBotDifficulty(value: unknown): BotDifficulty {
+  return typeof value === "string" && botDifficulties.has(value as BotDifficulty) ? (value as BotDifficulty) : "medium";
+}
+
+function isBotPlayer(player: PlayerSeat): boolean {
+  return player.kind === "bot" || player.botDifficulty !== undefined;
+}
+
+function botDifficultyFor(player: PlayerSeat): BotDifficulty {
+  return normalizeBotDifficulty(player.botDifficulty);
+}
+
+function nextHumanHost(players: PlayerSeat[]): PlayerSeat | undefined {
+  return players.find((candidate) => !isBotPlayer(candidate) && candidate.connected) ?? players.find((candidate) => !isBotPlayer(candidate));
+}
+
+function botTurnTimerId(version: number, playerId: string): string {
+  return `bot-turn:${version}:${playerId}`;
+}
+
+function parseJsonRecord(raw: string): JsonObject {
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as JsonObject) : {};
+  } catch {
+    return {};
   }
 }
 

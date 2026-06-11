@@ -6,6 +6,8 @@ export type {
 } from "./client";
 export type {
   ActionResult,
+  BotDifficulty,
+  BotGameContext,
   ClientGameAction,
   GameAction,
   GameContext,
@@ -15,6 +17,7 @@ export type {
   GameThumbnail,
   JsonObject,
   PlayerIdentity,
+  PlayerKind,
   PlayerSeat,
   RoomConfig,
   RoomPhase,

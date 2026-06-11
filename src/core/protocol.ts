@@ -1,5 +1,5 @@
 import type { ChatMessage } from "./chat";
-import type { GameEvent, JsonObject, PlayerSeat, RoomInterruption, RoomPhase } from "./game";
+import type { BotDifficulty, GameEvent, JsonObject, PlayerSeat, RoomInterruption, RoomPhase } from "./game";
 
 export type ClientMessage =
   | {
@@ -42,6 +42,17 @@ export type ClientMessage =
       type: "transferHost";
       playerId: string;
       targetPlayerId: string;
+    }
+  | {
+      type: "addBot";
+      playerId: string;
+      difficulty: BotDifficulty;
+      displayName?: string;
+    }
+  | {
+      type: "removeBot";
+      playerId: string;
+      botPlayerId: string;
     }
   | {
       type: "action";

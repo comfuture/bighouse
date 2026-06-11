@@ -21,11 +21,17 @@ export type PlayerIdentity = {
   displayName?: string;
 };
 
+export type BotDifficulty = "low" | "medium" | "high";
+
+export type PlayerKind = "human" | "bot";
+
 export type PlayerSeat = PlayerIdentity & {
   seat: number;
   connected: boolean;
   ready: boolean;
   joinedAt: number;
+  kind?: PlayerKind;
+  botDifficulty?: BotDifficulty;
 };
 
 export type RoomConfig = {
@@ -87,7 +93,7 @@ export type ClientGameAction = GameAction & {
 
 export type TimerIntent = {
   id: string;
-  kind: "turn_timeout" | "room_cleanup" | "disconnect_grace";
+  kind: "turn_timeout" | "room_cleanup" | "disconnect_grace" | "bot_turn";
   runAt: number;
   payload?: JsonObject;
 };
@@ -95,6 +101,11 @@ export type TimerIntent = {
 export type GameContext = {
   state: RoomState;
   now: number;
+};
+
+export type BotGameContext = GameContext & {
+  player: PlayerSeat;
+  difficulty: BotDifficulty;
 };
 
 export type ActionResult = {
@@ -111,6 +122,7 @@ export type GameDefinition = GameMetadata & {
   validateAction(context: GameContext, action: ClientGameAction): ValidationResult;
   applyAction(context: GameContext, action: ClientGameAction): ActionResult;
   applyTimer?(context: GameContext, timer: TimerIntent): ActionResult;
+  selectBotAction?(context: BotGameContext): GameAction | null | undefined;
   getPublicView(context: GameContext): JsonObject;
   getPrivateView(context: GameContext, playerId: string): JsonObject;
   nextTimers(context: GameContext): TimerIntent[];

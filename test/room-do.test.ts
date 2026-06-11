@@ -142,6 +142,77 @@ describe("RoomDO", () => {
     });
   });
 
+  it("lets the host add and remove ready bot players before starting", async () => {
+    const room = env.ROOM_DO.getByName("room:test-bot-seats") as unknown as RoomDO;
+    await room.initialize({
+      roomId: "test-bot-seats",
+      gameId: "gomoku",
+      mode: "default",
+      minPlayers: 2,
+      maxPlayers: 3
+    });
+    await room.join({ playerId: "host" });
+
+    await expect(room.tryAddBot({ hostPlayerId: "guest", difficulty: "low" })).resolves.toMatchObject({
+      ok: false,
+      error: { code: "forbidden" }
+    });
+
+    const withBot = await room.addBot({ hostPlayerId: "host", difficulty: "high" });
+    expect(withBot).toMatchObject({ phase: "waiting", playerCount: 2, readyCount: 1, hostPlayerId: "host", version: 2 });
+    const snapshot = await room.getSnapshot("host");
+    const bot = snapshot.players.find((player) => player.kind === "bot");
+    expect(bot).toMatchObject({
+      connected: true,
+      ready: true,
+      botDifficulty: "high"
+    });
+
+    await expect(room.tryTransferHost("host", bot!.playerId)).resolves.toMatchObject({
+      ok: false,
+      error: { code: "invalid_action" }
+    });
+
+    await expect(room.startGame("host")).resolves.toMatchObject({ phase: "active", playerCount: 2, readyCount: 0 });
+  });
+
+  it("enforces bot room capacity and removal authority", async () => {
+    const room = env.ROOM_DO.getByName("room:test-bot-remove") as unknown as RoomDO;
+    await room.initialize({
+      roomId: "test-bot-remove",
+      gameId: "gomoku",
+      mode: "default",
+      minPlayers: 2,
+      maxPlayers: 2
+    });
+    await room.join({ playerId: "host" });
+    await room.join({ playerId: "guest" });
+
+    await expect(room.tryAddBot({ hostPlayerId: "host", difficulty: "medium" })).resolves.toMatchObject({
+      ok: false,
+      error: { code: "room_full" }
+    });
+
+    await room.leave("guest");
+    await room.addBot({ hostPlayerId: "host", difficulty: "low" });
+    const snapshot = await room.getSnapshot("host");
+    const bot = snapshot.players.find((player) => player.kind === "bot");
+    expect(bot).toBeTruthy();
+
+    await expect(room.tryRemoveBot({ hostPlayerId: "guest", botPlayerId: bot!.playerId })).resolves.toMatchObject({
+      ok: false,
+      error: { code: "forbidden" }
+    });
+    await expect(room.removeBot({ hostPlayerId: "host", botPlayerId: bot!.playerId })).resolves.toMatchObject({
+      phase: "waiting",
+      playerCount: 1
+    });
+    await expect(room.tryRemoveBot({ hostPlayerId: "host", botPlayerId: bot!.playerId })).resolves.toMatchObject({
+      ok: false,
+      error: { code: "player_not_found" }
+    });
+  });
+
   it("removes waiting players on leave and closes empty waiting rooms", async () => {
     const room = env.ROOM_DO.getByName("room:test-waiting-leave") as unknown as RoomDO;
     await room.initialize({
