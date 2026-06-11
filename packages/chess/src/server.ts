@@ -1,7 +1,9 @@
 import { Chess, type Color, type Move, type PieceSymbol, type Square } from "chess.js";
 import type {
   ActionResult,
+  BotGameContext,
   ClientGameAction,
+  GameAction,
   GameContext,
   GameEvent,
   JsonObject,
@@ -283,6 +285,10 @@ export const chessDefinition = defineGameDefinition(gameMetadata, {
         payload: { playerId: stage.currentPlayerId, color: colorName(stage.turn) }
       }
     ];
+  },
+
+  selectBotAction(context: BotGameContext): GameAction | null {
+    return selectChessBotAction(context);
   }
 });
 
@@ -290,6 +296,166 @@ export const chessGamePlugin = {
   gameMetadata,
   gameDefinition: chessDefinition
 } satisfies ServerGamePlugin;
+
+const pieceValues: Record<PieceSymbol, number> = {
+  p: 100,
+  n: 320,
+  b: 330,
+  r: 500,
+  q: 900,
+  k: 0
+};
+
+function selectChessBotAction(context: BotGameContext): GameAction | null {
+  const stage = chessStage(context.state.stageState);
+  const currentPlayerId = stage.currentPlayerId ?? playerIdForTurn(context.state.players, stage.turn);
+  if (context.state.phase !== "active" || stage.result || currentPlayerId !== context.player.playerId) {
+    return null;
+  }
+  const botColorName = colorForPlayer(context.state.playerStates[context.player.playerId]);
+  if (botColorName !== colorName(stage.turn)) {
+    return null;
+  }
+
+  const chess = chessFromStage(stage);
+  const legalMoves = chess.moves({ verbose: true });
+  if (legalMoves.length === 0) {
+    return null;
+  }
+
+  const seed = `${context.state.room.roomId}:${context.state.version}:${context.player.playerId}`;
+  const botColor = stage.turn;
+  const selected =
+    context.difficulty === "low"
+      ? pickLowChessMove(legalMoves, seed)
+      : pickScoredChessMove(chess, legalMoves, botColor, context.difficulty === "high" ? 2 : 1, seed);
+  if (!selected) {
+    return null;
+  }
+  return {
+    type: "move",
+    payload: {
+      from: selected.from,
+      to: selected.to,
+      ...(isPromotionPiece(selected.promotion) ? { promotion: selected.promotion } : {})
+    }
+  };
+}
+
+function pickLowChessMove(moves: Move[], seed: string): Move {
+  const index = Math.floor(stableChessNoise(seed, "low") * moves.length) % moves.length;
+  return moves[index]!;
+}
+
+function pickScoredChessMove(chess: Chess, moves: Move[], botColor: Color, depth: number, seed: string): Move | null {
+  let bestMove: Move | null = null;
+  let bestScore = Number.NEGATIVE_INFINITY;
+  for (const move of moves) {
+    chess.move(chessMoveInput(verboseMoveRecord(move)), { strict: true });
+    const score =
+      immediateMoveScore(move) +
+      alphaBeta(chess, depth - 1, Number.NEGATIVE_INFINITY, Number.POSITIVE_INFINITY, botColor) +
+      stableChessNoise(seed, `${move.from}-${move.to}-${move.promotion ?? ""}`);
+    chess.undo();
+    if (score > bestScore) {
+      bestScore = score;
+      bestMove = move;
+    }
+  }
+  return bestMove;
+}
+
+function alphaBeta(chess: Chess, depth: number, alphaInput: number, betaInput: number, botColor: Color): number {
+  if (depth <= 0 || chess.isGameOver()) {
+    return evaluateChess(chess, botColor);
+  }
+  const moves = chess.moves({ verbose: true });
+  if (moves.length === 0) {
+    return evaluateChess(chess, botColor);
+  }
+
+  let alpha = alphaInput;
+  let beta = betaInput;
+  if (chess.turn() === botColor) {
+    let value = Number.NEGATIVE_INFINITY;
+    for (const move of moves) {
+      chess.move(chessMoveInput(verboseMoveRecord(move)), { strict: true });
+      value = Math.max(value, alphaBeta(chess, depth - 1, alpha, beta, botColor));
+      chess.undo();
+      alpha = Math.max(alpha, value);
+      if (alpha >= beta) break;
+    }
+    return value;
+  }
+
+  let value = Number.POSITIVE_INFINITY;
+  for (const move of moves) {
+    chess.move(chessMoveInput(verboseMoveRecord(move)), { strict: true });
+    value = Math.min(value, alphaBeta(chess, depth - 1, alpha, beta, botColor));
+    chess.undo();
+    beta = Math.min(beta, value);
+    if (alpha >= beta) break;
+  }
+  return value;
+}
+
+function evaluateChess(chess: Chess, botColor: Color): number {
+  if (chess.isCheckmate()) {
+    return chess.turn() === botColor ? -1_000_000 : 1_000_000;
+  }
+  if (chess.isDraw()) {
+    return 0;
+  }
+
+  let score = 0;
+  for (const row of chess.board()) {
+    for (const piece of row) {
+      if (!piece) continue;
+      const value = pieceValues[piece.type];
+      score += piece.color === botColor ? value : -value;
+    }
+  }
+  const mobility = chess.moves().length;
+  score += chess.turn() === botColor ? mobility * 2 : -mobility * 2;
+  if (chess.isCheck()) {
+    score += chess.turn() === botColor ? -40 : 40;
+  }
+  return score;
+}
+
+function immediateMoveScore(move: Move): number {
+  let score = 0;
+  if (move.captured) {
+    score += pieceValues[move.captured] + 20;
+  }
+  if (isPromotionPiece(move.promotion)) {
+    score += pieceValues[move.promotion];
+  }
+  if (move.san.includes("#")) {
+    score += 1_000_000;
+  } else if (move.san.includes("+")) {
+    score += 80;
+  }
+  return score;
+}
+
+function verboseMoveRecord(move: Move): ChessMoveRecord {
+  return {
+    from: move.from,
+    to: move.to,
+    ...(isPromotionPiece(move.promotion) ? { promotion: move.promotion } : {})
+  };
+}
+
+function stableChessNoise(seed: string, key: string): number {
+  let hash = 2166136261;
+  const input = `${seed}:${key}`;
+  for (let index = 0; index < input.length; index += 1) {
+    hash ^= input.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0) / 0xffffffff;
+}
 
 function buildStage(
   chess: Chess,

@@ -362,6 +362,43 @@ describe("RoomDO", () => {
     await expect(runDurableObjectAlarm(roomStub)).resolves.toBe(true);
   });
 
+  it("runs scheduled gomoku bot turns through the room action pipeline", async () => {
+    const roomStub = env.ROOM_DO.getByName("room:test-gomoku-bot-turn");
+    const room = roomStub as unknown as RoomDO;
+    await room.initialize({
+      roomId: "test-gomoku-bot-turn",
+      gameId: "gomoku",
+      mode: "default",
+      minPlayers: 2,
+      maxPlayers: 2,
+      config: { botTurnDelayMs: 1 }
+    });
+    await room.join({ playerId: "host" });
+    await room.addBot({ hostPlayerId: "host", difficulty: "high" });
+    await room.startGame("host");
+    const beforeMove = await room.getSnapshot("host");
+    const bot = beforeMove.players.find((player) => player.kind === "bot");
+    expect(bot).toBeTruthy();
+
+    await room.submitAction({
+      playerId: "host",
+      clientActionId: "host-first-move",
+      expectedVersion: beforeMove.version,
+      type: "placeStone",
+      payload: { x: 7, y: 7 }
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await expect(runDurableObjectAlarm(roomStub)).resolves.toBe(true);
+    const afterBot = await room.getSnapshot("host");
+    expect(afterBot.version).toBe(beforeMove.version + 2);
+    expect(afterBot.publicView).toMatchObject({
+      moveCount: 2,
+      currentPlayerId: "host",
+      lastMove: { playerId: bot!.playerId }
+    });
+  });
+
   it("keeps durable disconnect grace pending when game timers are rescheduled", async () => {
     const roomStub = env.ROOM_DO.getByName("room:test-disconnect-grace");
     const room = roomStub as unknown as RoomDO;

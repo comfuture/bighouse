@@ -1,6 +1,8 @@
 import type {
   ActionResult,
+  BotGameContext,
   ClientGameAction,
+  GameAction,
   GameContext,
   GameEvent,
   JsonObject,
@@ -146,6 +148,10 @@ export const gomokuDefinition = defineGameDefinition(gameMetadata, {
         payload: { playerId: stage.currentPlayerId }
       }
     ];
+  },
+
+  selectBotAction(context: BotGameContext): GameAction | null {
+    return selectGomokuBotAction(context);
   }
 });
 
@@ -172,6 +178,186 @@ function nextPlayer(players: PlayerSeat[], currentPlayerId: string): PlayerSeat 
     return players[0];
   }
   return players[(currentIndex + 1) % players.length];
+}
+
+function selectGomokuBotAction(context: BotGameContext): GameAction | null {
+  const stage = gomokuStage(context.state.stageState);
+  const currentPlayerId = stage.currentPlayerId ?? context.state.players[0]?.playerId;
+  if (context.state.phase !== "active" || stage.winnerPlayerId || currentPlayerId !== context.player.playerId) {
+    return null;
+  }
+
+  const stone = stoneForPlayer(context.state.playerStates[context.player.playerId]);
+  const opponentStone = stone === "black" ? "white" : "black";
+  const candidates = legalCandidates(stage, stone, context.difficulty);
+  if (candidates.length === 0) {
+    return null;
+  }
+
+  const seed = `${context.state.room.roomId}:${context.state.version}:${context.player.playerId}`;
+  const difficulty = context.difficulty;
+  if (difficulty === "low") {
+    const center = (stage.boardSize - 1) / 2;
+    const ranked = candidates
+      .map((candidate) => ({
+        ...candidate,
+        score: -Math.abs(candidate.x - center) - Math.abs(candidate.y - center) + stableNoise(seed, candidate.x, candidate.y)
+      }))
+      .sort((a, b) => b.score - a.score);
+    const selected = ranked[0]!;
+    return { type: "placeStone", payload: { x: selected.x, y: selected.y } };
+  }
+
+  const defensiveWinBlock = bestThreatMove(stage, candidates, opponentStone, 100_000, seed);
+  if (defensiveWinBlock) {
+    return { type: "placeStone", payload: defensiveWinBlock };
+  }
+
+  const winningMove = bestThreatMove(stage, candidates, stone, 100_000, seed);
+  if (winningMove) {
+    return { type: "placeStone", payload: winningMove };
+  }
+
+  if (difficulty === "high") {
+    const defensiveFourBlock = bestThreatMove(stage, candidates, opponentStone, 10_000, seed);
+    if (defensiveFourBlock) {
+      return { type: "placeStone", payload: defensiveFourBlock };
+    }
+  }
+
+  const selected = candidates
+    .map((candidate) => {
+      const ownScore = movePotential(stage.board, candidate.x, candidate.y, stone);
+      const defenseScore = movePotential(stage.board, candidate.x, candidate.y, opponentStone);
+      const centerBias = centerScore(stage.boardSize, candidate.x, candidate.y);
+      const difficultyWeight = difficulty === "high" ? 0.9 : 0.6;
+      return {
+        ...candidate,
+        score: ownScore + defenseScore * difficultyWeight + centerBias + stableNoise(seed, candidate.x, candidate.y)
+      };
+    })
+    .sort((a, b) => b.score - a.score)[0]!;
+
+  return { type: "placeStone", payload: { x: selected.x, y: selected.y } };
+}
+
+function legalCandidates(stage: GomokuStageState, stone: Stone, difficulty: "low" | "medium" | "high"): Array<{ x: number; y: number }> {
+  const occupied: Array<{ x: number; y: number }> = [];
+  for (let y = 0; y < stage.boardSize; y += 1) {
+    for (let x = 0; x < stage.boardSize; x += 1) {
+      if (stage.board[y]?.[x] !== null) {
+        occupied.push({ x, y });
+      }
+    }
+  }
+
+  const candidateKeys = new Set<string>();
+  const radius = difficulty === "high" ? 2 : 1;
+  if (occupied.length === 0) {
+    const center = Math.floor(stage.boardSize / 2);
+    candidateKeys.add(`${center},${center}`);
+  } else if (difficulty === "low") {
+    for (let y = 0; y < stage.boardSize; y += 1) {
+      for (let x = 0; x < stage.boardSize; x += 1) {
+        candidateKeys.add(`${x},${y}`);
+      }
+    }
+  } else {
+    for (const stoneCell of occupied) {
+      for (let dy = -radius; dy <= radius; dy += 1) {
+        for (let dx = -radius; dx <= radius; dx += 1) {
+          const x = stoneCell.x + dx;
+          const y = stoneCell.y + dy;
+          if (x >= 0 && y >= 0 && x < stage.boardSize && y < stage.boardSize) {
+            candidateKeys.add(`${x},${y}`);
+          }
+        }
+      }
+    }
+  }
+
+  const candidates: Array<{ x: number; y: number }> = [];
+  for (const key of candidateKeys) {
+    const [x, y] = key.split(",").map(Number);
+    if (
+      Number.isInteger(x) &&
+      Number.isInteger(y) &&
+      stage.board[y!]?.[x!] === null &&
+      !createsDoubleThree(stage.board, x!, y!, stone)
+    ) {
+      candidates.push({ x: x!, y: y! });
+    }
+  }
+  return candidates;
+}
+
+function bestThreatMove(
+  stage: GomokuStageState,
+  candidates: Array<{ x: number; y: number }>,
+  stone: Stone,
+  threshold: number,
+  seed: string
+): { x: number; y: number } | null {
+  const ranked = candidates
+    .map((candidate) => ({
+      ...candidate,
+      score: movePotential(stage.board, candidate.x, candidate.y, stone) + stableNoise(seed, candidate.x, candidate.y)
+    }))
+    .filter((candidate) => candidate.score >= threshold)
+    .sort((a, b) => b.score - a.score);
+  return ranked[0] ? { x: ranked[0].x, y: ranked[0].y } : null;
+}
+
+function movePotential(board: Cell[][], x: number, y: number, stone: Stone): number {
+  const nextBoard = board.map((row) => [...row]);
+  nextBoard[y]![x] = stone;
+  let score = 0;
+  for (const [dx, dy] of [
+    [1, 0],
+    [0, 1],
+    [1, 1],
+    [1, -1]
+  ] as const) {
+    const contiguous = countLine(nextBoard, x, y, stone, dx, dy);
+    const openEnds = openEndCount(nextBoard, x, y, stone, dx, dy);
+    if (contiguous >= 5) score += 100_000;
+    else if (contiguous === 4 && openEnds > 0) score += 10_000 + openEnds * 1_000;
+    else if (contiguous === 3 && openEnds === 2) score += 1_200;
+    else if (contiguous === 3) score += 350;
+    else if (contiguous === 2 && openEnds === 2) score += 100;
+    else if (contiguous === 2) score += 30;
+    else score += openEnds * 3;
+  }
+  return score;
+}
+
+function openEndCount(board: Cell[][], x: number, y: number, stone: Stone, dx: number, dy: number): number {
+  return openEnd(board, x, y, stone, dx, dy) + openEnd(board, x, y, stone, -dx, -dy);
+}
+
+function openEnd(board: Cell[][], x: number, y: number, stone: Stone, dx: number, dy: number): number {
+  let cx = x + dx;
+  let cy = y + dy;
+  while (board[cy]?.[cx] === stone) {
+    cx += dx;
+    cy += dy;
+  }
+  return board[cy]?.[cx] === null ? 1 : 0;
+}
+
+function centerScore(boardSize: number, x: number, y: number): number {
+  const center = (boardSize - 1) / 2;
+  return Math.max(0, boardSize - Math.abs(x - center) - Math.abs(y - center));
+}
+
+function stableNoise(seed: string, x: number, y: number): number {
+  let hash = 2166136261;
+  const input = `${seed}:${x}:${y}`;
+  for (let index = 0; index < input.length; index += 1) {
+    hash ^= input.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0) / 0xffffffff;
 }
 
 function hasFive(board: Cell[][], x: number, y: number, stone: Stone): boolean {
