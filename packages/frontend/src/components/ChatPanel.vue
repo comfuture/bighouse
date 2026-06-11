@@ -20,13 +20,24 @@
         </div>
       </div>
 
-      <div>
+      <div class="flex items-center gap-2">
         <UInput
           v-model="body"
+          class="min-w-0 flex-1"
           :placeholder="`${title} message`"
           @compositionstart="handleCompositionStart"
           @compositionend="handleCompositionEnd"
           @keydown.enter="handleEnter"
+        />
+        <UButton
+          type="button"
+          icon="i-lucide-send"
+          color="primary"
+          variant="solid"
+          class="shrink-0"
+          aria-label="Send message"
+          :disabled="body.trim().length === 0"
+          @click="submit"
         />
       </div>
     </div>
