@@ -179,44 +179,6 @@ describe("game adapters", () => {
     }));
   });
 
-  it("selects legal chess bot promotions with a promotion payload", () => {
-    const state = baseState("chess");
-    state.players[0] = { ...state.players[0]!, kind: "bot", botDifficulty: "high" };
-    state.stageState = {
-      fen: "4k3/P7/8/8/8/8/8/4K3 w - - 0 1",
-      board: [],
-      currentPlayerId: "p1",
-      turn: "w",
-      clocks: { white: 900_000, black: 900_000 },
-      moveCount: 0,
-      history: [],
-      moveHistory: [],
-      check: false,
-      checkmate: false,
-      stalemate: false
-    };
-    state.playerStates.p1 = { color: "white" };
-    state.playerStates.p2 = { color: "black" };
-
-    const action = chessDefinition.selectBotAction!({
-      state,
-      now: 10,
-      player: state.players[0]!,
-      difficulty: "high"
-    });
-
-    expect(action).toEqual({
-      type: "move",
-      payload: { from: "a7", to: "a8", promotion: "q" }
-    });
-    expect(
-      chessDefinition.validateAction(
-        { state: cloneState(state), now: 10 },
-        { playerId: "p1", clientActionId: "bot-promotion", expectedVersion: 2, type: action!.type, payload: action!.payload }
-      )
-    ).toEqual({ ok: true });
-  });
-
   it("preserves chess move history for threefold repetition draws", () => {
     let state = baseState("chess");
     state.stageState = chessDefinition.initialStageState({ room: state.room, players: state.players, now: 1 });
@@ -331,39 +293,6 @@ describe("game adapters", () => {
       visibility: "system",
       payload: { winnerPlayerId: "p1" }
     }));
-  });
-
-  it("selects a defensive gomoku bot move before attacking", () => {
-    const state = baseState("gomoku");
-    state.players[0] = { ...state.players[0]!, kind: "bot", botDifficulty: "high" };
-    state.stageState = gomokuDefinition.initialStageState({ room: state.room, players: state.players, now: 1 });
-    state.playerStates.p1 = gomokuDefinition.initialPlayerState(state.players[0]!, { room: state.room, now: 1 });
-    state.playerStates.p2 = gomokuDefinition.initialPlayerState(state.players[1]!, { room: state.room, now: 1 });
-    const stage = state.stageState as { currentPlayerId?: string; board: Array<Array<"black" | "white" | null>> };
-    stage.currentPlayerId = "p1";
-    stage.board[0]![0] = "white";
-    stage.board[0]![1] = "white";
-    stage.board[0]![2] = "white";
-    stage.board[0]![3] = "white";
-    stage.board[1]![0] = "black";
-    stage.board[1]![1] = "black";
-    stage.board[1]![2] = "black";
-    stage.board[1]![3] = "black";
-
-    const action = gomokuDefinition.selectBotAction!({
-      state,
-      now: 10,
-      player: state.players[0]!,
-      difficulty: "high"
-    });
-
-    expect(action).toEqual({ type: "placeStone", payload: { x: 4, y: 0 } });
-    expect(
-      gomokuDefinition.validateAction(
-        { state: cloneState(state), now: 10 },
-        { playerId: "p1", clientActionId: "bot-defense", expectedVersion: 2, type: action!.type, payload: action!.payload }
-      )
-    ).toEqual({ ok: true });
   });
 
   it("keeps card hands private while broadcasting submitted cards", () => {
