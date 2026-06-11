@@ -115,6 +115,46 @@
     min-height: 100vh;
     font-feature-settings: "cv02", "cv03", "cv04", "cv11";
   }
+
+  @keyframes game-elastic-enter {
+    0% {
+      transform: translateY(var(--game-elastic-y, 0)) scale(1);
+    }
+
+    38% {
+      transform: translateY(var(--game-elastic-y, 0)) scale(1.026, 0.984);
+    }
+
+    62% {
+      transform: translateY(var(--game-elastic-y, 0)) scale(0.994, 1.012);
+    }
+
+    82% {
+      transform: translateY(var(--game-elastic-y, 0)) scale(1.006, 0.997);
+    }
+
+    100% {
+      transform: translateY(var(--game-elastic-y, 0)) scale(1);
+    }
+  }
+
+  @keyframes game-elastic-leave {
+    0% {
+      transform: translateY(var(--game-elastic-y, 0)) scale(1);
+    }
+
+    42% {
+      transform: translateY(var(--game-elastic-y, 0)) scale(0.986, 1.014);
+    }
+
+    74% {
+      transform: translateY(var(--game-elastic-y, 0)) scale(1.005, 0.997);
+    }
+
+    100% {
+      transform: translateY(var(--game-elastic-y, 0)) scale(1);
+    }
+  }
 }
 
 input.game-plastic-input::placeholder {
@@ -303,8 +343,8 @@ input.game-plastic-input::placeholder {
 
   .game-plastic-card {
     isolation: isolate;
+    --game-elastic-y: 0;
     transition:
-      transform 160ms ease,
       box-shadow 160ms ease,
       background-color 160ms ease;
   }
@@ -319,7 +359,8 @@ input.game-plastic-input::placeholder {
   }
 
   .game-plastic-card:hover {
-    transform: translateY(-4px);
+    --game-elastic-y: -4px;
+    transform: translateY(var(--game-elastic-y));
     box-shadow: 0 22px 0 rgba(22, 33, 59, 0.1), 0 32px 44px rgba(22, 33, 59, 0.18), var(--game-inset);
   }
 
@@ -337,6 +378,28 @@ input.game-plastic-input::placeholder {
       0 2px 0 rgba(22, 33, 59, 0.2),
       inset 0 1px 0 rgba(255, 255, 255, 0.5),
       inset 0 4px 7px rgba(22, 33, 59, 0.14);
+  }
+
+  @media (hover: hover) and (pointer: fine) {
+    :where(.game-elastic-enter, .game-elastic-leave) {
+      transform-origin: center;
+      will-change: transform;
+    }
+
+    .game-elastic-enter {
+      animation: game-elastic-enter 360ms cubic-bezier(0.2, 1.65, 0.3, 1) both;
+    }
+
+    .game-elastic-leave {
+      animation: game-elastic-leave 260ms cubic-bezier(0.28, 1.25, 0.42, 1) both;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .game-elastic-enter,
+    .game-elastic-leave {
+      animation: none;
+    }
   }
 
   .game-plastic-badge {
