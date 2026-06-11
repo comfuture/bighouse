@@ -121,16 +121,16 @@
       transform: translateY(var(--game-elastic-y, 0)) scale(1);
     }
 
-    38% {
-      transform: translateY(var(--game-elastic-y, 0)) scale(1.026, 0.984);
-    }
-
-    62% {
-      transform: translateY(var(--game-elastic-y, 0)) scale(0.994, 1.012);
-    }
-
-    82% {
+    42% {
       transform: translateY(var(--game-elastic-y, 0)) scale(1.006, 0.997);
+    }
+
+    72% {
+      transform: translateY(var(--game-elastic-y, 0)) scale(0.998, 1.003);
+    }
+
+    88% {
+      transform: translateY(var(--game-elastic-y, 0)) scale(1.002, 0.999);
     }
 
     100% {
@@ -143,12 +143,12 @@
       transform: translateY(var(--game-elastic-y, 0)) scale(1);
     }
 
-    42% {
-      transform: translateY(var(--game-elastic-y, 0)) scale(0.986, 1.014);
+    45% {
+      transform: translateY(var(--game-elastic-y, 0)) scale(0.996, 1.004);
     }
 
-    74% {
-      transform: translateY(var(--game-elastic-y, 0)) scale(1.005, 0.997);
+    78% {
+      transform: translateY(var(--game-elastic-y, 0)) scale(1.002, 0.999);
     }
 
     100% {
@@ -387,11 +387,11 @@ input.game-plastic-input::placeholder {
     }
 
     .game-elastic-enter {
-      animation: game-elastic-enter 360ms cubic-bezier(0.2, 1.65, 0.3, 1) both;
+      animation: game-elastic-enter 120ms cubic-bezier(0.2, 1, 0.3, 1) both;
     }
 
     .game-elastic-leave {
-      animation: game-elastic-leave 260ms cubic-bezier(0.28, 1.25, 0.42, 1) both;
+      animation: game-elastic-leave 100ms cubic-bezier(0.28, 1, 0.42, 1) both;
     }
   }
 
