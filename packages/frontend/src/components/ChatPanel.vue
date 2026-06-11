@@ -20,7 +20,7 @@
         </div>
       </div>
 
-      <div class="grid gap-2 md:grid-cols-[1fr_auto]">
+      <div>
         <UInput
           v-model="body"
           :placeholder="`${title} message`"
@@ -28,7 +28,6 @@
           @compositionend="handleCompositionEnd"
           @keydown.enter="handleEnter"
         />
-        <UButton label="Send" icon="i-lucide-send" @click="submit" />
       </div>
     </div>
   </UCard>

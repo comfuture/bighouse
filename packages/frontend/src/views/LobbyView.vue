@@ -1,25 +1,25 @@
 <template>
   <div class="space-y-6">
-    <UHeader
-      title="Lobby"
-      :toggle="false"
-      class="game-portal-hero rounded-[2rem] border-2 border-default/80"
-      :ui="{ root: 'static', container: 'px-3 sm:px-4', left: 'flex-1', center: 'flex flex-1 justify-center', right: 'flex-1' }"
-    >
-      <template #left>
-        <UButton label="Games" icon="i-lucide-arrow-left" color="neutral" variant="ghost" @click="goToGames" />
-      </template>
+    <section class="game-lobby-hero" :style="lobbyHeroStyle" aria-labelledby="lobby-title">
+      <div class="game-lobby-hero-overlay" />
+      <div class="game-lobby-hero-content">
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <UButton label="Games" icon="i-lucide-arrow-left" color="neutral" variant="ghost" @click="goToGames" />
+          <UButton label="Create room" icon="i-lucide-plus" @click="createRoom" />
+        </div>
 
-      <div class="flex min-w-0 items-center justify-center gap-2">
-        <h1 class="truncate text-lg font-semibold text-highlighted">{{ gameId }}</h1>
-        <UBadge color="secondary" variant="subtle">{{ mode }}</UBadge>
-        <UBadge color="primary" variant="outline">Lobby</UBadge>
+        <div class="max-w-2xl space-y-3">
+          <div class="flex flex-wrap gap-2">
+            <UBadge color="secondary" variant="subtle">{{ mode }}</UBadge>
+            <UBadge color="primary" variant="outline">Lobby</UBadge>
+          </div>
+          <div class="space-y-2">
+            <h1 id="lobby-title" class="game-lobby-hero-title">{{ displayGameName }}</h1>
+            <p class="game-lobby-hero-copy">{{ gameDescription }}</p>
+          </div>
+        </div>
       </div>
-
-      <template #right>
-        <UButton label="Create room" icon="i-lucide-plus" @click="createRoom" />
-      </template>
-    </UHeader>
+    </section>
 
     <UAlert v-if="error" color="error" icon="i-lucide-circle-alert" :title="error" />
 
@@ -54,6 +54,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import ChatPanel from "../components/ChatPanel.vue";
 import { createLobbyRoom, joinRoom, listLobbyRooms, lobbyWebsocketUrl } from "../api";
+import { getClientGameMetadata } from "../game-plugins";
 import { identity, identityReady } from "../identity";
 import { parseServerMessage } from "../socket";
 import type { ChatMessage, RoomIndex } from "../types";
@@ -62,6 +63,16 @@ const route = useRoute();
 const router = useRouter();
 const gameId = computed(() => String(route.params.gameId));
 const mode = computed(() => String(route.params.mode));
+const gameMetadata = computed(() => getClientGameMetadata(gameId.value));
+const displayGameName = computed(() => gameMetadata.value?.displayName ?? gameId.value);
+const gameDescription = computed(() => gameMetadata.value?.description ?? "Create a room or join an open table.");
+const lobbyHeroStyle = computed(() => {
+  const thumbnail = gameMetadata.value?.thumbnail;
+  if (!thumbnail) return {};
+  return {
+    "--game-lobby-image": `url(${thumbnail.src})`
+  };
+});
 const rooms = ref<RoomIndex[]>([]);
 const chat = ref<ChatMessage[]>([]);
 const error = ref("");

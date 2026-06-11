@@ -117,6 +117,15 @@
   }
 }
 
+input.game-plastic-input::placeholder {
+  color: color-mix(in srgb, var(--ui-text-highlighted) 82%, transparent) !important;
+  opacity: 1;
+}
+
+.dark input.game-plastic-input::placeholder {
+  color: rgba(244, 251, 255, 0.9) !important;
+}
+
 @layer components {
   .game-portal-shell {
     min-height: 100vh;
@@ -216,6 +225,59 @@
     font-size: clamp(1rem, 2vw, 1.35rem);
     font-weight: 800;
     line-height: 1.35;
+  }
+
+  .game-lobby-hero {
+    position: relative;
+    min-height: clamp(210px, 26vw, 320px);
+    overflow: hidden;
+    border: 2px solid var(--game-border);
+    border-radius: 2rem;
+    background:
+      linear-gradient(90deg, rgba(4, 58, 126, 0.92), rgba(4, 82, 170, 0.64) 44%, rgba(4, 82, 170, 0.22)),
+      var(--game-lobby-image, var(--game-hero-background));
+    background-position: center;
+    background-size: cover;
+    box-shadow: var(--game-shadow), var(--game-inset);
+  }
+
+  .game-lobby-hero-overlay {
+    position: absolute;
+    inset: 0;
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.18), transparent 34%),
+      linear-gradient(90deg, rgba(6, 38, 94, 0.8), rgba(6, 62, 140, 0.52) 46%, rgba(6, 62, 140, 0.2));
+  }
+
+  .game-lobby-hero-content {
+    position: relative;
+    z-index: 1;
+    display: flex;
+    min-height: inherit;
+    flex-direction: column;
+    justify-content: space-between;
+    gap: 2rem;
+    padding: clamp(1rem, 3vw, 1.75rem);
+  }
+
+  .game-lobby-hero-title {
+    color: #fff;
+    font-size: clamp(2.4rem, 6vw, 4.75rem);
+    font-weight: 950;
+    line-height: 0.92;
+    letter-spacing: 0;
+    text-shadow:
+      0 2px 0 rgba(0, 37, 96, 0.55),
+      0 10px 24px rgba(0, 18, 56, 0.46);
+  }
+
+  .game-lobby-hero-copy {
+    max-width: 36rem;
+    color: rgba(244, 251, 255, 0.96);
+    font-size: clamp(0.95rem, 1.6vw, 1.2rem);
+    font-weight: 800;
+    line-height: 1.35;
+    text-shadow: 0 2px 10px rgba(0, 18, 56, 0.55);
   }
 
   .game-plastic-surface,
