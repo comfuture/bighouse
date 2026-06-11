@@ -11,6 +11,8 @@ export type Game = {
   };
 };
 
+export type BotDifficulty = "low" | "medium" | "high";
+
 export type Player = {
   playerId: string;
   displayName?: string;
@@ -18,6 +20,8 @@ export type Player = {
   connected: boolean;
   ready: boolean;
   joinedAt: number;
+  kind?: "human" | "bot";
+  botDifficulty?: BotDifficulty;
 };
 
 export type RoomIndex = {

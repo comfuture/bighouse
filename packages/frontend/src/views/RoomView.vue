@@ -120,18 +120,34 @@
                 <div class="text-xs text-muted">
                   Seat {{ player.seat + 1 }}
                   <span v-if="player.playerId === room?.hostPlayerId">/ host</span>
+                  <span v-else-if="isBotPlayer(player)">/ bot</span>
                 </div>
               </div>
-              <div class="flex gap-2">
-                <UBadge :color="player.connected ? 'success' : 'neutral'" variant="subtle">
+              <div class="flex items-center gap-2">
+                <UBadge v-if="isBotPlayer(player)" color="secondary" variant="subtle">
+                  {{ botDifficultyLabel(player.botDifficulty) }}
+                </UBadge>
+                <UBadge v-else :color="player.connected ? 'success' : 'neutral'" variant="subtle">
                   {{ player.connected ? "online" : "offline" }}
                 </UBadge>
                 <UBadge v-if="player.playerId === room?.hostPlayerId" color="neutral" variant="subtle">
                   host
                 </UBadge>
+                <UBadge v-else-if="isBotPlayer(player)" color="neutral" variant="subtle">
+                  ready
+                </UBadge>
                 <UBadge v-else-if="room?.phase === 'waiting'" :color="player.ready ? 'success' : 'warning'" variant="subtle">
                   {{ player.ready ? "ready" : "not ready" }}
                 </UBadge>
+                <UButton
+                  v-if="canManageBots && isBotPlayer(player)"
+                  :aria-label="`Remove ${player.displayName || player.playerId}`"
+                  icon="i-lucide-trash-2"
+                  size="xs"
+                  color="error"
+                  variant="ghost"
+                  @click="removeBot(player.playerId)"
+                />
               </div>
             </div>
 
@@ -153,6 +169,36 @@
                 block
                 @click="startGame"
               />
+            </div>
+
+            <div v-if="canManageBots" class="space-y-3 border-t-2 border-default/70 pt-3">
+              <div class="flex items-center justify-between gap-2">
+                <div class="text-xs text-muted">Bot players</div>
+                <UBadge color="neutral" variant="subtle">{{ botSlotsRemaining }} slots</UBadge>
+              </div>
+              <div class="grid gap-2">
+                <div class="grid grid-cols-3 gap-1">
+                  <UButton
+                    v-for="option in botDifficultyOptions"
+                    :key="option.value"
+                    size="xs"
+                    :label="option.label"
+                    :color="botDifficulty === option.value ? 'primary' : 'neutral'"
+                    :variant="botDifficulty === option.value ? 'solid' : 'subtle'"
+                    block
+                    @click="botDifficulty = option.value"
+                  />
+                </div>
+                <UButton
+                  label="Add bot"
+                  icon="i-lucide-bot"
+                  :disabled="!canAddBot"
+                  color="secondary"
+                  variant="subtle"
+                  block
+                  @click="addBot"
+                />
+              </div>
             </div>
 
             <div v-if="room?.phase === 'active'" class="border-t-2 border-default/70 pt-3">
@@ -211,7 +257,7 @@ import { identity, identityReady } from "../identity";
 import { roomWebsocketUrl } from "../api";
 import { loadGameClient } from "../game-plugins";
 import { parseServerMessage } from "../socket";
-import type { ChatMessage, Player, RoomSnapshot, ServerMessage } from "../types";
+import type { BotDifficulty, ChatMessage, Player, RoomSnapshot, ServerMessage } from "../types";
 
 const route = useRoute();
 const router = useRouter();
@@ -225,6 +271,7 @@ const qrModalOpen = ref(false);
 const qrCodeDataUrl = ref("");
 const gameHost = ref<HTMLElement>();
 const lastSnapshotServerTime = ref(Date.now());
+const botDifficulty = ref<BotDifficulty>("medium");
 let ws: WebSocket | undefined;
 let gameInstance: MountedGameClient | undefined;
 let mountedGameId: string | undefined;
@@ -236,6 +283,12 @@ let leavingRoom = false;
 let leaveDestination: string | undefined;
 let pendingGuardDestination: string | undefined;
 let guardNavigationAllowed = false;
+
+const botDifficultyOptions: Array<{ value: BotDifficulty; label: string }> = [
+  { value: "low", label: "Low" },
+  { value: "medium", label: "Medium" },
+  { value: "high", label: "High" }
+];
 
 const me = computed(() => room.value?.players.find((player) => player.playerId === identity.playerId));
 const isHost = computed(() => room.value?.hostPlayerId === identity.playerId);
@@ -260,11 +313,11 @@ const canStart = computed(() => {
   const snapshot = room.value;
   if (!snapshot || !isHost.value || snapshot.phase !== "waiting") return false;
   const requiredReadyPlayers = snapshot.players.filter((player) => player.playerId !== snapshot.hostPlayerId);
-  return snapshot.players.length >= snapshot.minPlayers && requiredReadyPlayers.every((player) => player.connected && player.ready);
+  return snapshot.players.length >= snapshot.minPlayers && requiredReadyPlayers.every((player) => isBotPlayer(player) || (player.connected && player.ready));
 });
 const delegatablePlayers = computed<Player[]>(() => {
   if (!room.value || !isHost.value) return [];
-  return room.value.players.filter((player) => player.playerId !== identity.playerId);
+  return room.value.players.filter((player) => player.playerId !== identity.playerId && !isBotPlayer(player));
 });
 const hasOtherPlayers = computed(() => room.value?.players.some((player) => player.playerId !== identity.playerId) ?? false);
 const roomIsFull = computed(() => {
@@ -275,6 +328,15 @@ const roomCanShareQr = computed(() => {
   const snapshot = room.value;
   return Boolean(snapshot && !roomIsFull.value && (snapshot.phase === "waiting" || snapshot.activeInterruption));
 });
+const canManageBots = computed(() => {
+  const snapshot = room.value;
+  return Boolean(snapshot && isHost.value && (snapshot.phase === "waiting" || snapshot.activeInterruption));
+});
+const botSlotsRemaining = computed(() => {
+  const snapshot = room.value;
+  return snapshot ? Math.max(0, snapshot.maxPlayers - snapshot.players.length) : 0;
+});
+const canAddBot = computed(() => canManageBots.value && botSlotsRemaining.value > 0);
 const lobbyPath = computed(() => {
   const gameId = room.value?.gameId ?? String(route.params.gameId);
   const mode = room.value?.mode ?? "default";
@@ -465,6 +527,16 @@ function transferHost(targetPlayerId: string): void {
   ws?.send(JSON.stringify({ type: "transferHost", playerId: identity.playerId, targetPlayerId }));
 }
 
+function addBot(): void {
+  if (!canAddBot.value) return;
+  ws?.send(JSON.stringify({ type: "addBot", playerId: identity.playerId, difficulty: botDifficulty.value }));
+}
+
+function removeBot(botPlayerId: string): void {
+  if (!canManageBots.value) return;
+  ws?.send(JSON.stringify({ type: "removeBot", playerId: identity.playerId, botPlayerId }));
+}
+
 function sendChat(body: string, targetPlayerId?: string): void {
   ws?.send(JSON.stringify({ type: "chat", playerId: identity.playerId, targetPlayerId, body }));
 }
@@ -519,6 +591,16 @@ function playerName(playerId?: string): string {
   if (!playerId) return "the host";
   const player = room.value?.players.find((candidate) => candidate.playerId === playerId);
   return player?.displayName || player?.playerId || playerId;
+}
+
+function isBotPlayer(player: Player): boolean {
+  return player.kind === "bot" || player.botDifficulty !== undefined;
+}
+
+function botDifficultyLabel(difficulty?: BotDifficulty): string {
+  if (difficulty === "low") return "low bot";
+  if (difficulty === "high") return "high bot";
+  return "medium bot";
 }
 
 function scheduleReconnect(): void {
