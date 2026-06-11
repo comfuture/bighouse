@@ -3,95 +3,103 @@
 
 @layer base {
   :root {
-    --game-ink: #16213b;
-    --game-blue: #2878ff;
-    --game-blue-deep: #0c4fd8;
+    --game-ink: #12315e;
+    --game-blue: #178cff;
+    --game-blue-deep: #0764c4;
     --game-yellow: #ffd43b;
     --game-red: #ff4d57;
     --game-green: #25c46a;
-    --game-panel: rgba(255, 255, 255, 0.9);
-    --game-panel-strong: #ffffff;
-    --game-border: rgba(22, 33, 59, 0.18);
-    --game-shadow: 0 18px 0 rgba(22, 33, 59, 0.1), 0 24px 40px rgba(22, 33, 59, 0.14);
-    --game-inset: inset 0 2px 0 rgba(255, 255, 255, 0.88), inset 0 -7px 0 rgba(22, 33, 59, 0.08);
+    --game-panel: rgba(204, 238, 255, 0.92);
+    --game-panel-strong: #dff7ff;
+    --game-border: rgba(2, 72, 145, 0.42);
+    --game-shadow: 0 10px 0 rgba(2, 50, 102, 0.16), 0 16px 28px rgba(2, 50, 102, 0.22);
+    --game-inset:
+      inset 0 2px 0 rgba(255, 255, 255, 0.82),
+      inset 0 -5px 0 rgba(2, 72, 145, 0.18),
+      inset 0 0 0 3px rgba(255, 255, 255, 0.18);
     --game-page-background:
-      linear-gradient(90deg, rgba(40, 120, 255, 0.11) 1px, transparent 1px),
-      linear-gradient(180deg, rgba(40, 120, 255, 0.11) 1px, transparent 1px),
-      linear-gradient(135deg, #f8fbff 0%, #fff7cb 42%, #e9f5ff 100%);
+      linear-gradient(90deg, rgba(11, 118, 211, 0.16) 1px, transparent 1px),
+      linear-gradient(180deg, rgba(11, 118, 211, 0.12) 1px, transparent 1px),
+      linear-gradient(135deg, #dff7ff 0%, #8ed8ff 50%, #e6fbff 100%);
     --game-shell-background:
-      radial-gradient(circle at 18% 16%, rgba(255, 212, 59, 0.34), transparent 28rem),
-      radial-gradient(circle at 84% 14%, rgba(255, 77, 87, 0.18), transparent 22rem),
-      linear-gradient(180deg, rgba(255, 255, 255, 0.68), rgba(255, 255, 255, 0.3)),
-      #f8fbff;
+      linear-gradient(180deg, rgba(255, 255, 255, 0.4), transparent 18rem),
+      radial-gradient(circle at 18% 16%, rgba(255, 212, 59, 0.3), transparent 28rem),
+      radial-gradient(circle at 84% 14%, rgba(255, 77, 87, 0.16), transparent 22rem),
+      linear-gradient(135deg, #66c4ff, #1b8ff0 46%, #0e62bd);
     --game-hero-background:
-      linear-gradient(135deg, rgba(255, 255, 255, 0.96), rgba(255, 255, 255, 0.68)),
-      linear-gradient(120deg, rgba(40, 120, 255, 0.22), rgba(255, 212, 59, 0.28) 48%, rgba(255, 77, 87, 0.18));
+      linear-gradient(180deg, rgba(225, 249, 255, 0.92), rgba(100, 191, 255, 0.76)),
+      linear-gradient(120deg, rgba(19, 142, 255, 0.34), rgba(255, 212, 59, 0.2) 48%, rgba(255, 77, 87, 0.14));
     --game-surface-background:
-      linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(255, 255, 255, 0.76)),
+      linear-gradient(180deg, rgba(238, 253, 255, 0.9) 0%, rgba(137, 215, 255, 0.74) 42%, rgba(55, 156, 235, 0.58) 100%),
       var(--game-panel);
     --game-card-accent:
-      linear-gradient(135deg, rgba(40, 120, 255, 0.18), transparent 36%),
-      linear-gradient(315deg, rgba(255, 212, 59, 0.32), transparent 44%);
+      linear-gradient(180deg, rgba(255, 255, 255, 0.34), transparent 24%),
+      linear-gradient(135deg, rgba(255, 212, 59, 0.12), transparent 42%),
+      linear-gradient(315deg, rgba(0, 89, 191, 0.18), transparent 46%);
     --game-stage-background:
-      linear-gradient(180deg, rgba(248, 251, 255, 0.96), rgba(255, 255, 255, 0.82));
-    --ui-bg: #f8fbff;
-    --ui-bg-muted: #eef6ff;
-    --ui-bg-elevated: #ffffff;
-    --ui-bg-accented: #dcecff;
-    --ui-border: rgba(22, 33, 59, 0.24);
-    --ui-border-muted: rgba(22, 33, 59, 0.14);
-    --ui-border-accented: rgba(22, 33, 59, 0.36);
-    --ui-text: #334155;
-    --ui-text-muted: #64748b;
-    --ui-text-toned: #475569;
-    --ui-text-dimmed: #94a3b8;
+      linear-gradient(180deg, rgba(222, 247, 255, 0.94), rgba(133, 213, 255, 0.72));
+    --ui-bg: #dff7ff;
+    --ui-bg-muted: #bfeaff;
+    --ui-bg-elevated: #d8f6ff;
+    --ui-bg-accented: #8bd7ff;
+    --ui-border: rgba(2, 72, 145, 0.45);
+    --ui-border-muted: rgba(2, 72, 145, 0.24);
+    --ui-border-accented: rgba(2, 72, 145, 0.62);
+    --ui-text: #16375f;
+    --ui-text-muted: #2e5f90;
+    --ui-text-toned: #214f7e;
+    --ui-text-dimmed: #4e82b3;
     --ui-text-highlighted: var(--game-ink);
     color-scheme: light;
   }
 
   :root.dark {
-    --game-ink: #f8fbff;
-    --game-blue: #5fa2ff;
-    --game-blue-deep: #2b6cff;
-    --game-yellow: #ffe066;
+    --game-ink: #f4fbff;
+    --game-blue: #24a4ff;
+    --game-blue-deep: #0560bf;
+    --game-yellow: #ffdf55;
     --game-red: #ff6b70;
     --game-green: #36d982;
-    --game-panel: rgba(15, 23, 42, 0.86);
-    --game-panel-strong: #111827;
-    --game-border: rgba(226, 232, 240, 0.22);
-    --game-shadow: 0 18px 0 rgba(0, 0, 0, 0.24), 0 24px 44px rgba(0, 0, 0, 0.36);
-    --game-inset: inset 0 2px 0 rgba(255, 255, 255, 0.16), inset 0 -7px 0 rgba(0, 0, 0, 0.24);
+    --game-panel: rgba(10, 99, 191, 0.9);
+    --game-panel-strong: #0d78d8;
+    --game-border: rgba(143, 226, 255, 0.46);
+    --game-shadow: 0 10px 0 rgba(0, 29, 77, 0.34), 0 16px 30px rgba(0, 15, 51, 0.42);
+    --game-inset:
+      inset 0 2px 0 rgba(255, 255, 255, 0.34),
+      inset 0 -5px 0 rgba(0, 25, 82, 0.28),
+      inset 0 0 0 3px rgba(160, 235, 255, 0.12);
     --game-page-background:
-      linear-gradient(90deg, rgba(95, 162, 255, 0.14) 1px, transparent 1px),
-      linear-gradient(180deg, rgba(255, 224, 102, 0.08) 1px, transparent 1px),
-      linear-gradient(135deg, #0d1425 0%, #172033 46%, #24162a 100%);
+      linear-gradient(90deg, rgba(122, 216, 255, 0.11) 1px, transparent 1px),
+      linear-gradient(180deg, rgba(122, 216, 255, 0.08) 1px, transparent 1px),
+      linear-gradient(135deg, #034d9d 0%, #087bd2 48%, #013979 100%);
     --game-shell-background:
-      radial-gradient(circle at 18% 16%, rgba(255, 224, 102, 0.2), transparent 28rem),
-      radial-gradient(circle at 84% 14%, rgba(255, 107, 112, 0.2), transparent 22rem),
-      linear-gradient(180deg, rgba(15, 23, 42, 0.18), rgba(15, 23, 42, 0.58)),
-      #0d1425;
+      linear-gradient(180deg, rgba(166, 229, 255, 0.3), transparent 18rem),
+      radial-gradient(circle at 18% 16%, rgba(255, 224, 102, 0.16), transparent 28rem),
+      radial-gradient(circle at 84% 14%, rgba(255, 107, 112, 0.16), transparent 22rem),
+      linear-gradient(135deg, #0b88dc, #086fc6 44%, #03478f);
     --game-hero-background:
-      linear-gradient(135deg, rgba(30, 41, 59, 0.95), rgba(15, 23, 42, 0.84)),
-      linear-gradient(120deg, rgba(95, 162, 255, 0.28), rgba(255, 224, 102, 0.16) 48%, rgba(255, 107, 112, 0.2));
+      linear-gradient(180deg, rgba(68, 176, 255, 0.96), rgba(7, 92, 188, 0.9)),
+      linear-gradient(120deg, rgba(179, 240, 255, 0.18), rgba(255, 224, 102, 0.14) 48%, rgba(255, 107, 112, 0.14));
     --game-surface-background:
-      linear-gradient(180deg, rgba(30, 41, 59, 0.96), rgba(15, 23, 42, 0.84)),
+      linear-gradient(180deg, rgba(86, 190, 255, 0.92) 0%, rgba(21, 126, 220, 0.9) 45%, rgba(4, 75, 162, 0.88) 100%),
       var(--game-panel);
     --game-card-accent:
-      linear-gradient(135deg, rgba(95, 162, 255, 0.18), transparent 38%),
-      linear-gradient(315deg, rgba(255, 224, 102, 0.14), transparent 44%);
+      linear-gradient(180deg, rgba(255, 255, 255, 0.22), transparent 23%),
+      linear-gradient(135deg, rgba(122, 216, 255, 0.16), transparent 42%),
+      linear-gradient(315deg, rgba(0, 29, 77, 0.24), transparent 46%);
     --game-stage-background:
-      linear-gradient(180deg, rgba(15, 23, 42, 0.94), rgba(30, 41, 59, 0.82));
-    --ui-bg: #0d1425;
-    --ui-bg-muted: #172033;
-    --ui-bg-elevated: #1e293b;
-    --ui-bg-accented: #334155;
-    --ui-border: rgba(226, 232, 240, 0.26);
-    --ui-border-muted: rgba(226, 232, 240, 0.14);
-    --ui-border-accented: rgba(226, 232, 240, 0.38);
-    --ui-text: #e2e8f0;
-    --ui-text-muted: #cbd5e1;
-    --ui-text-toned: #dbeafe;
-    --ui-text-dimmed: #94a3b8;
+      linear-gradient(180deg, rgba(31, 139, 230, 0.92), rgba(5, 75, 162, 0.84));
+    --ui-bg: #0563b9;
+    --ui-bg-muted: #0758aa;
+    --ui-bg-elevated: #0f77d8;
+    --ui-bg-accented: #1e9dff;
+    --ui-border: rgba(143, 226, 255, 0.5);
+    --ui-border-muted: rgba(143, 226, 255, 0.26);
+    --ui-border-accented: rgba(203, 244, 255, 0.66);
+    --ui-text: #e9f8ff;
+    --ui-text-muted: #c7ecff;
+    --ui-text-toned: #e2f5ff;
+    --ui-text-dimmed: #9bd8ff;
     --ui-text-highlighted: var(--game-ink);
     color-scheme: dark;
   }
@@ -212,8 +220,23 @@
 
   .game-plastic-surface,
   .game-plastic-card {
+    position: relative;
+    overflow: hidden;
     background: var(--game-surface-background);
     box-shadow: var(--game-shadow), var(--game-inset);
+  }
+
+  .game-plastic-surface::before,
+  .game-plastic-card::before {
+    content: "";
+    position: absolute;
+    inset: 3px;
+    pointer-events: none;
+    border-radius: calc(1.5rem + 2px);
+    border: 1px solid rgba(255, 255, 255, 0.24);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.34),
+      inset 0 -1px 0 rgba(0, 35, 99, 0.16);
   }
 
   .game-plastic-card {
@@ -239,10 +262,12 @@
   }
 
   .game-plastic-button {
+    background:
+      linear-gradient(180deg, rgba(163, 226, 255, 0.86), rgba(28, 143, 246, 0.9) 54%, rgba(5, 90, 190, 0.92));
     box-shadow:
-      0 5px 0 rgba(22, 33, 59, 0.22),
-      inset 0 2px 0 rgba(255, 255, 255, 0.62),
-      inset 0 -4px 0 rgba(22, 33, 59, 0.14);
+      0 4px 0 rgba(0, 39, 102, 0.3),
+      inset 0 2px 0 rgba(255, 255, 255, 0.52),
+      inset 0 -3px 0 rgba(0, 38, 110, 0.24);
   }
 
   .game-plastic-button:active {
@@ -253,16 +278,24 @@
   }
 
   .game-plastic-badge {
+    background:
+      linear-gradient(180deg, rgba(255, 250, 182, 0.96), rgba(255, 210, 36, 0.88) 56%, rgba(205, 146, 0, 0.82));
+    color: #12315e !important;
     box-shadow:
       inset 0 1px 0 rgba(255, 255, 255, 0.72),
-      inset 0 -3px 0 rgba(22, 33, 59, 0.1);
+      inset 0 -3px 0 rgba(102, 70, 0, 0.16);
+  }
+
+  .game-plastic-badge * {
+    color: inherit !important;
   }
 
   .game-plastic-input {
-    background: rgba(255, 255, 255, 0.92);
+    background:
+      linear-gradient(180deg, rgba(218, 249, 255, 0.9), rgba(101, 195, 255, 0.72));
     box-shadow:
-      inset 0 3px 8px rgba(22, 33, 59, 0.1),
-      inset 0 1px 0 rgba(255, 255, 255, 0.9);
+      inset 0 3px 8px rgba(0, 39, 102, 0.18),
+      inset 0 1px 0 rgba(255, 255, 255, 0.58);
   }
 
   .game-thumbnail {
@@ -276,7 +309,7 @@
     border: 2px solid var(--game-border);
     background: var(--game-stage-background);
     box-shadow:
-      inset 0 3px 12px rgba(22, 33, 59, 0.1),
-      inset 0 -5px 0 rgba(40, 120, 255, 0.06);
+      inset 0 3px 12px rgba(0, 39, 102, 0.18),
+      inset 0 -4px 0 rgba(0, 52, 130, 0.12);
   }
 }
