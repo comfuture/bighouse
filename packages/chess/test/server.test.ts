@@ -63,4 +63,43 @@ describe("chess bot player", () => {
       )
     ).toEqual({ ok: true });
   });
+
+  it("does not let immediate capture bonuses override material evaluation", () => {
+    const state = baseState();
+    state.players[0] = { ...state.players[0]!, kind: "bot", botDifficulty: "high" };
+    state.stageState = {
+      fen: "4k3/8/8/1r6/Q7/8/4b3/6K1 w - - 0 1",
+      board: [],
+      currentPlayerId: "p1",
+      turn: "w",
+      clocks: { white: 900_000, black: 900_000 },
+      moveCount: 0,
+      history: [],
+      moveHistory: [],
+      check: false,
+      checkmate: false,
+      stalemate: false
+    };
+    state.playerStates.p1 = { color: "white" };
+    state.playerStates.p2 = { color: "black" };
+
+    const action = chessDefinition.selectBotAction!({
+      state,
+      now: 10,
+      player: state.players[0]!,
+      difficulty: "high"
+    });
+
+    expect(action).not.toEqual({
+      type: "move",
+      payload: { from: "a4", to: "b5" }
+    });
+    expect(action).toBeTruthy();
+    expect(
+      chessDefinition.validateAction(
+        { state: cloneState(state), now: 10 },
+        { playerId: "p1", clientActionId: "bot-material", expectedVersion: 2, type: action!.type, payload: action!.payload }
+      )
+    ).toEqual({ ok: true });
+  });
 });

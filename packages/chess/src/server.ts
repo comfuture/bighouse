@@ -426,10 +426,7 @@ function evaluateChess(chess: Chess, botColor: Color): number {
 function immediateMoveScore(move: Move): number {
   let score = 0;
   if (move.captured) {
-    score += pieceValues[move.captured] + 20;
-  }
-  if (isPromotionPiece(move.promotion)) {
-    score += pieceValues[move.promotion];
+    score += 20;
   }
   if (move.san.includes("#")) {
     score += 1_000_000;
