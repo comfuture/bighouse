@@ -105,12 +105,14 @@
   grid-template-columns: minmax(260px, 560px) minmax(136px, 200px);
   gap: 16px;
   align-items: start;
+  overflow-anchor: none;
 }
 
 .chess-board-frame {
   position: relative;
   aspect-ratio: 1;
   width: min(100%, 72vh);
+  overflow-anchor: none;
 }
 
 .chess-board {
@@ -125,6 +127,7 @@
   background: #263238;
   overflow: hidden;
   transition: border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
+  contain: layout paint;
 }
 
 .chess-board-frame.is-my-turn .chess-board {
@@ -149,6 +152,8 @@
   line-height: 0;
   overflow: hidden;
   cursor: pointer;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
 }
 
 .chess-cell:disabled {
@@ -291,12 +296,13 @@
 }
 
 .chess-history {
-  max-height: min(42vh, 420px);
+  block-size: min(42vh, 420px);
   overflow: auto;
   margin: 0;
   padding-left: 24px;
   line-height: 1.65;
   font-variant-numeric: tabular-nums;
+  overflow-anchor: none;
 }
 
 .chess-result-modal,
@@ -405,7 +411,7 @@
   }
 
   .chess-history {
-    max-height: 132px;
+    block-size: 132px;
   }
 }
 
