@@ -19,6 +19,9 @@
   inline-size: 100%;
   max-inline-size: 100%;
   overflow: auto;
+  overflow-anchor: none;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable both-edges;
 }
 
 .gomoku-board {
@@ -33,6 +36,7 @@
   border: 2px solid #6f5324;
   padding: calc(var(--point-size) / 2);
   background: #d8ad5f;
+  contain: layout paint;
 }
 
 .gomoku-result-modal {
@@ -114,6 +118,8 @@
   border: 0;
   background: transparent;
   border-radius: 9999px;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
 }
 
 .gomoku-cell:disabled {

@@ -59,7 +59,7 @@ export function createGomokuGame(container: HTMLElement, client: GomokuClient): 
   container.classList.add("gomoku-game");
   container.innerHTML = `
     <div class="gomoku-status" data-role="status"></div>
-    <div class="gomoku-stage">
+    <div class="gomoku-stage" data-role="stage">
       <div class="gomoku-board" data-role="board" aria-label="Gomoku board"></div>
       <div class="gomoku-result-modal is-hidden" data-role="result-modal" role="dialog" aria-modal="true">
         <div class="gomoku-result-panel">
@@ -75,16 +75,18 @@ export function createGomokuGame(container: HTMLElement, client: GomokuClient): 
   `;
 
   const status = container.querySelector<HTMLElement>("[data-role='status']");
+  const stage = container.querySelector<HTMLElement>("[data-role='stage']");
   const boardEl = container.querySelector<HTMLElement>("[data-role='board']");
   const modal = container.querySelector<HTMLElement>("[data-role='result-modal']");
   const resultTitle = container.querySelector<HTMLElement>("[data-role='result-title']");
   const resultMessage = container.querySelector<HTMLElement>("[data-role='result-message']");
   const playAgainButton = container.querySelector<HTMLButtonElement>("[data-role='play-again']");
   const leaveButton = container.querySelector<HTMLButtonElement>("[data-role='leave-game']");
-  if (!status || !boardEl || !modal || !resultTitle || !resultMessage || !playAgainButton || !leaveButton) {
+  if (!status || !stage || !boardEl || !modal || !resultTitle || !resultMessage || !playAgainButton || !leaveButton) {
     throw new Error("Failed to mount gomoku game");
   }
   const statusEl = status;
+  const stageElement = stage;
   const boardElement = boardEl;
   const modalElement = modal;
   const resultTitleElement = resultTitle;
@@ -116,6 +118,7 @@ export function createGomokuGame(container: HTMLElement, client: GomokuClient): 
           ? "Waiting for opponent"
           : `Waiting for ${publicView.currentPlayerId ?? "opponent"}`;
     boardElement.style.setProperty("--board-size", String(publicView.boardSize));
+    const scrollSnapshot = captureScrollSnapshot(stageElement);
     boardElement.innerHTML = "";
 
     for (let y = 0; y < publicView.boardSize; y += 1) {
@@ -131,9 +134,14 @@ export function createGomokuGame(container: HTMLElement, client: GomokuClient): 
           legal ? "is-legal" : "is-blocked",
           isLast ? "is-last" : ""
         ].join(" ");
+        cell.dataset.gameElastic = "off";
+        cell.tabIndex = -1;
         cell.disabled = !legal;
         cell.ariaLabel = value ? `${value} stone at ${x + 1}, ${y + 1}` : `empty ${x + 1}, ${y + 1}`;
-        cell.addEventListener("click", () => {
+        cell.addEventListener("mousedown", preventButtonFocus);
+        cell.addEventListener("click", (event) => {
+          event.preventDefault();
+          cell.blur();
           if (!isLegalMove(state.publicView, state.privateView, state.playerId, x, y)) {
             return;
           }
@@ -143,6 +151,7 @@ export function createGomokuGame(container: HTMLElement, client: GomokuClient): 
         boardElement.append(cell);
       }
     }
+    restoreScrollSnapshot(stageElement, scrollSnapshot);
     renderResultModal();
   }
 
@@ -186,6 +195,37 @@ export function createGomokuGame(container: HTMLElement, client: GomokuClient): 
       container.innerHTML = "";
     }
   };
+}
+
+type ScrollSnapshot = {
+  windowX: number;
+  windowY: number;
+  stageLeft: number;
+  stageTop: number;
+};
+
+function captureScrollSnapshot(stage: HTMLElement): ScrollSnapshot {
+  return {
+    windowX: window.scrollX,
+    windowY: window.scrollY,
+    stageLeft: stage.scrollLeft,
+    stageTop: stage.scrollTop
+  };
+}
+
+function restoreScrollSnapshot(stage: HTMLElement, snapshot: ScrollSnapshot): void {
+  stage.scrollLeft = snapshot.stageLeft;
+  stage.scrollTop = snapshot.stageTop;
+  window.scrollTo(snapshot.windowX, snapshot.windowY);
+  requestAnimationFrame(() => {
+    stage.scrollLeft = snapshot.stageLeft;
+    stage.scrollTop = snapshot.stageTop;
+    window.scrollTo(snapshot.windowX, snapshot.windowY);
+  });
+}
+
+function preventButtonFocus(event: MouseEvent): void {
+  event.preventDefault();
 }
 
 export function isLegalMove(

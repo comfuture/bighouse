@@ -25,6 +25,7 @@ function findClickable(target: EventTarget | null): HTMLElement | null {
   if (!(target instanceof Element)) return null;
   const clickable = target.closest<HTMLElement>(CLICKABLE_SELECTOR);
   if (!clickable || clickable.getAttribute("aria-disabled") === "true") return null;
+  if (clickable.dataset.gameElastic === "off") return null;
   if (clickable instanceof HTMLButtonElement && clickable.disabled) return null;
   return clickable;
 }

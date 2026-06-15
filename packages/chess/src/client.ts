@@ -176,6 +176,7 @@ export function createChessGame(container: HTMLElement, client: ChessClient) {
     const myTurn = active && publicView.currentPlayerId === playerId && !publicView.result;
     const colorLabel = privateView.color ?? "spectator";
     const destinations = selected && myTurn ? moveDestinationHints(publicView.fen, selected) : undefined;
+    const scrollSnapshot = captureScrollSnapshot(history);
     status.textContent = statusText(publicView, playerId, myTurn, colorLabel);
     turnNotice.classList.toggle("is-hidden", !myTurn);
     turnColor.textContent = colorLabel;
@@ -204,9 +205,16 @@ export function createChessGame(container: HTMLElement, client: ChessClient) {
         checkedKing ? "is-in-check" : "",
         publicView.lastMove?.from === square || publicView.lastMove?.to === square ? "is-last" : ""
       ].join(" ");
+      cell.dataset.gameElastic = "off";
+      cell.tabIndex = -1;
       cell.disabled = !active || Boolean(publicView.result);
       cell.ariaLabel = `${piece ? `${pieceName(piece)} on ${square}` : `empty ${square}`}${legalDestination ? ", legal move" : ""}${unsafeDestination ? ", unsafe move would leave king in check" : ""}`;
-      cell.addEventListener("click", () => handleSquareClick(square, piece));
+      cell.addEventListener("mousedown", preventButtonFocus);
+      cell.addEventListener("click", (event) => {
+        event.preventDefault();
+        cell.blur();
+        handleSquareClick(square, piece);
+      });
       if (piece) {
         const img = document.createElement("img");
         img.src = pieceUrls[`${piece.color}${piece.type}`]!;
@@ -229,6 +237,7 @@ export function createChessGame(container: HTMLElement, client: ChessClient) {
     renderMoveGhost(publicView);
     renderResult();
     renderPromotion();
+    restoreScrollSnapshot(history, scrollSnapshot);
   }
 
   function handleSquareClick(square: ChessSquare, piece: ChessPieceView | undefined): void {
@@ -470,6 +479,33 @@ function requireElement<T extends Element>(container: HTMLElement, selector: str
   const element = container.querySelector<T>(selector);
   if (!element) throw new Error(`Failed to mount chess game: ${selector}`);
   return element;
+}
+
+type ScrollSnapshot = {
+  windowX: number;
+  windowY: number;
+  historyTop: number;
+};
+
+function captureScrollSnapshot(history: HTMLElement): ScrollSnapshot {
+  return {
+    windowX: window.scrollX,
+    windowY: window.scrollY,
+    historyTop: history.scrollTop
+  };
+}
+
+function restoreScrollSnapshot(history: HTMLElement, snapshot: ScrollSnapshot): void {
+  history.scrollTop = snapshot.historyTop;
+  window.scrollTo(snapshot.windowX, snapshot.windowY);
+  requestAnimationFrame(() => {
+    history.scrollTop = snapshot.historyTop;
+    window.scrollTo(snapshot.windowX, snapshot.windowY);
+  });
+}
+
+function preventButtonFocus(event: MouseEvent): void {
+  event.preventDefault();
 }
 
 function orderedSquares(blackPerspective: boolean): ChessSquare[] {
