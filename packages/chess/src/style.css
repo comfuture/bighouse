@@ -296,7 +296,7 @@
 }
 
 .chess-history {
-  block-size: min(42vh, 420px);
+  max-block-size: min(42vh, 420px);
   overflow: auto;
   margin: 0;
   padding-left: 24px;
@@ -411,7 +411,7 @@
   }
 
   .chess-history {
-    block-size: 132px;
+    max-block-size: 132px;
   }
 }
 

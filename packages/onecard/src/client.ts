@@ -224,6 +224,8 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
   let localDrawRevealTimer: number | undefined;
   let localDrawRevealClearTimer: number | undefined;
   let directionFlashTimer: number | undefined;
+  let flightTimers: number[] = [];
+  let flightElements: HTMLElement[] = [];
 
   // Set event listeners
   deckEl?.addEventListener("click", () => {
@@ -404,10 +406,10 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
         `transform ${duration}ms cubic-bezier(0.2, 0.82, 0.2, 1)`,
         `opacity ${duration}ms ease`
       ].join(", ");
-      document.body.appendChild(flyer);
+      appendFlightElement(flyer);
 
       const delay = index * bundleStaggerMs;
-      window.setTimeout(() => {
+      setFlightTimeout(() => {
         requestAnimationFrame(() => {
           const landingOffset = count > 1 ? (index - (flyerCount - 1) / 2) * 5 : 0;
           flyer.style.left = `${endCenterX - cardWidth / 2 + landingOffset}px`;
@@ -417,9 +419,9 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
         });
       }, delay);
 
-      window.setTimeout(() => {
+      setFlightTimeout(() => {
         flyer.style.opacity = "0";
-        window.setTimeout(() => flyer.remove(), 120);
+        setFlightTimeout(() => removeFlightElement(flyer), 120);
       }, duration + delay);
     }
 
@@ -429,14 +431,14 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
       badge.textContent = `+${count}`;
       badge.style.left = `${startCenterX}px`;
       badge.style.top = `${startCenterY}px`;
-      document.body.appendChild(badge);
+      appendFlightElement(badge);
       requestAnimationFrame(() => {
         badge.style.left = `${endCenterX}px`;
         badge.style.top = `${endCenterY - cardHeight * 0.45}px`;
       });
-      window.setTimeout(() => {
+      setFlightTimeout(() => {
         badge.classList.add("is-fading");
-        window.setTimeout(() => badge.remove(), 180);
+        setFlightTimeout(() => removeFlightElement(badge), 180);
       }, duration + (flyerCount - 1) * bundleStaggerMs);
     }
 
@@ -446,14 +448,14 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
       label.textContent = options.label;
       label.style.left = `${startCenterX}px`;
       label.style.top = `${startCenterY - cardHeight * 0.7}px`;
-      document.body.appendChild(label);
+      appendFlightElement(label);
       requestAnimationFrame(() => {
         label.style.left = `${endCenterX}px`;
         label.style.top = `${endCenterY - cardHeight * 0.75}px`;
       });
-      window.setTimeout(() => {
+      setFlightTimeout(() => {
         label.classList.add("is-fading");
-        window.setTimeout(() => label.remove(), 160);
+        setFlightTimeout(() => removeFlightElement(label), 160);
       }, duration + 160);
     }
 
@@ -496,6 +498,35 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
         }
       }, drawRevealHoldMs);
     }, Math.max(180, delayMs - 80));
+  }
+
+  function setFlightTimeout(callback: () => void, delayMs: number): void {
+    const timer = window.setTimeout(() => {
+      flightTimers = flightTimers.filter((candidate) => candidate !== timer);
+      callback();
+    }, delayMs);
+    flightTimers.push(timer);
+  }
+
+  function appendFlightElement(element: HTMLElement): void {
+    flightElements.push(element);
+    document.body.appendChild(element);
+  }
+
+  function removeFlightElement(element: HTMLElement): void {
+    element.remove();
+    flightElements = flightElements.filter((candidate) => candidate !== element);
+  }
+
+  function clearFlightAnimations(): void {
+    for (const timer of flightTimers) {
+      window.clearTimeout(timer);
+    }
+    flightTimers = [];
+    for (const element of flightElements) {
+      element.remove();
+    }
+    flightElements = [];
   }
 
   function findDrawFromSnapshot(oldPub: OneCardPublicView, newPub: OneCardPublicView): { playerId: string; count: number; wasAttack: boolean } | null {
@@ -888,8 +919,8 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
           });
         }
         if (draw.playerId === input.playerId) {
-          const oldHandLength = state.privateView.hand.length;
-          const newCardCount = Math.max(0, input.privateView.hand.length - oldHandLength);
+          const oldHandLength = state.privateView?.hand?.length ?? 0;
+          const newCardCount = Math.max(0, (input.privateView?.hand?.length ?? 0) - oldHandLength);
           if (newCardCount > 0) {
             scheduleLocalDrawReveal(oldHandLength, newCardCount, input.version, animationMs || singleFlightMs);
           }
@@ -917,6 +948,7 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
       if (localDrawRevealTimer) window.clearTimeout(localDrawRevealTimer);
       if (localDrawRevealClearTimer) window.clearTimeout(localDrawRevealClearTimer);
       if (directionFlashTimer) window.clearTimeout(directionFlashTimer);
+      clearFlightAnimations();
       container.classList.remove("onecard-game");
       container.innerHTML = "";
     }

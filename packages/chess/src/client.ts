@@ -206,7 +206,6 @@ export function createChessGame(container: HTMLElement, client: ChessClient) {
         publicView.lastMove?.from === square || publicView.lastMove?.to === square ? "is-last" : ""
       ].join(" ");
       cell.dataset.gameElastic = "off";
-      cell.tabIndex = -1;
       cell.disabled = !active || Boolean(publicView.result);
       cell.ariaLabel = `${piece ? `${pieceName(piece)} on ${square}` : `empty ${square}`}${legalDestination ? ", legal move" : ""}${unsafeDestination ? ", unsafe move would leave king in check" : ""}`;
       cell.addEventListener("mousedown", preventButtonFocus);
