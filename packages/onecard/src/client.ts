@@ -379,9 +379,9 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
     const duration = count > 1 ? bundleFlightMs : singleFlightMs;
     const cardWidth = Math.min(Math.max(startRect.width || 76, 58), 92);
     const cardHeight = cardWidth * 1.38;
-    const startCenterX = startRect.left + startRect.width / 2;
+    const startCenterX = clampViewportX(startRect.left + startRect.width / 2, cardWidth / 2);
     const startCenterY = startRect.top + startRect.height / 2;
-    const endCenterX = endRect.left + endRect.width / 2;
+    const endCenterX = clampViewportX(endRect.left + endRect.width / 2, cardWidth / 2);
     const endCenterY = endRect.top + endRect.height / 2;
 
     for (let index = 0; index < flyerCount; index += 1) {
@@ -392,7 +392,7 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
         flyer.classList.add("is-bundle-flight");
       }
       flyer.style.position = "fixed";
-      flyer.style.left = `${startCenterX - cardWidth / 2 + offset}px`;
+      flyer.style.left = `${clampViewportLeft(startCenterX - cardWidth / 2 + offset, cardWidth)}px`;
       flyer.style.top = `${startCenterY - cardHeight / 2 - Math.abs(offset) * 0.4}px`;
       flyer.style.width = `${cardWidth}px`;
       flyer.style.height = `${cardHeight}px`;
@@ -412,7 +412,7 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
       setFlightTimeout(() => {
         requestAnimationFrame(() => {
           const landingOffset = count > 1 ? (index - (flyerCount - 1) / 2) * 5 : 0;
-          flyer.style.left = `${endCenterX - cardWidth / 2 + landingOffset}px`;
+          flyer.style.left = `${clampViewportLeft(endCenterX - cardWidth / 2 + landingOffset, cardWidth)}px`;
           flyer.style.top = `${endCenterY - cardHeight / 2 - Math.abs(landingOffset) * 0.35}px`;
           flyer.style.transform = `rotate(${landingOffset * -1.4 + (Math.random() * 8 - 4)}deg) scale(${cardStr ? 0.98 : 0.88})`;
           flyer.style.opacity = "1";
@@ -429,11 +429,11 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
       const badge = document.createElement("div");
       badge.className = "card-flight-badge";
       badge.textContent = `+${count}`;
-      badge.style.left = `${startCenterX}px`;
+      badge.style.left = `${clampViewportX(startCenterX, 24)}px`;
       badge.style.top = `${startCenterY}px`;
       appendFlightElement(badge);
       requestAnimationFrame(() => {
-        badge.style.left = `${endCenterX}px`;
+        badge.style.left = `${clampViewportX(endCenterX, 24)}px`;
         badge.style.top = `${endCenterY - cardHeight * 0.45}px`;
       });
       setFlightTimeout(() => {
@@ -446,11 +446,11 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
       const label = document.createElement("div");
       label.className = `card-flight-label is-${options.tone ?? "draw"}`;
       label.textContent = options.label;
-      label.style.left = `${startCenterX}px`;
+      label.style.left = `${clampViewportX(startCenterX, 110)}px`;
       label.style.top = `${startCenterY - cardHeight * 0.7}px`;
       appendFlightElement(label);
       requestAnimationFrame(() => {
-        label.style.left = `${endCenterX}px`;
+        label.style.left = `${clampViewportX(endCenterX, 110)}px`;
         label.style.top = `${endCenterY - cardHeight * 0.75}px`;
       });
       setFlightTimeout(() => {
@@ -460,6 +460,20 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
     }
 
     return duration + (flyerCount - 1) * bundleStaggerMs;
+  }
+
+  function clampViewportX(centerX: number, halfWidth: number): number {
+    const inset = Math.max(8, halfWidth);
+    const viewportWidth = window.innerWidth || document.documentElement.clientWidth || centerX;
+    if (viewportWidth <= inset * 2) return viewportWidth / 2;
+    return Math.min(Math.max(centerX, inset), viewportWidth - inset);
+  }
+
+  function clampViewportLeft(left: number, width: number): number {
+    const viewportWidth = window.innerWidth || document.documentElement.clientWidth || left + width;
+    const minLeft = 8;
+    const maxLeft = Math.max(minLeft, viewportWidth - width - 8);
+    return Math.min(Math.max(left, minLeft), maxLeft);
   }
 
   function setDrawNotice(playerId: string, count: number, wasAttack: boolean, version: number): void {
@@ -700,6 +714,8 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
               client.sendAction({ type: "playCard", payload: { card } });
             }
           });
+        } else if (isMyTurn) {
+          cardEl.classList.add("is-unplayable");
         }
         playerHandEl.appendChild(cardEl);
       });
