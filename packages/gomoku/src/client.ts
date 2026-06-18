@@ -135,7 +135,6 @@ export function createGomokuGame(container: HTMLElement, client: GomokuClient): 
           isLast ? "is-last" : ""
         ].join(" ");
         cell.dataset.gameElastic = "off";
-        cell.tabIndex = -1;
         cell.disabled = !legal;
         cell.ariaLabel = value ? `${value} stone at ${x + 1}, ${y + 1}` : `empty ${x + 1}, ${y + 1}`;
         cell.addEventListener("mousedown", preventButtonFocus);
