@@ -507,6 +507,10 @@
 }
 
 .player-hand {
+  --card-state-motion: 0.25s cubic-bezier(0.19, 1, 0.22, 1);
+  --playable-card-lift: -18px;
+  --playable-card-hover-lift: -26px;
+  --unplayable-card-drop: 10px;
   display: flex;
   justify-content: center;
   justify-content: safe center;
@@ -516,12 +520,12 @@
   overflow-y: visible;
   overscroll-behavior-inline: contain;
   scrollbar-gutter: stable;
-  padding: 24px 10px 12px;
+  padding: 34px 10px 18px;
   box-sizing: border-box;
   width: 100%;
   max-width: 100%;
   min-width: 0;
-  min-height: 160px;
+  min-height: 180px;
 }
 
 /* Premium Card Design System */
@@ -539,7 +543,9 @@
   justify-content: space-between;
   box-sizing: border-box;
   padding: 6px;
-  transition: all 0.25s cubic-bezier(0.19, 1, 0.22, 1);
+  transition:
+    border-color 0.25s cubic-bezier(0.19, 1, 0.22, 1),
+    box-shadow 0.25s cubic-bezier(0.19, 1, 0.22, 1);
   transform-origin: bottom center;
 }
 
@@ -643,10 +649,11 @@
 }
 
 /* Hover effects & highlighting */
-.onecard-card.is-playable {
+.player-hand .onecard-card.is-playable {
   cursor: pointer;
   border: 2px solid #10b981;
-  transform: translateY(-8px);
+  transform: translateY(var(--playable-card-lift));
+  transition: transform var(--card-state-motion);
   box-shadow:
     0 6px 14px rgba(0, 0, 0, 0.42),
     0 0 0 3px rgba(16, 185, 129, 0.2),
@@ -654,12 +661,13 @@
   animation: playable-glow 1.8s ease-in-out infinite;
 }
 
-.onecard-card.is-unplayable {
-  opacity: 0.7;
+.player-hand .onecard-card.is-unplayable {
+  transform: translateY(var(--unplayable-card-drop));
+  transition: transform var(--card-state-motion);
 }
 
-.onecard-card.is-playable:hover {
-  transform: translateY(-16px) scale(1.04);
+.player-hand .onecard-card.is-playable:hover {
+  transform: translateY(var(--playable-card-hover-lift)) scale(1.04);
   box-shadow: 0 8px 16px rgba(0, 0, 0, 0.5), 0 0 12px rgba(16, 185, 129, 0.6);
   border: 2px solid #10b981;
 }
@@ -677,6 +685,11 @@
     0 8px 18px rgba(0, 0, 0, 0.46),
     0 0 0 3px rgba(96, 165, 250, 0.18),
     0 0 20px rgba(96, 165, 250, 0.42);
+}
+
+.player-hand .onecard-card.is-draw-pending,
+.player-hand .onecard-card.is-newly-drawn {
+  transition: none;
 }
 
 /* Card Fly Flyer */
@@ -1017,11 +1030,14 @@
   }
 
   .player-hand {
+    --playable-card-lift: -15px;
+    --playable-card-hover-lift: -20px;
+    --unplayable-card-drop: 8px;
     justify-content: center;
     justify-content: safe center;
     gap: 0;
-    min-height: 122px;
-    padding: 18px 18px 8px;
+    min-height: 140px;
+    padding: 30px 18px 14px;
     overflow-x: auto;
     overflow-y: visible;
     scrollbar-width: thin;
@@ -1038,7 +1054,7 @@
   }
 
   .player-hand .onecard-card.is-playable:hover {
-    transform: translateY(-8px) scale(1.02);
+    transform: translateY(var(--playable-card-hover-lift)) scale(1.02);
   }
 
   .card-center {
