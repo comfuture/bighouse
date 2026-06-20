@@ -508,9 +508,9 @@
 
 .player-hand {
   --card-state-motion: 0.25s cubic-bezier(0.19, 1, 0.22, 1);
-  --playable-card-lift: -18px;
-  --playable-card-hover-lift: -26px;
-  --unplayable-card-drop: 10px;
+  --playable-card-lift: -12px;
+  --playable-card-hover-lift: -16px;
+  --unplayable-card-drop: 4px;
   display: flex;
   justify-content: center;
   justify-content: safe center;
@@ -520,7 +520,7 @@
   overflow-y: visible;
   overscroll-behavior-inline: contain;
   scrollbar-gutter: stable;
-  padding: 34px 10px 18px;
+  padding: 38px 10px 18px;
   box-sizing: border-box;
   width: 100%;
   max-width: 100%;
@@ -543,6 +543,7 @@
   justify-content: space-between;
   box-sizing: border-box;
   padding: 6px;
+  overflow: hidden;
   transition:
     border-color 0.25s cubic-bezier(0.19, 1, 0.22, 1),
     box-shadow 0.25s cubic-bezier(0.19, 1, 0.22, 1);
@@ -556,12 +557,19 @@
 .card-inner {
   width: 100%;
   height: 100%;
+  position: relative;
   display: flex;
   flex-direction: column;
   justify-content: space-between;
 }
 
+.onecard-card:not(.is-joker) .card-inner {
+  align-items: center;
+  justify-content: center;
+}
+
 .card-corner {
+  position: absolute;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -569,27 +577,32 @@
 }
 
 .card-corner.top-left {
-  align-self: flex-start;
+  top: 0;
+  left: 0;
 }
 
 .card-corner.bottom-right {
-  align-self: flex-end;
+  right: 0;
+  bottom: 0;
   transform: rotate(180deg);
+  transform-origin: center center;
 }
 
 .card-rank {
   font-size: 14px;
   font-weight: 800;
+  line-height: 1;
 }
 
 .card-symbol {
   font-size: 11px;
+  line-height: 1;
 }
 
 .card-center {
   font-size: 26px;
   align-self: center;
-  margin-top: 2px;
+  margin-top: 0;
 }
 
 /* Special Joker Design */
@@ -1030,14 +1043,14 @@
   }
 
   .player-hand {
-    --playable-card-lift: -15px;
-    --playable-card-hover-lift: -20px;
-    --unplayable-card-drop: 8px;
+    --playable-card-lift: -10px;
+    --playable-card-hover-lift: -14px;
+    --unplayable-card-drop: 3px;
     justify-content: center;
     justify-content: safe center;
     gap: 0;
     min-height: 140px;
-    padding: 30px 18px 14px;
+    padding: 34px 18px 14px;
     overflow-x: auto;
     overflow-y: visible;
     scrollbar-width: thin;
