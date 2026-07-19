@@ -41,7 +41,7 @@ describe("@bighouse/ui", () => {
     expect((listener.mock.calls[0]?.[0] as CustomEvent).composed).toBe(true);
   });
 
-  it("separates lobby utilities and batches bot players through the settings panel", () => {
+  it("separates lobby utilities and batches bot players through the settings panel", async () => {
     registerBighouseUi();
     const controls = document.createElement("bighouse-room-controls") as BighouseRoomControlsElement;
     document.body.append(controls);
@@ -84,6 +84,24 @@ describe("@bighouse/ui", () => {
     expect(listener).toHaveBeenCalledOnce();
     expect((listener.mock.calls[0]?.[0] as CustomEvent).detail).toEqual({ difficulty: "high", count: 2 });
     expect((listener.mock.calls[0]?.[0] as CustomEvent).composed).toBe(true);
+    await Promise.resolve();
+    expect(root.activeElement).toBe(root.querySelector(".bh-start-game"));
+  });
+
+  it("returns focus to the bot launcher when the settings panel is dismissed", async () => {
+    registerBighouseUi();
+    const controls = document.createElement("bighouse-room-controls") as BighouseRoomControlsElement;
+    document.body.append(controls);
+    controls.snapshot = snapshot();
+    const root = controls.shadowRoot!;
+
+    root.querySelector<HTMLButtonElement>(".bh-add-bots-trigger")!.click();
+    await Promise.resolve();
+    expect(root.activeElement).toBe(root.querySelector("[aria-label='Bot difficulty']"));
+
+    root.querySelector<HTMLButtonElement>("[aria-label='Close bot settings']")!.click();
+    await Promise.resolve();
+    expect(root.activeElement).toBe(root.querySelector(".bh-add-bots-trigger"));
   });
 
   it("hides the bot count selector when exactly one player slot remains", () => {
@@ -151,6 +169,30 @@ describe("@bighouse/ui", () => {
     chat.open = true;
     await Promise.resolve();
     expect(chat.shadowRoot!.querySelector<HTMLInputElement>("input")?.value).toBe("unfinished");
+  });
+
+  it("returns focus to the floating chat trigger after closing", async () => {
+    registerBighouseUi();
+    const chat = document.createElement("bighouse-game-chat") as BighouseGameChatElement;
+    document.body.append(chat);
+    const root = chat.shadowRoot!;
+    const trigger = root.querySelector<HTMLButtonElement>(".bh-chat-trigger")!;
+    trigger.focus();
+    trigger.click();
+    await Promise.resolve();
+    expect(root.activeElement).toBe(root.querySelector("input"));
+
+    root.querySelector<HTMLButtonElement>("[aria-label='Close chat']")!.click();
+    await Promise.resolve();
+    expect(root.activeElement).toBe(root.querySelector(".bh-chat-trigger"));
+  });
+
+  it("keeps both legacy and batched addBot call signatures", () => {
+    const actions = actionSpies();
+    actions.addBot("high", "Custom Bot");
+    actions.addBot("medium", 2, "Team Bot");
+    expect(actions.addBot).toHaveBeenNthCalledWith(1, "high", "Custom Bot");
+    expect(actions.addBot).toHaveBeenNthCalledWith(2, "medium", 2, "Team Bot");
   });
 
   it("keeps chess moves out of chat and does not refocus during game-only updates", async () => {

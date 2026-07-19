@@ -9,16 +9,32 @@
       <div class="space-y-4">
         <UAlert
           v-if="error"
+          id="identity-error"
+          role="alert"
           color="error"
           variant="subtle"
           icon="i-lucide-circle-alert"
           :title="error"
         />
         <UFormField v-if="!editingNickname" label="Player ID" required>
-          <UInput v-model="draft.playerId" placeholder="player-1234abcd" autofocus @keydown.enter.prevent="save" />
+          <UInput
+            v-model="draft.playerId"
+            placeholder="player-1234abcd"
+            autofocus
+            :aria-invalid="Boolean(error)"
+            :aria-describedby="error ? 'identity-error' : undefined"
+            @keydown.enter.prevent="save"
+          />
         </UFormField>
         <UFormField :label="editingNickname ? 'Nickname' : 'Display name'" :required="editingNickname">
-          <UInput v-model="draft.displayName" placeholder="Alice" :autofocus="editingNickname" @keydown.enter.prevent="save" />
+          <UInput
+            v-model="draft.displayName"
+            placeholder="Alice"
+            :autofocus="editingNickname"
+            :aria-invalid="editingNickname && Boolean(error)"
+            :aria-describedby="editingNickname && error ? 'identity-error' : undefined"
+            @keydown.enter.prevent="save"
+          />
         </UFormField>
         <UFormField v-if="!editingNickname" label="Lobby mode">
           <UInput v-model="draft.mode" placeholder="default" @keydown.enter.prevent="save" />
