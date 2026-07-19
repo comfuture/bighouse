@@ -99,8 +99,10 @@ export function createChessGame(container: HTMLElement, client: ChessClient) {
   let pendingMoveAnimationKey: string | undefined;
   let checkWasActive = false;
   let checkOverlayTimer: ReturnType<typeof setTimeout> | undefined;
-  container.classList.add("chess-game");
-  container.innerHTML = `
+  const surface = document.createElement("div");
+  surface.className = "game-contained-surface chess-game";
+  container.replaceChildren(surface);
+  surface.innerHTML = `
     <div class="chess-header">
       <div class="chess-status" data-role="status"></div>
       <div class="chess-turn-notice is-hidden" data-role="turn-notice" aria-live="polite">
@@ -135,20 +137,20 @@ export function createChessGame(container: HTMLElement, client: ChessClient) {
     </div>
   `;
 
-  const status = requireElement<HTMLElement>(container, "[data-role='status']");
-  const turnNotice = requireElement<HTMLElement>(container, "[data-role='turn-notice']");
-  const turnColor = requireElement<HTMLElement>(container, "[data-role='turn-color']");
-  const boardFrame = requireElement<HTMLElement>(container, "[data-role='board-frame']");
-  const checkOverlay = requireElement<HTMLElement>(container, "[data-role='check-overlay']");
-  const board = requireElement<HTMLElement>(container, "[data-role='board']");
-  const moveGhostLayer = requireElement<HTMLElement>(container, "[data-role='move-ghost-layer']");
-  const history = requireElement<HTMLOListElement>(container, "[data-role='history']");
-  const whiteClock = requireElement<HTMLElement>(container, "[data-role='clock-white']");
-  const blackClock = requireElement<HTMLElement>(container, "[data-role='clock-black']");
-  const whiteClockTime = requireElement<HTMLElement>(container, "[data-role='clock-white-time']");
-  const blackClockTime = requireElement<HTMLElement>(container, "[data-role='clock-black-time']");
-  const promotionModal = requireElement<HTMLElement>(container, "[data-role='promotion-modal']");
-  const promotionPanel = requireElement<HTMLElement>(container, "[data-role='promotion-panel']");
+  const status = requireElement<HTMLElement>(surface, "[data-role='status']");
+  const turnNotice = requireElement<HTMLElement>(surface, "[data-role='turn-notice']");
+  const turnColor = requireElement<HTMLElement>(surface, "[data-role='turn-color']");
+  const boardFrame = requireElement<HTMLElement>(surface, "[data-role='board-frame']");
+  const checkOverlay = requireElement<HTMLElement>(surface, "[data-role='check-overlay']");
+  const board = requireElement<HTMLElement>(surface, "[data-role='board']");
+  const moveGhostLayer = requireElement<HTMLElement>(surface, "[data-role='move-ghost-layer']");
+  const history = requireElement<HTMLOListElement>(surface, "[data-role='history']");
+  const whiteClock = requireElement<HTMLElement>(surface, "[data-role='clock-white']");
+  const blackClock = requireElement<HTMLElement>(surface, "[data-role='clock-black']");
+  const whiteClockTime = requireElement<HTMLElement>(surface, "[data-role='clock-white-time']");
+  const blackClockTime = requireElement<HTMLElement>(surface, "[data-role='clock-black-time']");
+  const promotionModal = requireElement<HTMLElement>(surface, "[data-role='promotion-modal']");
+  const promotionPanel = requireElement<HTMLElement>(surface, "[data-role='promotion-panel']");
   let moveGhostCleanupTimer: ReturnType<typeof setTimeout> | undefined;
   const clockTimer = setInterval(() => {
     renderClocks();
@@ -408,8 +410,7 @@ export function createChessGame(container: HTMLElement, client: ChessClient) {
         clearTimeout(checkOverlayTimer);
       }
       clearMoveGhost();
-      container.classList.remove("chess-game");
-      container.innerHTML = "";
+      surface.remove();
     }
   };
 }

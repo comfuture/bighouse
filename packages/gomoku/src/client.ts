@@ -62,17 +62,19 @@ export function mountGame(container: HTMLElement, context: GameClientContext): M
 
 export function createGomokuGame(container: HTMLElement, client: GomokuClient): GomokuGameInstance {
   const state = { ...client };
-  container.classList.add("gomoku-game");
-  container.innerHTML = `
+  const surface = document.createElement("div");
+  surface.className = "game-contained-surface gomoku-game";
+  container.replaceChildren(surface);
+  surface.innerHTML = `
     <div class="gomoku-status" data-role="status"></div>
     <div class="gomoku-stage" data-role="stage">
       <div class="gomoku-board" data-role="board" aria-label="Gomoku board"></div>
     </div>
   `;
 
-  const status = container.querySelector<HTMLElement>("[data-role='status']");
-  const stage = container.querySelector<HTMLElement>("[data-role='stage']");
-  const boardEl = container.querySelector<HTMLElement>("[data-role='board']");
+  const status = surface.querySelector<HTMLElement>("[data-role='status']");
+  const stage = surface.querySelector<HTMLElement>("[data-role='stage']");
+  const boardEl = surface.querySelector<HTMLElement>("[data-role='board']");
   if (!status || !stage || !boardEl) {
     throw new Error("Failed to mount gomoku game");
   }
@@ -142,8 +144,7 @@ export function createGomokuGame(container: HTMLElement, client: GomokuClient): 
       render();
     },
     destroy() {
-      container.classList.remove("gomoku-game");
-      container.innerHTML = "";
+      surface.remove();
     }
   };
 }

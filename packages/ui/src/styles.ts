@@ -10,6 +10,11 @@ export const baseStyles = `
     --bh-ui-red: #ef4f46;
     --bh-ui-green: #29c977;
     --bh-ui-shadow: 0 7px 0 rgba(3, 16, 47, .92), 0 16px 32px rgba(2, 10, 34, .3);
+    --bh-room-backdrop-image:
+      radial-gradient(circle at 18% 18%, rgba(255,255,255,.18) 0 3px, transparent 4px),
+      radial-gradient(circle at 82% 72%, rgba(255,255,255,.11) 0 6px, transparent 7px),
+      linear-gradient(145deg, var(--bh-ui-blue) 0%, var(--bh-ui-violet) 100%);
+    --bh-room-backdrop-size: 44px 44px, 72px 72px, auto;
     box-sizing: border-box;
     color: var(--bh-ui-paper);
     font-family: var(--bh-ui-font);
@@ -57,11 +62,8 @@ export const roomStyles = `
     place-items: center;
     overflow: auto;
     padding: max(24px, env(safe-area-inset-top)) max(18px, env(safe-area-inset-right)) max(24px, env(safe-area-inset-bottom)) max(18px, env(safe-area-inset-left));
-    background:
-      radial-gradient(circle at 18% 18%, rgba(255,255,255,.18) 0 3px, transparent 4px),
-      radial-gradient(circle at 82% 72%, rgba(255,255,255,.11) 0 6px, transparent 7px),
-      linear-gradient(145deg, var(--bh-ui-blue) 0%, var(--bh-ui-violet) 100%);
-    background-size: 44px 44px, 72px 72px, auto;
+    background-image: var(--bh-room-backdrop-image);
+    background-size: var(--bh-room-backdrop-size);
     pointer-events: auto;
   }
   .bh-room.is-rail {

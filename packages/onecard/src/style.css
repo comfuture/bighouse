@@ -5,6 +5,7 @@
   max-width: 100%;
   min-width: 0;
   min-height: 680px;
+  max-height: 100svh;
   position: relative;
   box-sizing: border-box;
   background: radial-gradient(circle, #144f28 0%, #082613 100%);
@@ -927,9 +928,10 @@
   to { transform: translate(-50%, -50%) rotate(0deg); }
 }
 
-@media (max-width: 700px) {
+@media (max-width: 700px), (max-height: 680px) {
   .onecard-game {
-    min-height: 560px;
+    height: 100svh;
+    min-height: 0;
     border-radius: 0;
   }
 
@@ -1077,7 +1079,7 @@
 
 @media (max-width: 380px) {
   .onecard-game {
-    min-height: 540px;
+    min-height: 0;
   }
 
   .onecard-table {
@@ -1098,4 +1100,19 @@
   .player-hand .onecard-card + .onecard-card {
     margin-left: calc(var(--hand-card-overlap, -24px) - 1px);
   }
+}
+
+@media (max-height: 460px) {
+  .onecard-table { grid-template-rows:auto auto minmax(92px,1fr) auto; gap:4px; padding:4px 6px; }
+  .opponent-profile { padding:4px 6px; }
+  .opponent-avatar, .opponent-hand-preview { display:none; }
+  .onecard-center-stage { gap:12px; }
+  .onecard-deck, .onecard-discard { width:52px; height:74px; }
+  .direction-indicator { width:110px; height:110px; }
+  .onecard-status-bar { min-height:24px; padding:3px 8px; font-size:11px; }
+  .turn-pill { min-height:18px; font-size:9px; }
+  .player-hand-container { gap:2px; padding:2px; }
+  .hand-header { min-height:26px; }
+  .player-hand { min-height:92px; padding:22px 14px 8px; }
+  .onecard-card { width:52px; height:74px; }
 }
