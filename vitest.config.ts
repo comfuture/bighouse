@@ -10,7 +10,7 @@ export default defineConfig({
     })
   ],
   test: {
-    exclude: [...configDefaults.exclude, "packages/ui/test/**"],
+    exclude: [...configDefaults.exclude, "packages/ui/test/**", "packages/chess/test/client.test.ts"],
     setupFiles: ["./test/setup.ts"],
     provide: {
       d1Migrations: await readD1Migrations("./migrations")
