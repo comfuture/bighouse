@@ -137,7 +137,8 @@ export const roomStyles = `
   .bh-confirm-bots { width:100%; }
   .bh-interruption { margin: 0 0 16px; border:2px solid var(--bh-ui-ink); border-radius:16px; padding:12px; color:#5f3900; background:#fff1b8; box-shadow:0 4px 0 var(--bh-ui-ink); font-weight:800; }
   .bh-rail-actions { display:flex; gap:7px; }
-  .bh-room.is-rail .bh-room-leave { min-height:44px; padding:8px 12px; font-size:12px; }
+  .bh-room.is-rail .bh-room-leave { width:50px; min-height:50px; padding:10px; font-size:12px; }
+  .bh-room.is-rail .bh-command-label { position:absolute; width:1px; height:1px; overflow:hidden; clip-path:inset(50%); white-space:nowrap; }
   @media (max-width: 620px) {
     .bh-room { place-items:start center; }
     .bh-room-panel { border-radius:22px; padding:16px; }
