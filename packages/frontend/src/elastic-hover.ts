@@ -21,13 +21,17 @@ function shouldSkipElasticMotion(): boolean {
   return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 }
 
-function findClickable(target: EventTarget | null): HTMLElement | null {
-  if (!(target instanceof Element)) return null;
-  const clickable = target.closest<HTMLElement>(CLICKABLE_SELECTOR);
+function findClickable(event: Event): HTMLElement | null {
+  const clickable = event
+    .composedPath()
+    .find((target): target is HTMLElement => target instanceof HTMLElement && target.matches(CLICKABLE_SELECTOR));
   if (!clickable || clickable.getAttribute("aria-disabled") === "true") return null;
-  if (clickable.dataset.gameElastic === "off") return null;
   if (clickable instanceof HTMLButtonElement && clickable.disabled) return null;
   return clickable;
+}
+
+function allowsElasticMotion(clickable: HTMLElement): boolean {
+  return clickable.dataset.gameElastic !== "off";
 }
 
 function isStillInside(clickable: HTMLElement, relatedTarget: EventTarget | null): boolean {
@@ -136,8 +140,8 @@ export function installElasticPointerFeedback(): void {
 
   document.addEventListener("pointerover", async (event) => {
     if (event.pointerType !== "mouse" || !isFineHoverPointer()) return;
-    const clickable = findClickable(event.target);
-    if (!clickable || isStillInside(clickable, event.relatedTarget)) return;
+    const clickable = findClickable(event);
+    if (!clickable || !allowsElasticMotion(clickable) || isStillInside(clickable, event.relatedTarget)) return;
     restartElasticAnimation(clickable, "game-elastic-enter");
     const context = getRunningAudioContext();
     if (context) playHoverSound(context);
@@ -145,14 +149,13 @@ export function installElasticPointerFeedback(): void {
 
   document.addEventListener("pointerout", (event) => {
     if (event.pointerType !== "mouse" || !isFineHoverPointer()) return;
-    const clickable = findClickable(event.target);
-    if (!clickable || isStillInside(clickable, event.relatedTarget)) return;
+    const clickable = findClickable(event);
+    if (!clickable || !allowsElasticMotion(clickable) || isStillInside(clickable, event.relatedTarget)) return;
     restartElasticAnimation(clickable, "game-elastic-leave");
   });
 
   document.addEventListener("pointerdown", async (event) => {
-    if (event.pointerType !== "mouse" || !isFineHoverPointer()) return;
-    const clickable = findClickable(event.target);
+    const clickable = findClickable(event);
     if (!clickable) return;
     const context = await unlockAudio();
     if (context) playClickSound(context);
@@ -160,7 +163,7 @@ export function installElasticPointerFeedback(): void {
 
   document.addEventListener("keydown", async (event) => {
     if (!isFineHoverPointer() || (event.key !== "Enter" && event.key !== " ")) return;
-    const clickable = findClickable(event.target);
+    const clickable = findClickable(event);
     if (!clickable || !shouldPlayKeyboardClick(event, clickable)) return;
     const context = await unlockAudio();
     if (context) playClickSound(context);

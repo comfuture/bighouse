@@ -57,6 +57,7 @@
           v-for="game in displayGames"
           :key="game.gameId"
           class="portal-game-card"
+          data-game-elastic="off"
           :aria-label="`Enter ${game.displayName} lobby`"
           :to="lobbyPath(game.gameId)"
         >
