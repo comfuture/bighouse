@@ -68,6 +68,10 @@ export class BighouseRoomControlsElement extends HTMLElement {
     return this.#snapshot;
   }
 
+  get chatTrigger(): HTMLButtonElement | null {
+    return this.#root.querySelector<HTMLButtonElement>("[data-room-action='chat']");
+  }
+
   connectedCallback(): void {
     document.addEventListener("fullscreenchange", this.#onFullscreenSettled);
     document.addEventListener("fullscreenerror", this.#onFullscreenSettled, true);
@@ -117,6 +121,11 @@ export class BighouseRoomControlsElement extends HTMLElement {
       iconTextButton("log-out", "Leave", "bh-room-leave", () => emit(this, "bighouse-leave-room")),
       iconButton("share-2", "Share room", "bh-room-share", () => emit(this, "bighouse-share-room"))
     );
+    if (isWaiting) {
+      const chat = iconButton("message-circle", "Open chat", "bh-room-chat", () => emit(this, "bighouse-chat-open"));
+      chat.dataset.roomAction = "chat";
+      navigation.append(chat);
+    }
     if (interruption) {
       const fullscreenActive = document.fullscreenElement !== null;
       const fullscreen = iconButton(
@@ -365,6 +374,7 @@ export class BighouseGameControlsElement extends HTMLElement {
   }
 
   focusChatTrigger(): void {
+    if (this.hidden) return;
     const trigger = this.chatTrigger;
     if (trigger && !trigger.hidden) trigger.focus();
   }
@@ -382,9 +392,13 @@ export class BighouseGameControlsElement extends HTMLElement {
   }
 
   private render(): void {
+    this.toggleAttribute("hidden", !this.#visible);
+    if (!this.#visible) {
+      this.#root.replaceChildren();
+      return;
+    }
     const activeElement = shadowActiveElement(this.#root);
     const focusedControl = activeElement instanceof HTMLElement ? activeElement.dataset.gameControl : undefined;
-    this.toggleAttribute("hidden", !this.#visible);
     this.#root.innerHTML = `${commonStyles}<style>${gameControlsStyles}</style>`;
     const controls = element("section", "bh-game-controls");
     controls.setAttribute("part", "game-controls");

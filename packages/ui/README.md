@@ -43,6 +43,7 @@ Room-control events are bubbling and composed:
 - `bighouse-transfer-host`
 - `bighouse-share-room`
 - `bighouse-leave-room`
+- `bighouse-chat-open` (while the room is waiting)
 - `bighouse-toggle-fullscreen` (on an interrupted game so fullscreen remains dismissible)
 
 Game controls emit `bighouse-leave-room`, `bighouse-chat-open`, and `bighouse-toggle-fullscreen`. Chat emits `bighouse-chat-send` and `bighouse-chat-open-change`. Result dialogs emit `bighouse-rematch` and `bighouse-leave-finished`.
