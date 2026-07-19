@@ -169,7 +169,7 @@ export const chatStyles = `
     backdrop-filter:blur(12px);
     pointer-events:auto;
   }
-  .bh-chat.is-open .bh-chat-log { bottom:88px; }
+  .bh-chat.is-open .bh-chat-log { bottom:88px; overflow-y:auto; pointer-events:auto; }
   .bh-chat.is-open .bh-chat-composer { display:grid; }
   .bh-chat-input { min-width:0; min-height:46px; border:0; border-radius:12px; padding:10px 12px; color:#fff; background:rgba(255,255,255,.12); font-weight:800; }
   .bh-chat-input::placeholder { color:#cbd5e1; }

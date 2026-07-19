@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { GameClientActions, GameClientSnapshot } from "@bighouse/game-sdk/client";
+import type { GameClientActions, GameClientChatMessage, GameClientSnapshot } from "@bighouse/game-sdk/client";
 import {
   BighouseGameChatElement,
+  BighouseGameModalElement,
+  BighouseGameResultDialogElement,
   BighouseRoomControlsElement,
   createGameUi,
   registerBighouseUi
@@ -73,6 +75,42 @@ describe("@bighouse/ui", () => {
     expect(chat.open).toBe(false);
   });
 
+  it("counts unread messages after capped histories and makes the open log scrollable", () => {
+    registerBighouseUi();
+    const chat = document.createElement("bighouse-game-chat") as BighouseGameChatElement;
+    document.body.append(chat);
+    chat.messages = chatHistory(200, 0);
+    expect(chat.shadowRoot!.querySelector(".bh-chat-trigger")?.getAttribute("aria-label")).toBe("Open chat");
+    chat.messages = chatHistory(200, 1);
+    expect(chat.shadowRoot!.querySelector(".bh-chat-trigger")?.getAttribute("aria-label")).toBe("Open chat, 1 unread");
+    chat.messages = chatHistory(200, 2);
+    expect(chat.shadowRoot!.querySelector(".bh-chat-trigger")?.getAttribute("aria-label")).toBe("Open chat, 2 unread");
+    chat.open = true;
+    expect(chat.shadowRoot!.textContent).toContain("overflow-y:auto; pointer-events:auto");
+  });
+
+  it("preserves focused actions when open dialogs update", async () => {
+    registerBighouseUi();
+    const modal = document.createElement("bighouse-game-modal") as BighouseGameModalElement;
+    const result = document.createElement("bighouse-game-result-dialog") as BighouseGameResultDialogElement;
+    document.body.append(modal, result);
+
+    modal.state = { open: true, title: "Paused", message: "Waiting" };
+    await Promise.resolve();
+    expect((modal.shadowRoot!.activeElement as HTMLElement | null)?.dataset.dialogAction).toBe("primary");
+    modal.shadowRoot!.querySelector<HTMLButtonElement>("[data-dialog-action='secondary']")!.focus();
+    modal.state = { open: true, title: "Paused", message: "Still waiting" };
+    await Promise.resolve();
+    expect((modal.shadowRoot!.activeElement as HTMLElement | null)?.dataset.dialogAction).toBe("secondary");
+
+    result.state = { open: true, title: "Victory", message: "Round complete" };
+    await Promise.resolve();
+    expect((result.shadowRoot!.activeElement as HTMLElement | null)?.dataset.dialogAction).toBe("primary");
+    result.state = { open: true, title: "Victory", message: "Rematch requested" };
+    await Promise.resolve();
+    expect((result.shadowRoot!.activeElement as HTMLElement | null)?.dataset.dialogAction).toBe("primary");
+  });
+
   it("wires the controller and cleans up mounted elements", () => {
     const host = document.createElement("div");
     document.body.append(host);
@@ -130,4 +168,16 @@ function actionSpies() {
     leaveFinishedGame: vi.fn()
   };
   return actions as typeof actions & GameClientActions;
+}
+
+function chatHistory(count: number, offset: number): GameClientChatMessage[] {
+  return Array.from({ length: count }, (_, index) => ({
+    id: `message_${index + offset}`,
+    scope: "room",
+    visibility: "public",
+    playerId: "guest",
+    displayName: "Guest",
+    body: `Message ${index + offset}`,
+    createdAt: index + offset
+  }));
 }

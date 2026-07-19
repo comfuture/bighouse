@@ -8,11 +8,19 @@
           <UIcon name="i-lucide-gamepad-2" />
         </span>
         <h1>{{ room ? `Preparing ${displayGameId}` : "Joining the table" }}</h1>
-        <p>{{ identityReady ? "Syncing the latest room state…" : "Finish player setup to enter this room." }}</p>
+        <p>{{ error || (identityReady ? "Syncing the latest room state…" : "Finish player setup to enter this room.") }}</p>
+        <UButton
+          v-if="error"
+          label="Back to lobby"
+          icon="i-lucide-arrow-left"
+          color="primary"
+          size="xl"
+          @click="goToLobby"
+        />
       </div>
     </div>
 
-    <div v-if="error" class="room-connection-banner" role="alert">{{ error }}</div>
+    <div v-if="error && gameReady" class="room-connection-banner" role="alert">{{ error }}</div>
 
     <UModal
       v-model:open="leaveConfirmOpen"

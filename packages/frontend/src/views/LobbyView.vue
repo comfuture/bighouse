@@ -186,6 +186,7 @@ async function createRoom(): Promise<void> {
     await router.push(`/game/${encodeURIComponent(gameId.value)}/${encodeURIComponent(result.roomId)}`);
   } catch (cause) {
     error.value = cause instanceof Error ? cause.message : "Failed to create room";
+  } finally {
     creatingRoom.value = false;
   }
 }
@@ -202,6 +203,7 @@ async function joinExisting(roomId: string): Promise<void> {
     await router.push(`/game/${encodeURIComponent(gameId.value)}/${encodeURIComponent(roomId)}`);
   } catch (cause) {
     error.value = cause instanceof Error ? cause.message : "Failed to join room";
+  } finally {
     joiningRoomId.value = "";
   }
 }

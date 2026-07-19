@@ -191,8 +191,11 @@ export class BighouseGameChatElement extends HTMLElement {
   #open = false;
   #unread = 0;
   #connectedOnce = false;
+  #messagesInitialized = false;
   #composing = false;
   #draft = "";
+  #logScrollTop = 0;
+  #followLatest = true;
   #previousFocus: HTMLElement | null = null;
   readonly #onDocumentKeyDown = (event: KeyboardEvent): void => {
     if (event.key === "Escape" && this.#open) {
@@ -209,12 +212,13 @@ export class BighouseGameChatElement extends HTMLElement {
   };
 
   set messages(value: readonly GameClientChatMessage[]) {
-    const shouldRestoreInputFocus = this.#root.activeElement instanceof HTMLInputElement;
-    const next = [...value].slice(-80);
-    if (this.#connectedOnce && !this.#open && next.length > this.#messages.length) {
-      this.#unread += next.length - this.#messages.length;
+    const shouldRestoreInputFocus = shadowActiveElement(this.#root) instanceof HTMLInputElement;
+    const incoming = [...value];
+    if (this.#connectedOnce && this.#messagesInitialized && !this.#open) {
+      this.#unread += countAppendedMessages(this.#messages, incoming);
     }
-    this.#messages = next;
+    this.#messages = incoming.slice(-80);
+    this.#messagesInitialized = true;
     this.render();
     if (shouldRestoreInputFocus) queueMicrotask(() => this.focusInput());
   }
@@ -262,6 +266,10 @@ export class BighouseGameChatElement extends HTMLElement {
     const log = element("div", "bh-chat-log");
     log.setAttribute("role", "log");
     log.setAttribute("aria-live", "polite");
+    log.addEventListener("scroll", () => {
+      this.#logScrollTop = log.scrollTop;
+      this.#followLatest = log.scrollHeight - log.clientHeight - log.scrollTop < 24;
+    });
     this.#messages.forEach((message) => {
       const line = element("div", `bh-message${message.visibility === "private" ? " is-private" : ""}`);
       const author = textElement("strong", "", message.displayName || message.playerId);
@@ -319,6 +327,9 @@ export class BighouseGameChatElement extends HTMLElement {
     trigger.addEventListener("click", () => { this.open = true; });
     chat.append(trigger);
     this.#root.append(chat);
+    queueMicrotask(() => {
+      log.scrollTop = this.#followLatest ? log.scrollHeight : this.#logScrollTop;
+    });
   }
 
   private focusInput(): void {
@@ -333,10 +344,13 @@ export class BighouseGameModalElement extends HTMLElement {
 
   set state(value: GameModalState) {
     const wasOpen = this.#state.open;
+    const focusedRole = focusedDialogAction(this.#root);
     this.#state = value;
     if (!wasOpen && value.open) this.#previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     this.render();
-    if (!wasOpen && value.open) queueMicrotask(() => this.#root.querySelector<HTMLButtonElement>("button")?.focus());
+    if (value.open && (!wasOpen || focusedRole)) {
+      queueMicrotask(() => focusDialogAction(this.#root, focusedRole ?? "primary"));
+    }
     if (wasOpen && !value.open) this.#previousFocus?.focus();
   }
 
@@ -358,6 +372,8 @@ export class BighouseGameModalElement extends HTMLElement {
     const actions = element("div", "bh-modal-actions");
     const secondary = commandButton(state.secondaryLabel ?? "Cancel", "is-quiet", () => emit(this, "bighouse-modal-secondary"));
     const primary = commandButton(state.primaryLabel ?? "Continue", "is-primary", () => emit(this, "bighouse-modal-primary"));
+    secondary.dataset.dialogAction = "secondary";
+    primary.dataset.dialogAction = "primary";
     primary.disabled = state.primaryDisabled === true;
     actions.append(secondary, primary);
     panel.append(actions);
@@ -379,10 +395,13 @@ export class BighouseGameResultDialogElement extends HTMLElement {
 
   set state(value: GameResultDialogState) {
     const wasOpen = this.#state.open;
+    const focusedRole = focusedDialogAction(this.#root);
     this.#state = value;
     if (!wasOpen && value.open) this.#previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     this.render();
-    if (!wasOpen && value.open) queueMicrotask(() => this.#root.querySelector<HTMLButtonElement>("button")?.focus());
+    if (value.open && (!wasOpen || focusedRole)) {
+      queueMicrotask(() => focusDialogAction(this.#root, focusedRole ?? "primary"));
+    }
     if (wasOpen && !value.open) this.#previousFocus?.focus();
   }
 
@@ -405,6 +424,8 @@ export class BighouseGameResultDialogElement extends HTMLElement {
     const actions = element("div", "bh-modal-actions");
     const leave = commandButton(state.secondaryLabel ?? "Leave", "is-quiet", () => emit(this, "bighouse-leave-finished"));
     const rematch = commandButton(state.primaryLabel ?? "Play again", "is-primary", () => emit(this, "bighouse-rematch"));
+    leave.dataset.dialogAction = "secondary";
+    rematch.dataset.dialogAction = "primary";
     rematch.disabled = state.primaryDisabled === true;
     actions.append(leave, rematch);
     panel.append(actions);
@@ -446,4 +467,41 @@ function eventHasEditableTarget(event: Event): boolean {
   return event.composedPath().some((target) => target instanceof Element && Boolean(
     target.closest("input, textarea, select, button, [contenteditable=''], [contenteditable='true']")
   ));
+}
+
+function countAppendedMessages(previous: readonly GameClientChatMessage[], incoming: readonly GameClientChatMessage[]): number {
+  const lastPrevious = previous.at(-1);
+  if (!lastPrevious) return incoming.length;
+  const lastIdentity = messageIdentity(lastPrevious);
+  for (let index = incoming.length - 1; index >= 0; index -= 1) {
+    const message = incoming[index];
+    if (message && messageIdentity(message) === lastIdentity) return incoming.length - index - 1;
+  }
+  return incoming.length;
+}
+
+function messageIdentity(message: GameClientChatMessage): string {
+  return message.id
+    ? `id:${message.id}`
+    : [message.createdAt, message.playerId, message.targetPlayerId ?? "", message.visibility, message.body].join("\u0000");
+}
+
+type DialogAction = "primary" | "secondary";
+
+function focusedDialogAction(root: ShadowRoot): DialogAction | undefined {
+  const focused = shadowActiveElement(root);
+  const role = focused instanceof HTMLButtonElement ? focused.dataset.dialogAction : undefined;
+  return role === "primary" || role === "secondary" ? role : undefined;
+}
+
+function focusDialogAction(root: ShadowRoot, role: DialogAction): void {
+  root.querySelector<HTMLButtonElement>(`[data-dialog-action='${role}']`)?.focus();
+}
+
+function shadowActiveElement(root: ShadowRoot): Element | null {
+  try {
+    return root.activeElement;
+  } catch {
+    return null;
+  }
 }
