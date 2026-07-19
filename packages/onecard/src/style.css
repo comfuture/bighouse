@@ -1281,3 +1281,10 @@
     height: 78px;
   }
 }
+
+@media (max-width: 720px), (hover: none), (pointer: coarse) {
+  .player-hand {
+    padding-inline-end: calc(var(--bh-game-ui-inline-end, max(10px, env(safe-area-inset-right))) + var(--bh-game-ui-control-size, 48px) + 10px);
+    scroll-padding-inline-end: calc(var(--bh-game-ui-inline-end, max(10px, env(safe-area-inset-right))) + var(--bh-game-ui-control-size, 48px) + 10px);
+  }
+}
