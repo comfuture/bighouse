@@ -187,12 +187,12 @@ describe("@bighouse/ui", () => {
     expect(root.activeElement).toBe(root.querySelector(".bh-chat-trigger"));
   });
 
-  it("keeps both legacy and batched addBot call signatures", () => {
+  it("keeps the legacy addBot signature alongside the optional batched API", () => {
     const actions = actionSpies();
     actions.addBot("high", "Custom Bot");
-    actions.addBot("medium", 2, "Team Bot");
-    expect(actions.addBot).toHaveBeenNthCalledWith(1, "high", "Custom Bot");
-    expect(actions.addBot).toHaveBeenNthCalledWith(2, "medium", 2, "Team Bot");
+    actions.addBots?.("medium", 2, "Team Bot");
+    expect(actions.addBot).toHaveBeenCalledWith("high", "Custom Bot");
+    expect(actions.addBots).toHaveBeenCalledWith("medium", 2, "Team Bot");
   });
 
   it("keeps chess moves out of chat and does not refocus during game-only updates", async () => {
@@ -360,10 +360,30 @@ describe("@bighouse/ui", () => {
       bubbles: true,
       composed: true
     }));
-    expect(actions.addBot).toHaveBeenCalledWith("high", 2);
+    expect(actions.addBots).toHaveBeenCalledWith("high", 2);
     ui.setResult({ open: true, title: "Victory", message: "Round complete" });
     ui.destroy();
     expect(host.children).toHaveLength(0);
+  });
+
+  it("limits legacy addBot consumers to single additions without partial batches", () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const { addBots: _addBots, ...actions } = actionSpies();
+    const ui = createGameUi(host, snapshot(), actions);
+    const controls = host.querySelector("bighouse-room-controls") as BighouseRoomControlsElement;
+    controls.shadowRoot!.querySelector<HTMLButtonElement>(".bh-add-bots-trigger")!.click();
+    expect(controls.shadowRoot!.querySelector("[aria-label='Bot player count']")).toBeNull();
+
+    controls.dispatchEvent(new CustomEvent("bighouse-add-bot", {
+      detail: { difficulty: "low", count: 2 },
+      bubbles: true,
+      composed: true
+    }));
+
+    expect(actions.addBot).toHaveBeenCalledOnce();
+    expect(actions.addBot).toHaveBeenCalledWith("low");
+    ui.destroy();
   });
 });
 
@@ -400,6 +420,7 @@ function actionSpies() {
     startGame: vi.fn(),
     restartGame: vi.fn(),
     addBot: vi.fn(),
+    addBots: vi.fn(),
     removeBot: vi.fn(),
     transferHost: vi.fn(),
     sendChat: vi.fn(),

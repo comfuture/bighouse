@@ -32,6 +32,7 @@ export function createGameUi(container: HTMLElement, snapshot: GameClientSnapsho
   if (computedPosition === "static") container.style.position = "relative";
 
   const roomControls = document.createElement("bighouse-room-controls") as BighouseRoomControlsElement;
+  roomControls.batchBotSupported = Boolean(actions.addBots);
   const chat = document.createElement("bighouse-game-chat") as BighouseGameChatElement;
   const result = document.createElement("bighouse-game-result-dialog") as BighouseGameResultDialogElement;
   const notice = document.createElement("bighouse-game-modal") as BighouseGameModalElement;
@@ -46,7 +47,11 @@ export function createGameUi(container: HTMLElement, snapshot: GameClientSnapsho
   listen(roomControls, "bighouse-start-game", (() => actions.startGame()) as EventListener);
   listen(roomControls, "bighouse-restart-game", (() => actions.restartGame()) as EventListener);
   listen(roomControls, "bighouse-add-bot", ((event: CustomEvent<{ difficulty: "low" | "medium" | "high"; count: number }>) => {
-    actions.addBot(event.detail.difficulty, event.detail.count);
+    if (actions.addBots) {
+      actions.addBots(event.detail.difficulty, event.detail.count);
+      return;
+    }
+    actions.addBot(event.detail.difficulty);
   }) as EventListener);
   listen(roomControls, "bighouse-remove-bot", ((event: CustomEvent<{ botPlayerId: string }>) => actions.removeBot(event.detail.botPlayerId)) as EventListener);
   listen(roomControls, "bighouse-transfer-host", ((event: CustomEvent<{ targetPlayerId: string }>) => actions.transferHost(event.detail.targetPlayerId)) as EventListener);
