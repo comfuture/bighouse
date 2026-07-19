@@ -5,10 +5,11 @@
         <span class="portal-brand-mark" aria-hidden="true">BH</span>
         <span>Bighouse</span>
       </RouterLink>
-      <div class="portal-player-chip" aria-label="Current player">
+      <button class="portal-player-chip" type="button" aria-label="Change nickname" title="Change nickname" @click="openNicknameEditor">
         <UIcon name="i-lucide-user-round" aria-hidden="true" />
         <span>{{ identity.displayName || identity.playerId || "New player" }}</span>
-      </div>
+        <UIcon class="portal-player-edit-icon" name="i-lucide-pencil" aria-hidden="true" />
+      </button>
     </nav>
 
     <section class="game-home-hero" aria-labelledby="game-home-title">
@@ -106,7 +107,7 @@
 import { computed, onMounted, ref } from "vue";
 import { listGames } from "../api";
 import { getClientGameMetadata } from "../game-plugins";
-import { identity } from "../identity";
+import { identity, openNicknameEditor } from "../identity";
 import type { Game } from "../types";
 import heroImageUrl from "../assets/generated/game-portal-hero.png";
 

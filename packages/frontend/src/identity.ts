@@ -7,6 +7,15 @@ export const identity = reactive({
 });
 
 export const identityReady = ref(identity.playerId.trim().length > 0);
+export const nicknameEditorOpen = ref(false);
+
+export function openNicknameEditor(): void {
+  if (identityReady.value) nicknameEditorOpen.value = true;
+}
+
+export function closeNicknameEditor(): void {
+  nicknameEditorOpen.value = false;
+}
 
 export function persistIdentity(): void {
   identity.playerId = identity.playerId.trim();

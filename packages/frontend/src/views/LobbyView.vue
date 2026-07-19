@@ -2,10 +2,11 @@
   <div class="portal-page">
     <nav class="portal-topbar" aria-label="Lobby navigation">
       <UButton label="All games" icon="i-lucide-arrow-left" color="neutral" variant="ghost" @click="goToGames" />
-      <div class="portal-player-chip" aria-label="Current player">
+      <button class="portal-player-chip" type="button" aria-label="Change nickname" title="Change nickname" @click="openNicknameEditor">
         <UIcon name="i-lucide-user-round" aria-hidden="true" />
         <span>{{ identity.displayName || identity.playerId }}</span>
-      </div>
+        <UIcon class="portal-player-edit-icon" name="i-lucide-pencil" aria-hidden="true" />
+      </button>
     </nav>
 
     <section class="game-lobby-hero" :style="lobbyHeroStyle" aria-labelledby="lobby-title">
@@ -110,7 +111,7 @@ import { useRoute, useRouter } from "vue-router";
 import ChatPanel from "../components/ChatPanel.vue";
 import { createLobbyRoom, joinRoom, listLobbyRooms, lobbyWebsocketUrl } from "../api";
 import { getClientGameMetadata } from "../game-plugins";
-import { identity, identityReady } from "../identity";
+import { identity, identityReady, openNicknameEditor } from "../identity";
 import { parseServerMessage } from "../socket";
 import type { ChatMessage, RoomIndex } from "../types";
 
@@ -151,6 +152,10 @@ onMounted(() => {
 
 watch(identityReady, (ready) => {
   if (ready) connectLobby();
+});
+
+watch(() => identity.displayName, () => {
+  if (identityReady.value) connectLobby();
 });
 
 onBeforeUnmount(() => {

@@ -1,8 +1,8 @@
 <template>
   <UModal
     v-model:open="open"
-    title="Player information"
-    description="Set the identity used to join lobbies and rooms."
+    :title="editingNickname ? 'Change nickname' : 'Player information'"
+    :description="editingNickname ? 'Choose the name other players will see.' : 'Set the identity used to join lobbies and rooms.'"
     :ui="{ close: 'hidden' }"
   >
     <template #body>
@@ -14,13 +14,13 @@
           icon="i-lucide-circle-alert"
           :title="error"
         />
-        <UFormField label="Player ID" required>
+        <UFormField v-if="!editingNickname" label="Player ID" required>
           <UInput v-model="draft.playerId" placeholder="player-1234abcd" autofocus @keydown.enter.prevent="save" />
         </UFormField>
-        <UFormField label="Display name">
-          <UInput v-model="draft.displayName" placeholder="Alice" @keydown.enter.prevent="save" />
+        <UFormField :label="editingNickname ? 'Nickname' : 'Display name'" :required="editingNickname">
+          <UInput v-model="draft.displayName" placeholder="Alice" :autofocus="editingNickname" @keydown.enter.prevent="save" />
         </UFormField>
-        <UFormField label="Lobby mode">
+        <UFormField v-if="!editingNickname" label="Lobby mode">
           <UInput v-model="draft.mode" placeholder="default" @keydown.enter.prevent="save" />
         </UFormField>
       </div>
@@ -28,8 +28,9 @@
 
     <template #footer>
       <div class="flex justify-end gap-2">
-        <UButton color="neutral" variant="subtle" label="Generate ID" icon="i-lucide-refresh-cw" @click="generatePlayerId" />
-        <UButton label="Continue" icon="i-lucide-arrow-right" @click="save" />
+        <UButton v-if="editingNickname" color="neutral" variant="subtle" label="Cancel" @click="closeNicknameEditor" />
+        <UButton v-else color="neutral" variant="subtle" label="Generate ID" icon="i-lucide-refresh-cw" @click="generatePlayerId" />
+        <UButton :label="editingNickname ? 'Save nickname' : 'Continue'" :icon="editingNickname ? 'i-lucide-check' : 'i-lucide-arrow-right'" @click="save" />
       </div>
     </template>
   </UModal>
@@ -37,7 +38,7 @@
 
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from "vue";
-import { identity, identityReady, persistIdentity } from "../identity";
+import { closeNicknameEditor, identity, identityReady, nicknameEditorOpen, persistIdentity } from "../identity";
 
 const draft = reactive({
   playerId: identity.playerId || generatedPlayerId(),
@@ -45,21 +46,23 @@ const draft = reactive({
   mode: identity.mode
 });
 const error = ref("");
+const editingNickname = computed(() => identityReady.value && nicknameEditorOpen.value);
 
 const open = computed({
-  get: () => !identityReady.value,
-  set: () => {
-    if (!identityReady.value) return;
+  get: () => !identityReady.value || nicknameEditorOpen.value,
+  set: (value: boolean) => {
+    if (!value && identityReady.value) closeNicknameEditor();
   }
 });
 
 watch(
-  () => identityReady.value,
-  (ready) => {
-    if (!ready) {
+  open,
+  (isOpen) => {
+    if (isOpen) {
       draft.playerId = identity.playerId || generatedPlayerId();
       draft.displayName = identity.displayName;
       draft.mode = identity.mode;
+      error.value = "";
     }
   }
 );
@@ -73,6 +76,18 @@ function generatePlayerId(): void {
 }
 
 function save(): void {
+  if (editingNickname.value) {
+    const displayName = draft.displayName.trim();
+    if (!displayName) {
+      error.value = "Nickname is required";
+      return;
+    }
+    identity.displayName = displayName;
+    persistIdentity();
+    closeNicknameEditor();
+    error.value = "";
+    return;
+  }
   const playerId = draft.playerId.trim();
   if (!playerId) {
     error.value = "Player ID is required";
