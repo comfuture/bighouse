@@ -1061,12 +1061,14 @@ input.game-plastic-input::placeholder {
   }
 
   .game-room-host {
+    box-sizing: border-box;
     display: grid;
     width: 100%;
     min-width: 0;
     height: 100svh;
     min-height: 0;
     place-items: center;
+    padding-right: 84px;
     overflow: hidden;
     isolation: isolate;
   }
