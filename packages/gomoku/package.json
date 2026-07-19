@@ -16,7 +16,8 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@bighouse/game-sdk": "workspace:*"
+    "@bighouse/game-sdk": "workspace:*",
+    "@bighouse/ui": "workspace:*"
   },
   "devDependencies": {
     "typescript": "^5.9.3"

@@ -1,6 +1,7 @@
 import "./style.css";
-import type { GameClientContext, MountedGameClient } from "@bighouse/game-sdk/client";
+import type { GameClientContext, GameClientSnapshot, MountedGameClient } from "@bighouse/game-sdk/client";
 import { triggerPlacementFeedback, triggerSelectionFeedback } from "@bighouse/game-sdk/feedback";
+import { createGameUi, type GameResultDialogState } from "@bighouse/ui";
 import { moveDestinationHints, type ChessSquare } from "./move-hints";
 import bB from "./assets/pieces/bB.svg?url";
 import bK from "./assets/pieces/bK.svg?url";
@@ -75,11 +76,16 @@ const pieceUrls: Record<string, string> = {
 
 export function mountGame(container: HTMLElement, context: GameClientContext): MountedGameClient {
   const instance = createChessGame(container, toChessClient(context));
+  const gameUi = createGameUi(container, context, context);
+  gameUi.setResult(chessResultDialogState(context));
   return {
     update(nextContext) {
       instance.update(toChessClient({ ...context, ...nextContext }));
+      gameUi.update(nextContext);
+      gameUi.setResult(chessResultDialogState(nextContext));
     },
     destroy() {
+      gameUi.destroy();
       instance.destroy();
     }
   };
@@ -123,16 +129,6 @@ export function createChessGame(container: HTMLElement, client: ChessClient) {
         <div class="chess-side-title">Moves</div>
         <ol class="chess-history" data-role="history"></ol>
       </aside>
-      <div class="chess-result-modal is-hidden" data-role="result-modal" role="dialog" aria-modal="true">
-        <div class="chess-result-panel">
-          <div class="chess-result-title" data-role="result-title"></div>
-          <div class="chess-result-message" data-role="result-message"></div>
-          <div class="chess-result-actions">
-            <button type="button" class="chess-result-button is-primary" data-role="play-again">Play Again</button>
-            <button type="button" class="chess-result-button" data-role="leave-game">Leave</button>
-          </div>
-        </div>
-      </div>
       <div class="chess-promotion-modal is-hidden" data-role="promotion-modal" role="dialog" aria-modal="true">
         <div class="chess-promotion-panel" data-role="promotion-panel"></div>
       </div>
@@ -151,24 +147,12 @@ export function createChessGame(container: HTMLElement, client: ChessClient) {
   const blackClock = requireElement<HTMLElement>(container, "[data-role='clock-black']");
   const whiteClockTime = requireElement<HTMLElement>(container, "[data-role='clock-white-time']");
   const blackClockTime = requireElement<HTMLElement>(container, "[data-role='clock-black-time']");
-  const modal = requireElement<HTMLElement>(container, "[data-role='result-modal']");
-  const resultTitle = requireElement<HTMLElement>(container, "[data-role='result-title']");
-  const resultMessage = requireElement<HTMLElement>(container, "[data-role='result-message']");
-  const playAgainButton = requireElement<HTMLButtonElement>(container, "[data-role='play-again']");
-  const leaveButton = requireElement<HTMLButtonElement>(container, "[data-role='leave-game']");
   const promotionModal = requireElement<HTMLElement>(container, "[data-role='promotion-modal']");
   const promotionPanel = requireElement<HTMLElement>(container, "[data-role='promotion-panel']");
   let moveGhostCleanupTimer: ReturnType<typeof setTimeout> | undefined;
   const clockTimer = setInterval(() => {
     renderClocks();
   }, 1_000);
-
-  playAgainButton.addEventListener("click", () => {
-    client.requestPlayAgain();
-  });
-  leaveButton.addEventListener("click", () => {
-    client.leaveFinishedGame();
-  });
 
   function render(): void {
     const { publicView, privateView, playerId } = state;
@@ -234,7 +218,6 @@ export function createChessGame(container: HTMLElement, client: ChessClient) {
       history.append(item);
     }
     renderMoveGhost(publicView);
-    renderResult();
     renderPromotion();
     restoreScrollSnapshot(history, scrollSnapshot);
   }
@@ -307,32 +290,6 @@ export function createChessGame(container: HTMLElement, client: ChessClient) {
       promotionPanel.append(button);
     }
     promotionModal.classList.remove("is-hidden");
-  }
-
-  function renderResult(): void {
-    const { publicView, privateView, playerId } = state;
-    if (!publicView.result || publicView.roomPhase !== "finished") {
-      modal.classList.add("is-hidden");
-      playAgainButton.style.display = "";
-      return;
-    }
-    const isSpectator = !privateView.color;
-    if (publicView.winnerPlayerId) {
-      if (isSpectator) {
-        resultTitle.textContent = "Game Over";
-        resultMessage.textContent = resultMessageFor(publicView.result);
-      } else {
-        resultTitle.textContent = publicView.winnerPlayerId === playerId ? resultTitleFor(publicView.result) : "Game Over";
-        resultMessage.textContent = publicView.winnerPlayerId === playerId
-          ? winningMessageFor(publicView.result)
-          : losingMessageFor(publicView.result);
-      }
-    } else {
-      resultTitle.textContent = "Draw";
-      resultMessage.textContent = publicView.drawReason ? `Draw by ${publicView.drawReason.replaceAll("_", " ")}.` : "The game ended in a draw.";
-    }
-    playAgainButton.style.display = isSpectator ? "none" : "";
-    modal.classList.remove("is-hidden");
   }
 
   function updateCheckOverlay(check: boolean): void {
@@ -471,6 +428,44 @@ function toChessClient(context: GameClientContext): ChessClient {
     sendAction: context.sendAction,
     requestPlayAgain: context.requestPlayAgain,
     leaveFinishedGame: context.leaveFinishedGame
+  };
+}
+
+function chessResultDialogState(context: GameClientSnapshot): GameResultDialogState {
+  const publicView = context.publicView as ChessPublicView;
+  if (context.phase !== "finished" || !publicView.result) {
+    return { open: false, title: "", message: "" };
+  }
+  const privateView = context.privateView as ChessPrivateView;
+  const isSpectator = !privateView.color;
+  const iRequested = context.rematchRequests.includes(context.playerId);
+  let title: string;
+  let message: string;
+  if (publicView.winnerPlayerId) {
+    title = isSpectator
+      ? "Game Over"
+      : publicView.winnerPlayerId === context.playerId
+        ? resultTitleFor(publicView.result)
+        : "Game Over";
+    message = isSpectator
+      ? resultMessageFor(publicView.result)
+      : publicView.winnerPlayerId === context.playerId
+        ? winningMessageFor(publicView.result)
+        : losingMessageFor(publicView.result);
+  } else {
+    title = "Draw";
+    message = publicView.drawReason
+      ? `Draw by ${publicView.drawReason.replaceAll("_", " ")}.`
+      : "The game ended in a draw.";
+  }
+  return {
+    open: true,
+    kicker: "Match complete",
+    title,
+    message: iRequested ? `${message} Waiting for your opponent to accept the rematch.` : message,
+    primaryLabel: isSpectator ? "Spectating" : iRequested ? "Waiting..." : "Play again",
+    secondaryLabel: "Leave",
+    primaryDisabled: isSpectator || iRequested
   };
 }
 

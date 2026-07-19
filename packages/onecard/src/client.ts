@@ -1,6 +1,7 @@
 import "./style.css";
 import type { GameClientContext, MountedGameClient } from "@bighouse/game-sdk/client";
 import { triggerCardSubmitFeedback, triggerSelectionFeedback } from "@bighouse/game-sdk/feedback";
+import { createGameUi, type MountedGameUi } from "@bighouse/ui";
 export { gameMetadata } from "./client-metadata";
 
 export type OneCardPublicView = {
@@ -35,6 +36,7 @@ export type OneCardClient = {
 
 export type OneCardGameInstance = {
   update(input: Omit<OneCardClient, "sendAction" | "requestPlayAgain" | "leaveFinishedGame">): void;
+  attachGameUi(ui: MountedGameUi): void;
   destroy(): void;
 };
 
@@ -75,11 +77,15 @@ const drawRevealHoldMs = 1_200;
 
 export function mountGame(container: HTMLElement, context: GameClientContext): MountedGameClient {
   const instance = createOneCardGame(container, toOneCardClient(context));
+  const gameUi = createGameUi(container, context, context);
+  instance.attachGameUi(gameUi);
   return {
     update(nextContext) {
+      gameUi.update(nextContext);
       instance.update(toOneCardClient({ ...context, ...nextContext }));
     },
     destroy() {
+      gameUi.destroy();
       instance.destroy();
     }
   };
@@ -174,17 +180,6 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
         </div>
       </div>
 
-      <!-- Result / Match Closed Modal -->
-      <div class="onecard-result-modal is-hidden" data-role="result-modal">
-        <div class="onecard-result-panel">
-          <h2 data-role="result-title">Victory!</h2>
-          <p data-role="result-message"></p>
-          <div class="result-actions">
-            <button type="button" class="result-btn is-primary" data-role="play-again">Play Again</button>
-            <button type="button" class="result-btn" data-role="leave-game">Leave</button>
-          </div>
-        </div>
-      </div>
     </div>
   `;
 
@@ -207,11 +202,7 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
   const drawButton = container.querySelector<HTMLButtonElement>("[data-role='draw-button']");
   const passButton = container.querySelector<HTMLButtonElement>("[data-role='pass-button']");
   const suitPicker = container.querySelector<HTMLElement>("[data-role='suit-picker']");
-  const resultModal = container.querySelector<HTMLElement>("[data-role='result-modal']");
-  const resultTitle = container.querySelector<HTMLElement>("[data-role='result-title']");
-  const resultMessage = container.querySelector<HTMLElement>("[data-role='result-message']");
-  const playAgainBtn = container.querySelector<HTMLButtonElement>("[data-role='play-again']");
-  const leaveBtn = container.querySelector<HTMLButtonElement>("[data-role='leave-game']");
+  let gameUi: MountedGameUi | undefined;
 
   // State variable for pending suit choice
   let pendingJokerCard: string | null = null;
@@ -261,16 +252,6 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
       pendingJokerCard = null;
       pendingJokerSourceEl = null;
     }
-  });
-
-  playAgainBtn?.addEventListener("click", () => {
-    if (!state.publicView.rematchRequests?.includes(state.playerId)) {
-      client.requestPlayAgain();
-    }
-  });
-
-  leaveBtn?.addEventListener("click", () => {
-    client.leaveFinishedGame();
   });
 
   function renderCard(cardStr: string): HTMLElement {
@@ -856,11 +837,7 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
   function renderResultModal(): void {
     const pub = state.publicView;
     if (!pub.winnerPlayerId || pub.roomPhase !== "finished") {
-      resultModal?.classList.add("is-hidden");
-      if (playAgainBtn) {
-        playAgainBtn.disabled = false;
-        playAgainBtn.textContent = "Play Again";
-      }
+      gameUi?.setResult({ open: false, title: "", message: "" });
       return;
     }
 
@@ -868,35 +845,30 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
     const iRequested = requested.includes(state.playerId);
     const oppRequested = requested.some((id) => id !== state.playerId);
 
-    if (resultTitle) {
-      resultTitle.textContent = pub.winnerPlayerId === state.playerId ? "🏆 Victory!" : "Defeat";
-    }
-
-    if (resultMessage) {
-      const winnerName = getPlayerName(pub.winnerPlayerId);
-      resultMessage.innerHTML = `
-        <strong>${winnerName}</strong> has won the match!<br/><br/>
-        ${
-          iRequested
-            ? "Waiting for opponent..."
-            : oppRequested
-              ? "Opponent wants to play again."
-              : "Choose whether to play another round."
-        }
-      `;
-    }
-
-    if (playAgainBtn) {
-      playAgainBtn.disabled = iRequested;
-      playAgainBtn.textContent = iRequested ? "Waiting..." : "Play Again";
-    }
-
-    resultModal?.classList.remove("is-hidden");
+    const winnerName = getPlayerName(pub.winnerPlayerId);
+    gameUi?.setResult({
+      open: true,
+      title: pub.winnerPlayerId === state.playerId ? "Victory" : "Defeat",
+      message: `${winnerName} won the match. ${
+        iRequested
+          ? "Waiting for opponent..."
+          : oppRequested
+            ? "Opponent wants to play again."
+            : "Choose whether to play another round."
+      }`,
+      primaryLabel: iRequested ? "Waiting..." : "Play again",
+      primaryDisabled: iRequested,
+      secondaryLabel: "Leave"
+    });
   }
 
   render();
 
   return {
+    attachGameUi(ui) {
+      gameUi = ui;
+      renderResultModal();
+    },
     update(input) {
       if (state.version === input.version) return;
       const oldPub = state.publicView;

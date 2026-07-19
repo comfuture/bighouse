@@ -192,10 +192,16 @@ The browser frontend is split by responsibility.
 
 `packages/frontend`
 
-- Owns the game list, identity inputs, lobby room list, room creation/join, ready/start controls, host delegation, lobby chat, room chat, and room WebSocket lifecycle.
+- Owns the game list, identity inputs, lobby room list, room creation/join, lobby chat, room WebSocket lifecycle, QR sharing, reconnect, and guarded room navigation.
 - It should not import every game package statically.
 - It maps `gameId` to a dynamic import and loads a game bundle only after the player enters a matching room.
-- SPA screen routes are intentionally separate from API routes: `/`, `/game/:gameId/:mode`, and `/game/:gameId/:roomId`. Room ids currently use the `room_` prefix, so `/game/gomoku/default` is the default gomoku lobby while `/game/gomoku/room_abc` is a gomoku room.
+- SPA screen routes are intentionally separate from API routes: `/`, `/game/:gameId/:mode`, and `/game/:gameId/:roomId`. The room route opts out of the centered portal shell and mounts the selected package as an immersive surface. Room ids currently use the `room_` prefix, so `/game/gomoku/default` is the default gomoku lobby while `/game/gomoku/room_abc` is a gomoku room.
+
+`packages/ui`
+
+- Exports framework-free Web Components for waiting/start/bot controls, in-game chat, and lifecycle dialogs.
+- Uses DOM events and CSS custom properties so plain DOM games and canvas-backed games can share behavior without depending on Vue or Nuxt UI.
+- Is consumed inside each game package's `mountGame()` implementation; it does not impose one shared board or canvas layout.
 
 `packages/gomoku`
 
@@ -215,7 +221,7 @@ The deployment uses Worker static assets from `packages/frontend/dist`, while AP
 }
 ```
 
-Use this pattern for new games: create a package under `packages/<game-id>`, export a small mount/update API, and add a dynamic loader entry in `packages/frontend/src/main.ts`.
+Use this pattern for new games: create a package under `packages/<game-id>`, export a `mountGame()` implementation that accepts the complete `GameClientContext`, consume `@bighouse/ui` inside the package-owned surface, and add a dynamic loader entry in `packages/frontend/src/game-plugins.ts`.
 
 ## 5. Lobby Chat and Room Chat
 

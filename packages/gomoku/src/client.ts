@@ -1,6 +1,7 @@
 import "./style.css";
-import type { GameClientContext, JsonObject, MountedGameClient } from "@bighouse/game-sdk/client";
+import type { GameClientContext, GameClientSnapshot, JsonObject, MountedGameClient } from "@bighouse/game-sdk/client";
 import { triggerPlacementFeedback } from "@bighouse/game-sdk/feedback";
+import { createGameUi, type GameResultDialogState } from "@bighouse/ui";
 export { gameMetadata } from "./client-metadata";
 
 export type GomokuStone = "black" | "white";
@@ -44,11 +45,16 @@ export type GomokuGameInstance = {
 
 export function mountGame(container: HTMLElement, context: GameClientContext): MountedGameClient {
   const instance = createGomokuGame(container, toGomokuClient(context));
+  const gameUi = createGameUi(container, context, context);
+  gameUi.setResult(gomokuResultDialogState(context));
   return {
     update(nextContext) {
       instance.update(toGomokuClient({ ...context, ...nextContext }));
+      gameUi.update(nextContext);
+      gameUi.setResult(gomokuResultDialogState(nextContext));
     },
     destroy() {
+      gameUi.destroy();
       instance.destroy();
     }
   };
@@ -61,47 +67,18 @@ export function createGomokuGame(container: HTMLElement, client: GomokuClient): 
     <div class="gomoku-status" data-role="status"></div>
     <div class="gomoku-stage" data-role="stage">
       <div class="gomoku-board" data-role="board" aria-label="Gomoku board"></div>
-      <div class="gomoku-result-modal is-hidden" data-role="result-modal" role="dialog" aria-modal="true">
-        <div class="gomoku-result-panel">
-          <div class="gomoku-result-title" data-role="result-title"></div>
-          <div class="gomoku-result-message" data-role="result-message"></div>
-          <div class="gomoku-result-actions">
-            <button type="button" class="gomoku-result-button is-primary" data-role="play-again">Play Again</button>
-            <button type="button" class="gomoku-result-button" data-role="leave-game">Leave</button>
-          </div>
-        </div>
-      </div>
     </div>
   `;
 
   const status = container.querySelector<HTMLElement>("[data-role='status']");
   const stage = container.querySelector<HTMLElement>("[data-role='stage']");
   const boardEl = container.querySelector<HTMLElement>("[data-role='board']");
-  const modal = container.querySelector<HTMLElement>("[data-role='result-modal']");
-  const resultTitle = container.querySelector<HTMLElement>("[data-role='result-title']");
-  const resultMessage = container.querySelector<HTMLElement>("[data-role='result-message']");
-  const playAgainButton = container.querySelector<HTMLButtonElement>("[data-role='play-again']");
-  const leaveButton = container.querySelector<HTMLButtonElement>("[data-role='leave-game']");
-  if (!status || !stage || !boardEl || !modal || !resultTitle || !resultMessage || !playAgainButton || !leaveButton) {
+  if (!status || !stage || !boardEl) {
     throw new Error("Failed to mount gomoku game");
   }
   const statusEl = status;
   const stageElement = stage;
   const boardElement = boardEl;
-  const modalElement = modal;
-  const resultTitleElement = resultTitle;
-  const resultMessageElement = resultMessage;
-  const playAgainButtonElement = playAgainButton;
-  const leaveButtonElement = leaveButton;
-
-  playAgainButtonElement.addEventListener("click", () => {
-    if (!state.publicView.rematchRequests?.includes(state.playerId)) {
-      client.requestPlayAgain();
-    }
-  });
-  leaveButtonElement.addEventListener("click", () => {
-    client.leaveFinishedGame();
-  });
 
   function render(): void {
     const { publicView, privateView, playerId } = state;
@@ -151,31 +128,6 @@ export function createGomokuGame(container: HTMLElement, client: GomokuClient): 
       }
     }
     restoreScrollSnapshot(stageElement, scrollSnapshot);
-    renderResultModal();
-  }
-
-  function renderResultModal(): void {
-    const { publicView, playerId } = state;
-    if (!publicView.winnerPlayerId || publicView.roomPhase !== "finished") {
-      modalElement.classList.add("is-hidden");
-      playAgainButtonElement.disabled = false;
-      playAgainButtonElement.textContent = "Play Again";
-      resultMessageElement.textContent = "";
-      return;
-    }
-
-    const requestedPlayerIds = publicView.rematchRequests ?? [];
-    const iRequested = requestedPlayerIds.includes(playerId);
-    const opponentRequested = requestedPlayerIds.some((requestPlayerId) => requestPlayerId !== playerId);
-    resultTitleElement.textContent = publicView.winnerPlayerId === playerId ? "You Win!" : "You Lose!";
-    resultMessageElement.textContent = iRequested
-      ? "Waiting for opponent..."
-      : opponentRequested
-        ? "Opponent wants to play again."
-        : "Choose whether to play another round.";
-    playAgainButtonElement.disabled = iRequested;
-    playAgainButtonElement.textContent = iRequested ? "Waiting..." : "Play Again";
-    modalElement.classList.remove("is-hidden");
   }
 
   render();
@@ -262,6 +214,28 @@ function toGomokuClient(context: GameClientContext): GomokuClient {
     sendAction: context.sendAction,
     requestPlayAgain: context.requestPlayAgain,
     leaveFinishedGame: context.leaveFinishedGame
+  };
+}
+
+function gomokuResultDialogState(context: GameClientSnapshot): GameResultDialogState {
+  const publicView = context.publicView as GomokuPublicView;
+  if (context.phase !== "finished" || !publicView.winnerPlayerId) {
+    return { open: false, title: "", message: "" };
+  }
+  const iRequested = context.rematchRequests.includes(context.playerId);
+  const opponentRequested = context.rematchRequests.some((playerId) => playerId !== context.playerId);
+  return {
+    open: true,
+    kicker: "Five in a row",
+    title: publicView.winnerPlayerId === context.playerId ? "You Win!" : "You Lose!",
+    message: iRequested
+      ? "Waiting for your opponent to accept the rematch."
+      : opponentRequested
+        ? "Your opponent wants to play again."
+        : "Choose whether to play another round.",
+    primaryLabel: iRequested ? "Waiting..." : "Play again",
+    secondaryLabel: "Leave",
+    primaryDisabled: iRequested
   };
 }
 

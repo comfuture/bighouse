@@ -18,6 +18,7 @@
   },
   "dependencies": {
     "@bighouse/game-sdk": "workspace:*",
+    "@bighouse/ui": "workspace:*",
     "phaser": "^4.2.1"
   },
   "devDependencies": {
