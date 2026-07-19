@@ -142,12 +142,13 @@ const gameActions: GameClientActions = {
   restartGame() {
     ws?.send(JSON.stringify({ type: "restartGame", playerId: identity.playerId }));
   },
-  addBot(difficulty: BotDifficulty, displayName?: string) {
+  addBot(difficulty: BotDifficulty, count = 1, displayName?: string) {
     ws?.send(
       JSON.stringify({
         type: "addBot",
         playerId: identity.playerId,
         difficulty,
+        count,
         ...(displayName ? { displayName } : {})
       })
     );

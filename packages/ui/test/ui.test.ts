@@ -41,6 +41,62 @@ describe("@bighouse/ui", () => {
     expect((listener.mock.calls[0]?.[0] as CustomEvent).composed).toBe(true);
   });
 
+  it("separates lobby utilities and batches bot players through the settings panel", () => {
+    registerBighouseUi();
+    const controls = document.createElement("bighouse-room-controls") as BighouseRoomControlsElement;
+    document.body.append(controls);
+    const initial = snapshot();
+    controls.snapshot = {
+      ...initial,
+      room: {
+        ...initial.room,
+        maxPlayers: 5,
+        players: [
+          ...initial.room.players,
+          { playerId: "bot_1", displayName: "Bot 1", seat: 2, connected: true, ready: true, joinedAt: 3, kind: "bot", botDifficulty: "medium" }
+        ]
+      }
+    };
+    const root = controls.shadowRoot!;
+    const share = root.querySelector<HTMLButtonElement>("[aria-label='Share room']")!;
+    const leave = root.querySelector<HTMLButtonElement>("[aria-label='Leave']")!;
+    const remove = root.querySelector<HTMLButtonElement>("[aria-label='Remove Bot 1 from room']")!;
+    expect(share.closest(".bh-room-navigation")).not.toBeNull();
+    expect(leave.closest(".bh-room-navigation")).not.toBeNull();
+    expect(leave.textContent).toContain("Leave");
+    expect(remove.textContent).not.toContain("Remove");
+    expect(remove.querySelector("svg")).not.toBeNull();
+    expect(root.querySelector(".bh-start-game")).not.toBeNull();
+
+    const listener = vi.fn();
+    controls.addEventListener("bighouse-add-bot", listener);
+    root.querySelector<HTMLButtonElement>(".bh-add-bots-trigger")!.click();
+    const difficulty = root.querySelector<HTMLSelectElement>("[aria-label='Bot difficulty']")!;
+    const count = root.querySelector<HTMLSelectElement>("[aria-label='Bot player count']")!;
+    expect([...count.options].map((option) => option.value)).toEqual(["1", "2"]);
+    difficulty.value = "high";
+    difficulty.dispatchEvent(new Event("change", { bubbles: true }));
+    count.value = "2";
+    count.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(root.querySelector<HTMLButtonElement>(".bh-confirm-bots")?.textContent).toBe("Add 2 bot players");
+    root.querySelector<HTMLFormElement>(".bh-bot-panel")!.requestSubmit();
+
+    expect(listener).toHaveBeenCalledOnce();
+    expect((listener.mock.calls[0]?.[0] as CustomEvent).detail).toEqual({ difficulty: "high", count: 2 });
+    expect((listener.mock.calls[0]?.[0] as CustomEvent).composed).toBe(true);
+  });
+
+  it("hides the bot count selector when exactly one player slot remains", () => {
+    registerBighouseUi();
+    const controls = document.createElement("bighouse-room-controls") as BighouseRoomControlsElement;
+    document.body.append(controls);
+    const initial = snapshot();
+    controls.snapshot = { ...initial, room: { ...initial.room, maxPlayers: initial.room.players.length + 1 } };
+    controls.shadowRoot!.querySelector<HTMLButtonElement>(".bh-add-bots-trigger")!.click();
+    expect(controls.shadowRoot!.querySelector("[aria-label='Bot player count']")).toBeNull();
+    expect(controls.shadowRoot!.querySelector<HTMLButtonElement>(".bh-confirm-bots")?.textContent).toBe("Add bot player");
+  });
+
   it("opens chat with desktop Enter, focuses the input, sends once, and closes with Escape", async () => {
     registerBighouseUi();
     const chat = document.createElement("bighouse-game-chat") as BighouseGameChatElement;
@@ -257,6 +313,12 @@ describe("@bighouse/ui", () => {
     const chat = host.querySelector("bighouse-game-chat") as BighouseGameChatElement;
     chat.dispatchEvent(new CustomEvent("bighouse-chat-send", { detail: { body: "hi" }, bubbles: true, composed: true }));
     expect(actions.sendChat).toHaveBeenCalledWith("hi", undefined);
+    host.querySelector("bighouse-room-controls")!.dispatchEvent(new CustomEvent("bighouse-add-bot", {
+      detail: { difficulty: "high", count: 2 },
+      bubbles: true,
+      composed: true
+    }));
+    expect(actions.addBot).toHaveBeenCalledWith("high", 2);
     ui.setResult({ open: true, title: "Victory", message: "Round complete" });
     ui.destroy();
     expect(host.children).toHaveLength(0);

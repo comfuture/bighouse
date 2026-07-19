@@ -29,9 +29,15 @@ const chatFadeMs = 280;
 export class BighouseRoomControlsElement extends HTMLElement {
   readonly #root = this.attachShadow({ mode: "open" });
   #snapshot: GameClientSnapshot | undefined;
+  #botPanelOpen = false;
+  #botDifficulty: BotDifficulty = "medium";
+  #botCount = 1;
 
   set snapshot(value: GameClientSnapshot | undefined) {
     this.#snapshot = value;
+    const remainingSlots = value ? Math.max(0, value.room.maxPlayers - value.room.players.length) : 0;
+    this.#botCount = Math.max(1, Math.min(this.#botCount, remainingSlots || 1));
+    if (remainingSlots === 0) this.#botPanelOpen = false;
     this.render();
   }
 
@@ -57,6 +63,8 @@ export class BighouseRoomControlsElement extends HTMLElement {
     const isHost = room.hostPlayerId === playerId;
     const me = room.players.find((player) => player.playerId === playerId);
     const canManageBots = isHost && (isWaiting || Boolean(interruption));
+    const remainingSlots = Math.max(0, room.maxPlayers - room.players.length);
+    if (!canManageBots) this.#botPanelOpen = false;
     const canStart = isHost && isWaiting && room.players.length >= room.minPlayers && room.players
       .filter((player) => player.playerId !== room.hostPlayerId && !isBot(player))
       .every((player) => player.connected && player.ready);
@@ -68,6 +76,13 @@ export class BighouseRoomControlsElement extends HTMLElement {
     const panel = element("div", "bh-room-panel");
 
     if (showLobby) {
+      const navigation = element("div", "bh-room-navigation");
+      navigation.append(
+        iconTextButton("log-out", "Leave", "bh-room-leave", () => emit(this, "bighouse-leave-room")),
+        iconButton("share-2", "Share room", "bh-room-share", () => emit(this, "bighouse-share-room"))
+      );
+      panel.append(navigation);
+
       const heading = element("header", "bh-room-heading");
       const headingCopy = element("div");
       headingCopy.append(textElement("div", "bh-room-kicker", interruption ? "Game interrupted" : "Ready room"));
@@ -97,55 +112,124 @@ export class BighouseRoomControlsElement extends HTMLElement {
       panel.append(list);
 
       const footer = element("footer", "bh-room-footer");
-      const actions = element("div", "bh-actions");
+      const actions = element("div", "bh-primary-actions");
       if (!isHost && isWaiting && !isBot(me)) {
         actions.append(commandButton(me?.ready ? "Cancel ready" : "Ready", "is-primary", () => {
           emit(this, "bighouse-ready-change", { ready: !me?.ready });
         }));
       }
       if (isHost && isWaiting) {
-        const start = commandButton("Start game", "is-primary", () => emit(this, "bighouse-start-game"));
+        const start = commandButton("Start game", "is-primary bh-start-game", () => emit(this, "bighouse-start-game"));
         start.disabled = !canStart;
         actions.append(start);
       }
       if (interruption && isHost) {
-        const restart = commandButton("Start fresh game", "is-primary", () => emit(this, "bighouse-restart-game"));
+        const restart = commandButton("Start fresh game", "is-primary bh-start-game", () => emit(this, "bighouse-restart-game"));
         restart.disabled = !canRestart;
         actions.append(restart);
       }
-      actions.append(commandButton("Share", "is-quiet", () => emit(this, "bighouse-share-room")));
-      actions.append(commandButton("Leave", "is-danger", () => emit(this, "bighouse-leave-room")));
-      footer.append(actions);
+      if (actions.childElementCount > 0) footer.append(actions);
 
-      if (canManageBots) {
-        const botControls = element("div", "bh-bot-controls");
-        const label = textElement("label", "", "Bot difficulty");
-        const select = document.createElement("select");
-        select.setAttribute("aria-label", "Bot difficulty");
-        (["low", "medium", "high"] satisfies BotDifficulty[]).forEach((difficulty) => {
-          const option = document.createElement("option");
-          option.value = difficulty;
-          option.textContent = difficulty[0]!.toUpperCase() + difficulty.slice(1);
-          if (difficulty === "medium") option.selected = true;
-          select.append(option);
-        });
-        label.append(select);
-        const add = commandButton("Add bot", "", () => {
-          emit(this, "bighouse-add-bot", { difficulty: select.value as BotDifficulty });
-        });
-        add.disabled = room.players.length >= room.maxPlayers;
-        botControls.append(label, add);
-        footer.append(botControls);
-      }
-      panel.append(footer);
+      if (canManageBots && remainingSlots > 0) footer.append(this.renderBotManager(remainingSlots));
+      if (footer.childElementCount > 0) panel.append(footer);
     } else {
       const rail = element("div", "bh-rail-actions");
-      rail.append(commandButton("Leave", "is-danger", () => emit(this, "bighouse-leave-room")));
+      rail.append(iconTextButton("log-out", "Leave", "bh-room-leave is-compact", () => emit(this, "bighouse-leave-room")));
       panel.append(rail);
     }
 
     root.append(panel);
     this.#root.append(root);
+  }
+
+  private renderBotManager(remainingSlots: number): HTMLElement {
+    const manager = element("div", "bh-bot-manager");
+    const launcher = iconTextButton("bot", "Add Bot Players", "bh-add-bots-trigger", () => {
+      this.#botPanelOpen = !this.#botPanelOpen;
+      this.render();
+      if (this.#botPanelOpen) queueMicrotask(() => this.#root.querySelector<HTMLSelectElement>("[aria-label='Bot difficulty']")?.focus());
+    });
+    launcher.setAttribute("aria-expanded", String(this.#botPanelOpen));
+    launcher.setAttribute("aria-controls", "bh-bot-panel");
+    manager.append(launcher);
+
+    if (!this.#botPanelOpen) return manager;
+
+    const panel = element("form", "bh-bot-panel") as HTMLFormElement;
+    panel.id = "bh-bot-panel";
+    panel.setAttribute("aria-label", "Add bot players");
+    const panelHeader = element("header", "bh-bot-panel-heading");
+    const panelTitle = element("div");
+    panelTitle.append(
+      textElement("strong", "", "Add Bot Players"),
+      textElement("span", "", `${remainingSlots} ${remainingSlots === 1 ? "slot" : "slots"} remaining`)
+    );
+    panelHeader.append(panelTitle, iconButton("x", "Close bot settings", "bh-bot-panel-close", () => {
+      this.#botPanelOpen = false;
+      this.render();
+    }));
+    panel.append(panelHeader);
+
+    const fields = element("div", "bh-bot-fields");
+    const difficultyLabel = textElement("label", "", "Difficulty");
+    const difficultySelect = document.createElement("select");
+    difficultySelect.setAttribute("aria-label", "Bot difficulty");
+    (["low", "medium", "high"] satisfies BotDifficulty[]).forEach((difficulty) => {
+      const option = document.createElement("option");
+      option.value = difficulty;
+      option.textContent = difficulty[0]!.toUpperCase() + difficulty.slice(1);
+      option.selected = difficulty === this.#botDifficulty;
+      difficultySelect.append(option);
+    });
+    difficultySelect.addEventListener("change", () => { this.#botDifficulty = difficultySelect.value as BotDifficulty; });
+    difficultyLabel.append(difficultySelect);
+    fields.append(difficultyLabel);
+
+    if (remainingSlots > 1) {
+      const countLabel = textElement("label", "", "Players");
+      const countSelect = document.createElement("select");
+      countSelect.setAttribute("aria-label", "Bot player count");
+      for (let count = 1; count <= remainingSlots; count += 1) {
+        const option = document.createElement("option");
+        option.value = String(count);
+        option.textContent = String(count);
+        option.selected = count === this.#botCount;
+        countSelect.append(option);
+      }
+      countSelect.addEventListener("change", () => { this.#botCount = Number(countSelect.value); });
+      countSelect.addEventListener("change", () => {
+        const confirm = panel.querySelector<HTMLButtonElement>(".bh-confirm-bots");
+        if (confirm) confirm.textContent = botAddLabel(this.#botCount);
+      });
+      countLabel.append(countSelect);
+      fields.append(countLabel);
+    }
+    panel.append(fields);
+
+    const add = commandButton(
+      botAddLabel(this.#botCount),
+      "is-primary bh-confirm-bots",
+      () => undefined
+    );
+    add.type = "submit";
+    panel.append(add);
+    panel.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const count = remainingSlots === 1 ? 1 : Math.max(1, Math.min(this.#botCount, remainingSlots));
+      emit(this, "bighouse-add-bot", { difficulty: this.#botDifficulty, count });
+      this.#botPanelOpen = false;
+      this.#botCount = 1;
+      this.render();
+    });
+    panel.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      this.#botPanelOpen = false;
+      this.render();
+      queueMicrotask(() => this.#root.querySelector<HTMLButtonElement>(".bh-add-bots-trigger")?.focus());
+    });
+    manager.prepend(panel);
+    return manager;
   }
 
   private renderPlayer(player: PlayerSeat, room: GameClientRoom, canManageBots: boolean): HTMLLIElement {
@@ -164,9 +248,11 @@ export class BighouseRoomControlsElement extends HTMLElement {
     if (isBot(player)) {
       badges.append(textElement("span", "bh-badge is-ready", "ready"));
       if (canManageBots) {
-        const remove = commandButton("Remove", "bh-remove", () => emit(this, "bighouse-remove-bot", { botPlayerId: player.playerId }));
-        remove.className = "bh-remove";
-        remove.setAttribute("aria-label", `Remove ${player.displayName || player.playerId}`);
+        const displayName = player.displayName || player.playerId;
+        const remove = iconButton("user-x", `Remove ${displayName} from room`, "bh-remove", () => {
+          emit(this, "bighouse-remove-bot", { botPlayerId: player.playerId });
+        });
+        remove.title = "Remove player";
         badges.append(remove);
       }
     } else {
@@ -572,6 +658,24 @@ function commandButton(label: string, className: string, onClick: () => void): H
   return button;
 }
 
+function iconButton(name: Parameters<typeof iconMarkup>[0], label: string, className: string, onClick: () => void): HTMLButtonElement {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = `bh-icon-command ${className}`;
+  button.setAttribute("aria-label", label);
+  const icon = element("span", "bh-icon");
+  icon.innerHTML = iconMarkup(name);
+  button.append(icon);
+  button.addEventListener("click", onClick);
+  return button;
+}
+
+function iconTextButton(name: Parameters<typeof iconMarkup>[0], label: string, className: string, onClick: () => void): HTMLButtonElement {
+  const button = iconButton(name, label, className, onClick);
+  button.append(textElement("span", "bh-command-label", label));
+  return button;
+}
+
 function emit(target: HTMLElement, name: string, detail?: Record<string, unknown>): void {
   target.dispatchEvent(new CustomEvent(name, { detail, bubbles: true, composed: true }));
 }
@@ -643,4 +747,8 @@ function shadowActiveElement(root: ShadowRoot): Element | null {
 
 function prefersReducedMotion(): boolean {
   return typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+}
+
+function botAddLabel(count: number): string {
+  return count === 1 ? "Add bot player" : `Add ${count} bot players`;
 }

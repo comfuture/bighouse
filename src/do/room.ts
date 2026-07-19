@@ -41,6 +41,7 @@ export type JoinRoomInput = {
 export type AddBotInput = {
   hostPlayerId: string;
   difficulty: BotDifficulty;
+  count?: number;
   displayName?: string;
 };
 
@@ -369,28 +370,32 @@ export class RoomDO extends DurableObject<Env> {
     if (state.phase !== "waiting" && !state.activeInterruption) {
       throw new GameServerError("invalid_room_phase", "Bot players can only be added before a game starts or while restarting", 409);
     }
-    if (state.players.length >= state.room.maxPlayers) {
+    const count = requireBotCount(input.count);
+    if (input.displayName && count !== 1) {
+      throw new GameServerError("invalid_action", "A custom bot name can only be used when adding one bot", 400);
+    }
+    if (state.players.length + count > state.room.maxPlayers) {
       throw new GameServerError("room_full", "Room is full", 409);
     }
 
     const now = Date.now();
     const definition = getGameDefinition(state.room.gameId);
     const difficulty = normalizeBotDifficulty(input.difficulty);
-    const botNumber = state.players.filter(isBotPlayer).length + 1;
-    const displayName = input.displayName?.trim() || `Bot ${botNumber}`;
-    const player: PlayerSeat = {
-      playerId: createId("bot"),
-      displayName,
-      seat: state.players.length,
-      connected: true,
-      ready: true,
-      joinedAt: now,
-      kind: "bot",
-      botDifficulty: difficulty
-    };
-
-    state.players.push(player);
-    state.playerStates[player.playerId] = definition.initialPlayerState(player, { room: state.room, now });
+    const firstBotNumber = state.players.filter(isBotPlayer).length + 1;
+    for (let index = 0; index < count; index += 1) {
+      const player: PlayerSeat = {
+        playerId: createId("bot"),
+        displayName: input.displayName?.trim() || `Bot ${firstBotNumber + index}`,
+        seat: state.players.length,
+        connected: true,
+        ready: true,
+        joinedAt: now,
+        kind: "bot",
+        botDifficulty: difficulty
+      };
+      state.players.push(player);
+      state.playerStates[player.playerId] = definition.initialPlayerState(player, { room: state.room, now });
+    }
     delete state.emptySince;
     state.updatedAt = now;
     state.version += 1;
@@ -995,6 +1000,7 @@ export class RoomDO extends DurableObject<Env> {
       const summary = await this.addBot({
         hostPlayerId: playerId,
         difficulty: normalizeBotDifficulty(message.difficulty),
+        ...(message.count === undefined ? {} : { count: message.count }),
         ...(message.displayName ? { displayName: message.displayName } : {})
       });
       this.sendToSocket(ws, this.message(this.requireState(), "ack", { command: "addBot", result: { summary } }));
@@ -1594,6 +1600,14 @@ export function resolveBotTurnDelayMs(configured: unknown, difficulty: BotDiffic
 
 function normalizeBotDifficulty(value: unknown): BotDifficulty {
   return typeof value === "string" && botDifficulties.has(value as BotDifficulty) ? (value as BotDifficulty) : "medium";
+}
+
+function requireBotCount(value: unknown): number {
+  const count = value === undefined ? 1 : value;
+  if (typeof count !== "number" || !Number.isInteger(count) || count < 1) {
+    throw new GameServerError("invalid_action", "Bot count must be a positive integer", 400);
+  }
+  return count;
 }
 
 function isBotPlayer(player: PlayerSeat): boolean {

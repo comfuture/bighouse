@@ -45,7 +45,9 @@ export function createGameUi(container: HTMLElement, snapshot: GameClientSnapsho
   listen(roomControls, "bighouse-ready-change", ((event: CustomEvent<{ ready: boolean }>) => actions.setReady(event.detail.ready)) as EventListener);
   listen(roomControls, "bighouse-start-game", (() => actions.startGame()) as EventListener);
   listen(roomControls, "bighouse-restart-game", (() => actions.restartGame()) as EventListener);
-  listen(roomControls, "bighouse-add-bot", ((event: CustomEvent<{ difficulty: "low" | "medium" | "high" }>) => actions.addBot(event.detail.difficulty)) as EventListener);
+  listen(roomControls, "bighouse-add-bot", ((event: CustomEvent<{ difficulty: "low" | "medium" | "high"; count: number }>) => {
+    actions.addBot(event.detail.difficulty, event.detail.count);
+  }) as EventListener);
   listen(roomControls, "bighouse-remove-bot", ((event: CustomEvent<{ botPlayerId: string }>) => actions.removeBot(event.detail.botPlayerId)) as EventListener);
   listen(roomControls, "bighouse-transfer-host", ((event: CustomEvent<{ targetPlayerId: string }>) => actions.transferHost(event.detail.targetPlayerId)) as EventListener);
   listen(roomControls, "bighouse-share-room", (() => actions.shareRoom()) as EventListener);

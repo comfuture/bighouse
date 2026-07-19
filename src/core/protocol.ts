@@ -47,6 +47,7 @@ export type ClientMessage =
       type: "addBot";
       playerId: string;
       difficulty: BotDifficulty;
+      count?: number;
       displayName?: string;
     }
   | {
