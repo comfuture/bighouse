@@ -1074,7 +1074,6 @@ input.game-plastic-input::placeholder {
     place-items: center;
     padding-right: 84px;
     overflow: hidden;
-    isolation: isolate;
   }
 
   .game-room-host > .game-contained-surface {
@@ -1202,7 +1201,7 @@ input.game-plastic-input::placeholder {
     position: fixed;
     top: calc(max(0.7rem, env(safe-area-inset-top)) + 4.5rem);
     right: max(0.7rem, env(safe-area-inset-right));
-    z-index: 80;
+    z-index: 70;
     display: flex;
     gap: 0.45rem;
     opacity: 0.82;

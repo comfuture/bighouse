@@ -134,7 +134,7 @@ const roomCanShareQr = computed(() => {
 });
 const gameControlsVisible = computed(() => {
   const phase = room.value?.phase;
-  return gameReady.value && phase === "active";
+  return gameReady.value && (phase === "active" || phase === "finished");
 });
 const fullscreenLabel = computed(() => (isFullscreen.value ? "Exit fullscreen" : "Enter fullscreen"));
 const fullscreenTitle = computed(() =>
