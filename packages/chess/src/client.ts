@@ -194,10 +194,12 @@ export function createChessGame(container: HTMLElement, client: ChessClient) {
       cell.dataset.gameElastic = "off";
       cell.disabled = !active || Boolean(publicView.result);
       cell.ariaLabel = `${piece ? `${pieceName(piece)} on ${square}` : `empty ${square}`}${legalDestination ? ", legal move" : ""}${unsafeDestination ? ", unsafe move would leave king in check" : ""}`;
+      cell.addEventListener("mousedown", (event) => event.preventDefault());
       cell.addEventListener("click", (event) => {
         event.preventDefault();
-        cell.blur();
+        const keyboardActivated = event.detail === 0;
         handleSquareClick(square, piece);
+        if (keyboardActivated) board.querySelector<HTMLButtonElement>(`[data-square="${square}"]`)?.focus();
       });
       if (piece) {
         const img = document.createElement("img");
