@@ -93,7 +93,7 @@ function generatePlayerId(): void {
 
 function save(): void {
   if (editingNickname.value) {
-    const displayName = draft.displayName.trim();
+    const displayName = (draft.displayName || "").trim();
     if (!displayName) {
       error.value = "Nickname is required";
       return;
@@ -110,7 +110,7 @@ function save(): void {
     return;
   }
   identity.playerId = playerId;
-  identity.displayName = draft.displayName.trim();
+  identity.displayName = (draft.displayName || "").trim();
   identity.mode = draft.mode.trim() || "default";
   persistIdentity();
   error.value = "";
