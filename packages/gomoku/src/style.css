@@ -162,3 +162,40 @@
   background: #16a34a;
   box-shadow: 0 0 0 2px white;
 }
+
+@media (orientation: landscape) and (max-height: 520px) {
+  .gomoku-game {
+    box-sizing: border-box;
+    grid-template-columns: clamp(136px, 25vw, 184px) minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
+    inline-size: 100%;
+    block-size: 100svh;
+    max-block-size: 100svh;
+    gap: 0.5rem;
+    overflow: hidden;
+  }
+
+  .gomoku-status {
+    grid-column: 1;
+    grid-row: 1;
+    align-self: start;
+    min-inline-size: 0;
+    padding: 0.65rem 0.75rem;
+    overflow-wrap: anywhere;
+  }
+
+  .gomoku-stage {
+    grid-column: 2;
+    grid-row: 1;
+    align-self: stretch;
+    display: grid;
+    place-items: center;
+    min-inline-size: 0;
+    block-size: 100%;
+    scrollbar-gutter: auto;
+  }
+
+  .gomoku-board {
+    --point-size: clamp(10px, min(calc((100cqw - 4px) / (var(--board-size) + 1)), calc((100svh - 20px) / (var(--board-size) + 1))), 36px);
+  }
+}

@@ -22,6 +22,23 @@
 
     <div v-if="error && gameReady" class="room-connection-banner" role="alert">{{ error }}</div>
 
+    <div v-if="gameControlsVisible" class="room-route-tools" aria-label="Game view controls">
+      <UButton
+        class="room-route-button"
+        :icon="isFullscreen ? 'i-lucide-minimize-2' : 'i-lucide-maximize-2'"
+        color="neutral"
+        variant="ghost"
+        :disabled="!fullscreenAvailable"
+        :aria-label="fullscreenLabel"
+        :aria-pressed="isFullscreen"
+        :title="fullscreenTitle"
+        @click="toggleFullscreen"
+      />
+      <span v-if="fullscreenMessage" class="room-fullscreen-status" role="status" aria-live="polite">
+        {{ fullscreenMessage }}
+      </span>
+    </div>
+
     <UModal
       v-model:open="leaveConfirmOpen"
       title="Leave room?"
@@ -84,6 +101,9 @@ const qrModalOpen = ref(false);
 const qrCodeDataUrl = ref("");
 const gameHost = ref<HTMLElement>();
 const gameReady = ref(false);
+const fullscreenAvailable = ref(false);
+const isFullscreen = ref(false);
+const fullscreenMessage = ref("");
 const lastSnapshotServerTime = ref(Date.now());
 let ws: WebSocket | undefined;
 let gameInstance: MountedGameClient | undefined;
@@ -107,6 +127,14 @@ const roomCanShareQr = computed(() => {
   const snapshot = room.value;
   return Boolean(snapshot && !roomIsFull.value && (snapshot.phase === "waiting" || snapshot.activeInterruption));
 });
+const gameControlsVisible = computed(() => {
+  const phase = room.value?.phase;
+  return gameReady.value && (phase === "active" || phase === "finished");
+});
+const fullscreenLabel = computed(() => (isFullscreen.value ? "Exit fullscreen" : "Enter fullscreen"));
+const fullscreenTitle = computed(() =>
+  fullscreenAvailable.value ? fullscreenLabel.value : "Fullscreen is not supported in this browser"
+);
 const lobbyPath = computed(() => {
   const gameId = room.value?.gameId ?? String(route.params.gameId);
   const mode = room.value?.mode ?? "default";
@@ -178,6 +206,11 @@ const gameActions: GameClientActions = {
 };
 
 onMounted(() => {
+  fullscreenAvailable.value =
+    document.fullscreenEnabled && typeof document.documentElement.requestFullscreen === "function";
+  document.addEventListener("fullscreenchange", handleFullscreenChange);
+  document.addEventListener("fullscreenerror", handleFullscreenError, true);
+  handleFullscreenChange();
   if (identityReady.value) connectRoom();
 });
 
@@ -219,11 +252,78 @@ onBeforeRouteLeave((to) => {
 
 onBeforeUnmount(() => {
   closingRoom = true;
+  document.removeEventListener("fullscreenchange", handleFullscreenChange);
+  document.removeEventListener("fullscreenerror", handleFullscreenError, true);
+  unlockScreenOrientation();
+  if (document.fullscreenElement === document.documentElement) {
+    void document.exitFullscreen().catch(() => undefined);
+  }
   clearReconnectTimer();
   clearLeaveFallbackTimer();
   ws?.close();
   gameInstance?.destroy();
 });
+
+function handleFullscreenChange(): void {
+  isFullscreen.value = document.fullscreenElement !== null;
+  if (isFullscreen.value) {
+    fullscreenMessage.value = "";
+    return;
+  }
+  unlockScreenOrientation();
+}
+
+function handleFullscreenError(): void {
+  isFullscreen.value = document.fullscreenElement !== null;
+  fullscreenMessage.value = "Fullscreen could not be opened. Try again.";
+}
+
+async function toggleFullscreen(): Promise<void> {
+  fullscreenMessage.value = "";
+  if (!fullscreenAvailable.value) {
+    fullscreenMessage.value = "Fullscreen is not supported in this browser.";
+    return;
+  }
+
+  try {
+    if (document.fullscreenElement) {
+      await document.exitFullscreen();
+      return;
+    }
+
+    await document.documentElement.requestFullscreen();
+    if (isMobileDevice()) await lockLandscapeBestEffort();
+  } catch (cause) {
+    console.warn("Failed to toggle fullscreen", cause);
+    handleFullscreenError();
+  }
+}
+
+function isMobileDevice(): boolean {
+  return navigator.maxTouchPoints > 0 || window.matchMedia("(pointer: coarse)").matches;
+}
+
+type LockableScreenOrientation = ScreenOrientation & {
+  lock?: (orientation: "landscape") => Promise<void>;
+};
+
+async function lockLandscapeBestEffort(): Promise<void> {
+  const orientation = screen.orientation as LockableScreenOrientation | undefined;
+  if (typeof orientation?.lock !== "function") return;
+  try {
+    await orientation.lock("landscape");
+  } catch {
+    // Orientation locking is optional and commonly rejected by mobile browsers.
+  }
+}
+
+function unlockScreenOrientation(): void {
+  try {
+    screen.orientation?.unlock();
+  } catch {
+    // Orientation unlocking is best effort for browsers with partial support.
+  }
+}
 
 function connectRoom(): void {
   clearReconnectTimer();

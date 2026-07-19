@@ -21,8 +21,8 @@
 
 .tank-battle-game canvas {
   display: block;
-  max-inline-size: calc(100% - 4px);
-  max-block-size: calc(100% - 4px);
+  max-inline-size: calc(100% - 10px);
+  max-block-size: calc(100% - 10px);
   outline: none;
   touch-action: none;
 }
@@ -30,6 +30,14 @@
 @media (max-width: 700px) {
   .tank-battle-game {
     border-radius: 0.375rem;
+  }
+}
+
+@media (orientation: landscape) and (max-height: 520px) {
+  .tank-battle-game {
+    inline-size: min(100%, 187.5svh);
+    max-block-size: 100svh;
+    aspect-ratio: 15 / 8;
   }
 }
 

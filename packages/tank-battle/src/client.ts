@@ -39,17 +39,150 @@ type ShotAnimation = {
 
 type QueuedShotAnimation = Pick<ShotAnimation, "shot" | "baseView">;
 
-const GAME_WIDTH = 1000;
-const GAME_HEIGHT = 800;
-const BATTLE_HEIGHT = 600;
+type TankBattleLocalState = {
+  selectedItem: TankItemSelection;
+  angle: number;
+  power: number;
+  lastOwnShotPower?: number;
+};
+
+type TankBattleLayout = {
+  mode: "standard" | "compact-landscape";
+  width: number;
+  height: number;
+  battleWidth: number;
+  battleHeight: number;
+  aimWidth: number;
+  aimHeight: number;
+  hudCenterX: number;
+  playerRightX: number;
+  angle: {
+    minusX: number;
+    plusX: number;
+    y: number;
+    buttonWidth: number;
+    buttonHeight: number;
+    textX: number;
+    textY: number;
+    helpY: number;
+  };
+  items: {
+    startX: number;
+    startY: number;
+    stepX: number;
+    stepY: number;
+    width: number;
+    height: number;
+    fontSize: number;
+  };
+  power: {
+    textX: number;
+    textY: number;
+    gaugeX: number;
+    gaugeY: number;
+    gaugeWidth: number;
+    gaugeHeight: number;
+    markerLabelY: number;
+    labelsY: number;
+    helpX: number;
+    helpY: number;
+  };
+  fire: { x: number; y: number; width: number; height: number; fontSize: number };
+};
+
+const standardLayout: TankBattleLayout = {
+  mode: "standard",
+  width: 1000,
+  height: 800,
+  battleWidth: 1000,
+  battleHeight: 600,
+  aimWidth: 1000,
+  aimHeight: 800,
+  hudCenterX: 500,
+  playerRightX: 972,
+  angle: {
+    minusX: 54,
+    plusX: 254,
+    y: 653,
+    buttonWidth: 72,
+    buttonHeight: 56,
+    textX: 154,
+    textY: 638,
+    helpY: 674
+  },
+  items: {
+    startX: 385,
+    startY: 650,
+    stepX: 168,
+    stepY: 0,
+    width: 154,
+    height: 62,
+    fontSize: 14
+  },
+  power: {
+    textX: 36,
+    textY: 744,
+    gaugeX: 166,
+    gaugeY: 744,
+    gaugeWidth: 488,
+    gaugeHeight: 20,
+    markerLabelY: 718,
+    labelsY: 774,
+    helpX: 410,
+    helpY: 774
+  },
+  fire: { x: 838, y: 753, width: 276, height: 64, fontSize: 20 }
+};
+
+const compactLandscapeLayout: TankBattleLayout = {
+  mode: "compact-landscape",
+  width: 1500,
+  height: 800,
+  battleWidth: 1000,
+  battleHeight: 600,
+  aimWidth: 1000,
+  aimHeight: 600,
+  hudCenterX: 500,
+  playerRightX: 972,
+  angle: {
+    minusX: 1092,
+    plusX: 1408,
+    y: 140,
+    buttonWidth: 144,
+    buttonHeight: 144,
+    textX: 1250,
+    textY: 88,
+    helpY: 190
+  },
+  items: {
+    startX: 1092,
+    startY: 318,
+    stepX: 158,
+    stepY: 0,
+    width: 144,
+    height: 144,
+    fontSize: 13
+  },
+  power: {
+    textX: 1038,
+    textY: 494,
+    gaugeX: 1110,
+    gaugeY: 486,
+    gaugeWidth: 344,
+    gaugeHeight: 24,
+    markerLabelY: 448,
+    labelsY: 530,
+    helpX: 1282,
+    helpY: 556
+  },
+  fire: { x: 1250, y: 687, width: 420, height: 144, fontSize: 22 }
+};
+
+const compactLandscapeQuery = "(orientation: landscape) and (max-height: 520px)";
 const ANGLE_MIN = 10;
 const ANGLE_MAX = 80;
 const IMPACT_EFFECT_MS = 950;
 const MAX_WIND_SPEED = 12;
-const POWER_GAUGE_X = 166;
-const POWER_GAUGE_Y = 744;
-const POWER_GAUGE_WIDTH = 488;
-const POWER_GAUGE_HEIGHT = 20;
 const itemLabels: Record<Exclude<TankItemSelection, "none">, string> = {
   megaBlast: "광역 폭탄",
   warhead: "고폭탄",
@@ -67,29 +200,45 @@ export function mountGame(container: HTMLElement, context: GameClientContext): M
   surface.className = "game-contained-surface tank-battle-game";
   container.replaceChildren(surface);
 
-  const scene = new TankBattleScene(() => client);
-  const game = new Phaser.Game({
-    type: Phaser.AUTO,
-    parent: surface,
-    width: GAME_WIDTH,
-    height: GAME_HEIGHT,
-    backgroundColor: "#101a35",
-    render: { antialias: true, pixelArt: false, roundPixels: false },
-    scale: {
-      mode: Phaser.Scale.FIT,
-      autoCenter: Phaser.Scale.CENTER_BOTH,
-      width: GAME_WIDTH,
-      height: GAME_HEIGHT
-    },
-    scene: [scene]
-  });
+  const layoutMedia = window.matchMedia(compactLandscapeQuery);
+  let scene: TankBattleScene;
+  let game: Phaser.Game;
+  let chatOpen = false;
+  const startPhaser = (layout: TankBattleLayout, localState?: TankBattleLocalState): void => {
+    scene = new TankBattleScene(() => client, layout, localState);
+    game = new Phaser.Game({
+      type: Phaser.AUTO,
+      parent: surface,
+      width: layout.width,
+      height: layout.height,
+      backgroundColor: "#101a35",
+      render: { antialias: true, pixelArt: false, roundPixels: false },
+      scale: {
+        mode: Phaser.Scale.FIT,
+        autoCenter: Phaser.Scale.CENTER_BOTH,
+        width: layout.width,
+        height: layout.height
+      },
+      scene: [scene]
+    });
+    if (chatOpen && game.input.keyboard) game.input.keyboard.enabled = false;
+  };
+  startPhaser(layoutMedia.matches ? compactLandscapeLayout : standardLayout);
   const gameUi = createGameUi(container, context, context);
   syncResultDialog(gameUi, client);
   const handleChatOpenChange = (event: Event): void => {
-    const open = (event as CustomEvent<{ open: boolean }>).detail.open;
-    if (game.input.keyboard) game.input.keyboard.enabled = !open;
+    chatOpen = (event as CustomEvent<{ open: boolean }>).detail.open;
+    if (game.input.keyboard) game.input.keyboard.enabled = !chatOpen;
   };
   container.addEventListener("bighouse-chat-open-change", handleChatOpenChange);
+  const handleLayoutChange = (event: MediaQueryListEvent): void => {
+    const localState = scene.captureLocalState();
+    scene.prepareDestroy();
+    game.destroy(true, false);
+    surface.replaceChildren();
+    startPhaser(event.matches ? compactLandscapeLayout : standardLayout, localState);
+  };
+  layoutMedia.addEventListener("change", handleLayoutChange);
 
   return {
     update(nextContext) {
@@ -100,6 +249,7 @@ export function mountGame(container: HTMLElement, context: GameClientContext): M
       scene.applySnapshot(client, previous);
     },
     destroy() {
+      layoutMedia.removeEventListener("change", handleLayoutChange);
       container.removeEventListener("bighouse-chat-open-change", handleChatOpenChange);
       gameUi.destroy();
       scene.prepareDestroy();
@@ -111,6 +261,7 @@ export function mountGame(container: HTMLElement, context: GameClientContext): M
 
 class TankBattleScene extends Phaser.Scene {
   private readonly getClient: () => TankBattleClient;
+  private readonly layout: TankBattleLayout;
   private readonly audio: TankBattleAudioController = createTankBattleAudio();
   private skyGraphics?: Phaser.GameObjects.Graphics;
   private terrainGraphics?: Phaser.GameObjects.Graphics;
@@ -149,9 +300,25 @@ class TankBattleScene extends Phaser.Scene {
   private flightSafetyTimer: Phaser.Time.TimerEvent | undefined;
   private soundingShotId: number | undefined;
 
-  constructor(getClient: () => TankBattleClient) {
+  constructor(getClient: () => TankBattleClient, layout: TankBattleLayout, localState?: TankBattleLocalState) {
     super({ key: "tank-battle" });
     this.getClient = getClient;
+    this.layout = layout;
+    if (localState) {
+      this.selectedItem = localState.selectedItem;
+      this.angle = localState.angle;
+      this.power = localState.power;
+      this.lastOwnShotPower = localState.lastOwnShotPower;
+    }
+  }
+
+  captureLocalState(): TankBattleLocalState {
+    return {
+      selectedItem: this.selectedItem,
+      angle: this.angle,
+      power: this.power,
+      ...(this.lastOwnShotPower === undefined ? {} : { lastOwnShotPower: this.lastOwnShotPower })
+    };
   }
 
   create(): void {
@@ -262,25 +429,150 @@ class TankBattleScene extends Phaser.Scene {
   }
 
   private createHud(): void {
+    const layout = this.layout;
     const style: Phaser.Types.GameObjects.Text.TextStyle = {
       fontFamily: "Inter, Pretendard, system-ui, sans-serif",
       color: "#f8fbff"
     };
-    this.statusText = this.add.text(500, 98, "", { ...style, fontSize: "20px", fontStyle: "bold" }).setOrigin(0.5).setDepth(12);
-    this.windText = this.add.text(500, 18, "", { ...style, fontSize: "17px", fontStyle: "bold" }).setOrigin(0.5).setDepth(12);
-    this.gravityText = this.add.text(500, 70, "", { ...style, fontSize: "13px", color: "#c7d7f4" }).setOrigin(0.5).setDepth(12);
+    this.statusText = this.add.text(layout.hudCenterX, 98, "", { ...style, fontSize: "20px", fontStyle: "bold" }).setOrigin(0.5).setDepth(12);
+    this.windText = this.add.text(layout.hudCenterX, 18, "", { ...style, fontSize: "17px", fontStyle: "bold" }).setOrigin(0.5).setDepth(12);
+    this.gravityText = this.add.text(layout.hudCenterX, 70, "", { ...style, fontSize: "13px", color: "#c7d7f4" }).setOrigin(0.5).setDepth(12);
     this.playerTexts = [
       this.add.text(28, 19, "", { ...style, fontSize: "16px", fontStyle: "bold" }).setDepth(12),
-      this.add.text(972, 19, "", { ...style, fontSize: "16px", fontStyle: "bold", align: "right" }).setOrigin(1, 0).setDepth(12)
+      this.add.text(layout.playerRightX, 19, "", { ...style, fontSize: "16px", fontStyle: "bold", align: "right" }).setOrigin(1, 0).setDepth(12)
     ];
   }
 
   private createControls(): void {
-    this.hudGraphics
-      ?.fillStyle(0x07101f, 1)
-      .fillRect(0, BATTLE_HEIGHT, GAME_WIDTH, GAME_HEIGHT - BATTLE_HEIGHT)
+    const layout = this.layout;
+    this.drawControlsBackground();
+
+    const minus = this.createButton(
+      layout.angle.minusX,
+      layout.angle.y,
+      layout.angle.buttonWidth,
+      layout.angle.buttonHeight,
+      "−",
+      () => this.changeAngle(-2),
+      30
+    );
+    const plus = this.createButton(
+      layout.angle.plusX,
+      layout.angle.y,
+      layout.angle.buttonWidth,
+      layout.angle.buttonHeight,
+      "+",
+      () => this.changeAngle(2),
+      30
+    );
+    this.angleButtons = [minus, plus];
+    this.angleText = this.add.text(layout.angle.textX, layout.angle.textY, "", {
+      fontFamily: "Inter, Pretendard, system-ui, sans-serif",
+      fontSize: "21px",
+      fontStyle: "bold",
+      color: "#ffffff",
+      align: "center"
+    }).setOrigin(0.5).setDepth(14);
+    this.add.text(layout.angle.textX, layout.angle.helpY, "← ↓  낮추기   ·   높이기  ↑ →", {
+      fontFamily: "Inter, Pretendard, system-ui, sans-serif",
+      fontSize: "12px",
+      fontStyle: "bold",
+      color: "#a9d8ff",
+      align: "center"
+    }).setOrigin(0.5).setDepth(14);
+
+    const itemEntries = ["megaBlast", "warhead", "scope"] as const;
+    itemEntries.forEach((item, index) => {
+      const button = this.createButton(
+        layout.items.startX + index * layout.items.stepX,
+        layout.items.startY + index * layout.items.stepY,
+        layout.items.width,
+        layout.items.height,
+        itemLabels[item],
+        () => this.selectItem(item),
+        layout.items.fontSize
+      );
+      this.itemButtons.set(item, button);
+    });
+
+    this.powerGaugeGraphics = this.add.graphics().setDepth(13);
+    this.powerText = this.add.text(layout.power.textX, layout.power.textY, "", {
+      fontFamily: "Inter, Pretendard, system-ui, sans-serif",
+      fontSize: "22px",
+      fontStyle: "bold",
+      color: "#ffffff"
+    }).setOrigin(0, 0.5).setDepth(14);
+    this.lastPowerText = this.add.text(layout.power.gaugeX, layout.power.markerLabelY, "", {
+      fontFamily: "Inter, Pretendard, system-ui, sans-serif",
+      fontSize: "12px",
+      fontStyle: "bold",
+      color: "#fde68a",
+      backgroundColor: "#422006",
+      padding: { x: 5, y: 2 }
+    }).setOrigin(0.5).setDepth(14).setVisible(false);
+    this.add.text(layout.power.gaugeX, layout.power.labelsY, "10", {
+      fontFamily: "Inter, Pretendard, system-ui, sans-serif",
+      fontSize: "12px",
+      fontStyle: "bold",
+      color: "#b9d9ff"
+    }).setOrigin(0.5).setDepth(14);
+    this.add.text(layout.power.helpX, layout.power.helpY, "Space / 버튼을 길게 눌러 충전", {
+      fontFamily: "Inter, Pretendard, system-ui, sans-serif",
+      fontSize: "12px",
+      fontStyle: "bold",
+      color: "#b9d9ff"
+    }).setOrigin(0.5).setDepth(14);
+    this.add.text(layout.power.gaugeX + layout.power.gaugeWidth, layout.power.labelsY, "100", {
+      fontFamily: "Inter, Pretendard, system-ui, sans-serif",
+      fontSize: "12px",
+      fontStyle: "bold",
+      color: "#b9d9ff"
+    }).setOrigin(0.5).setDepth(14);
+    this.fireButton = this.createButton(
+      layout.fire.x,
+      layout.fire.y,
+      layout.fire.width,
+      layout.fire.height,
+      "발사 · 길게 눌러 충전",
+      () => undefined,
+      layout.fire.fontSize
+    );
+    this.fireButton.container.on("pointerdown", (pointer: Phaser.Input.Pointer) => this.startCharge(pointer.id));
+  }
+
+  private drawControlsBackground(): void {
+    const graphics = this.hudGraphics;
+    if (!graphics) return;
+    graphics.clear();
+    if (this.layout.mode === "compact-landscape") {
+      graphics
+        .fillStyle(0x07101f, 1)
+        .fillRect(this.layout.battleWidth, 0, this.layout.width - this.layout.battleWidth, this.layout.height)
+        .lineStyle(3, 0x7dd3fc, 0.8)
+        .lineBetween(this.layout.battleWidth + 1, 0, this.layout.battleWidth + 1, this.layout.height)
+        .fillStyle(0x073e78, 0.96)
+        .fillRoundedRect(1020, 34, 460, 186, 18)
+        .lineStyle(3, 0x22d3ee, 1)
+        .strokeRoundedRect(1020, 34, 460, 186, 18)
+        .fillStyle(0x0b2039, 1)
+        .fillRoundedRect(1020, 234, 460, 168, 18)
+        .lineStyle(2, 0x38bdf8, 0.82)
+        .strokeRoundedRect(1020, 234, 460, 168, 18)
+        .fillStyle(0x0b2039, 1)
+        .fillRoundedRect(1020, 416, 460, 164, 18)
+        .lineStyle(2, 0x38bdf8, 0.82)
+        .strokeRoundedRect(1020, 416, 460, 164, 18)
+        .fillStyle(0x3a160c, 1)
+        .fillRoundedRect(1020, 594, 460, 186, 18)
+        .lineStyle(3, 0xfb923c, 1)
+        .strokeRoundedRect(1020, 594, 460, 186, 18);
+      return;
+    }
+    graphics
+      .fillStyle(0x07101f, 1)
+      .fillRect(0, this.layout.battleHeight, this.layout.width, this.layout.height - this.layout.battleHeight)
       .lineStyle(3, 0x7dd3fc, 0.8)
-      .lineBetween(0, BATTLE_HEIGHT + 1, GAME_WIDTH, BATTLE_HEIGHT + 1)
+      .lineBetween(0, this.layout.battleHeight + 1, this.layout.width, this.layout.battleHeight + 1)
       .fillStyle(0x073e78, 0.96)
       .fillRoundedRect(12, 610, 288, 82, 14)
       .lineStyle(3, 0x22d3ee, 1)
@@ -293,66 +585,6 @@ class TankBattleScene extends Phaser.Scene {
       .fillRoundedRect(688, 708, 300, 82, 14)
       .lineStyle(3, 0xfb923c, 1)
       .strokeRoundedRect(688, 708, 300, 82, 14);
-
-    const minus = this.createButton(54, 653, 72, 56, "−", () => this.changeAngle(-2), 30);
-    const plus = this.createButton(254, 653, 72, 56, "+", () => this.changeAngle(2), 30);
-    this.angleButtons = [minus, plus];
-    this.angleText = this.add.text(154, 638, "", {
-      fontFamily: "Inter, Pretendard, system-ui, sans-serif",
-      fontSize: "21px",
-      fontStyle: "bold",
-      color: "#ffffff",
-      align: "center"
-    }).setOrigin(0.5).setDepth(14);
-    this.add.text(154, 674, "← ↓  낮추기   ·   높이기  ↑ →", {
-      fontFamily: "Inter, Pretendard, system-ui, sans-serif",
-      fontSize: "12px",
-      fontStyle: "bold",
-      color: "#a9d8ff",
-      align: "center"
-    }).setOrigin(0.5).setDepth(14);
-
-    const itemEntries = ["megaBlast", "warhead", "scope"] as const;
-    itemEntries.forEach((item, index) => {
-      const button = this.createButton(385 + index * 168, 650, 154, 62, itemLabels[item], () => this.selectItem(item), 14);
-      this.itemButtons.set(item, button);
-    });
-
-    this.powerGaugeGraphics = this.add.graphics().setDepth(13);
-    this.powerText = this.add.text(36, 744, "", {
-      fontFamily: "Inter, Pretendard, system-ui, sans-serif",
-      fontSize: "22px",
-      fontStyle: "bold",
-      color: "#ffffff"
-    }).setOrigin(0, 0.5).setDepth(14);
-    this.lastPowerText = this.add.text(POWER_GAUGE_X, 718, "", {
-      fontFamily: "Inter, Pretendard, system-ui, sans-serif",
-      fontSize: "12px",
-      fontStyle: "bold",
-      color: "#fde68a",
-      backgroundColor: "#422006",
-      padding: { x: 5, y: 2 }
-    }).setOrigin(0.5).setDepth(14).setVisible(false);
-    this.add.text(POWER_GAUGE_X, 774, "10", {
-      fontFamily: "Inter, Pretendard, system-ui, sans-serif",
-      fontSize: "12px",
-      fontStyle: "bold",
-      color: "#b9d9ff"
-    }).setOrigin(0.5).setDepth(14);
-    this.add.text(410, 774, "Space / 버튼을 길게 눌러 충전", {
-      fontFamily: "Inter, Pretendard, system-ui, sans-serif",
-      fontSize: "12px",
-      fontStyle: "bold",
-      color: "#b9d9ff"
-    }).setOrigin(0.5).setDepth(14);
-    this.add.text(POWER_GAUGE_X + POWER_GAUGE_WIDTH, 774, "100", {
-      fontFamily: "Inter, Pretendard, system-ui, sans-serif",
-      fontSize: "12px",
-      fontStyle: "bold",
-      color: "#b9d9ff"
-    }).setOrigin(0.5).setDepth(14);
-    this.fireButton = this.createButton(838, 753, 276, 64, "발사 · 길게 눌러 충전", () => undefined, 20);
-    this.fireButton.container.on("pointerdown", (pointer: Phaser.Input.Pointer) => this.startCharge(pointer.id));
   }
 
   private createButton(
@@ -373,7 +605,10 @@ class TankBattleScene extends Phaser.Scene {
       color: "#f8fbff",
       align: "center"
     }).setOrigin(0.5);
-    const container = this.add.container(x, y, [background, label]).setSize(width, height).setInteractive({ useHandCursor: true });
+    const container = this.add.container(x, y, [background, label])
+      .setDepth(14)
+      .setSize(width, height)
+      .setInteractive({ useHandCursor: true });
     container.on("pointerover", () => background.setFillStyle(0x2c4772, 1));
     container.on("pointerout", () => this.refreshButtonStyles());
     container.on("pointerdown", (_pointer: Phaser.Input.Pointer, _localX: number, _localY: number, event: Phaser.Types.Input.EventData) => {
@@ -417,11 +652,11 @@ class TankBattleScene extends Phaser.Scene {
     if (!graphics) return;
     graphics.clear();
     graphics.fillGradientStyle(0x0d1732, 0x0d1732, 0x315687, 0x315687, 1);
-    graphics.fillRect(0, 0, GAME_WIDTH, BATTLE_HEIGHT);
+    graphics.fillRect(0, 0, this.layout.battleWidth, this.layout.battleHeight);
     graphics.fillStyle(0xf8e8b0, 0.92).fillCircle(850, 105, 38);
     graphics.fillStyle(0xffffff, 0.7);
     for (let index = 0; index < 52; index += 1) {
-      const x = (index * 191 + 43) % GAME_WIDTH;
+      const x = (index * 191 + 43) % this.layout.battleWidth;
       const y = 112 + ((index * 83) % 255);
       graphics.fillCircle(x, y, index % 5 === 0 ? 2 : 1);
     }
@@ -533,7 +768,7 @@ class TankBattleScene extends Phaser.Scene {
   private renderWindIndicator(wind: number): void {
     const graphics = this.windGraphics;
     if (!graphics) return;
-    const centerX = 500;
+    const centerX = this.layout.hudCenterX;
     const y = 47;
     const maxLength = 88;
     const normalized = clamp(Math.abs(wind) / MAX_WIND_SPEED, 0, 1);
@@ -563,31 +798,32 @@ class TankBattleScene extends Phaser.Scene {
   private renderPowerGauge(): void {
     const graphics = this.powerGaugeGraphics;
     if (!graphics) return;
+    const { gaugeX, gaugeY, gaugeWidth, gaugeHeight, markerLabelY } = this.layout.power;
     const currentPower = clamp(this.power, 10, 100);
-    const currentWidth = POWER_GAUGE_WIDTH * ((currentPower - 10) / 90);
+    const currentWidth = gaugeWidth * ((currentPower - 10) / 90);
 
     graphics.clear();
     graphics.fillStyle(0x030a14, 1).fillRoundedRect(
-      POWER_GAUGE_X,
-      POWER_GAUGE_Y,
-      POWER_GAUGE_WIDTH,
-      POWER_GAUGE_HEIGHT,
-      POWER_GAUGE_HEIGHT / 2
+      gaugeX,
+      gaugeY,
+      gaugeWidth,
+      gaugeHeight,
+      gaugeHeight / 2
     );
     graphics.lineStyle(2, 0x7dd3fc, 0.9).strokeRoundedRect(
-      POWER_GAUGE_X,
-      POWER_GAUGE_Y,
-      POWER_GAUGE_WIDTH,
-      POWER_GAUGE_HEIGHT,
-      POWER_GAUGE_HEIGHT / 2
+      gaugeX,
+      gaugeY,
+      gaugeWidth,
+      gaugeHeight,
+      gaugeHeight / 2
     );
     if (currentWidth > 0) {
       graphics.fillStyle(this.chargeStartedAt === undefined ? 0x22d3ee : 0xfbbf24, 1).fillRoundedRect(
-        POWER_GAUGE_X + 3,
-        POWER_GAUGE_Y + 3,
+        gaugeX + 3,
+        gaugeY + 3,
         Math.max(6, currentWidth - 6),
-        POWER_GAUGE_HEIGHT - 6,
-        (POWER_GAUGE_HEIGHT - 6) / 2
+        gaugeHeight - 6,
+        (gaugeHeight - 6) / 2
       );
     }
 
@@ -596,12 +832,12 @@ class TankBattleScene extends Phaser.Scene {
       return;
     }
     const previousPower = clamp(this.lastOwnShotPower, 10, 100);
-    const markerX = POWER_GAUGE_X + POWER_GAUGE_WIDTH * ((previousPower - 10) / 90);
-    graphics.lineStyle(3, 0xfde047, 1).lineBetween(markerX, POWER_GAUGE_Y - 5, markerX, POWER_GAUGE_Y + POWER_GAUGE_HEIGHT + 3);
-    graphics.fillStyle(0xfde047, 1).fillTriangle(markerX, POWER_GAUGE_Y - 1, markerX - 5, POWER_GAUGE_Y - 8, markerX + 5, POWER_GAUGE_Y - 8);
+    const markerX = gaugeX + gaugeWidth * ((previousPower - 10) / 90);
+    graphics.lineStyle(3, 0xfde047, 1).lineBetween(markerX, gaugeY - 5, markerX, gaugeY + gaugeHeight + 3);
+    graphics.fillStyle(0xfde047, 1).fillTriangle(markerX, gaugeY - 1, markerX - 5, gaugeY - 8, markerX + 5, gaugeY - 8);
     this.lastPowerText
       ?.setText(`이전 발사 ${Math.round(previousPower)}`)
-      .setPosition(clamp(markerX, POWER_GAUGE_X + 42, POWER_GAUGE_X + POWER_GAUGE_WIDTH - 42), 718)
+      .setPosition(clamp(markerX, gaugeX + 42, gaugeX + gaugeWidth - 42), markerLabelY)
       .setVisible(true);
   }
 
@@ -837,7 +1073,10 @@ class TankBattleScene extends Phaser.Scene {
 
   private handleBattlefieldPointerDown(pointer: Phaser.Input.Pointer): void {
     void this.audio.unlock();
-    if (!pointer.wasTouch || pointer.worldY < 0 || pointer.worldY >= GAME_HEIGHT || !this.canAim()) return;
+    if (
+      !pointer.wasTouch || pointer.worldX < 0 || pointer.worldX >= this.layout.aimWidth ||
+      pointer.worldY < 0 || pointer.worldY >= this.layout.aimHeight || !this.canAim()
+    ) return;
     this.activeAimPointerId = pointer.id;
     this.updateAngleFromPointer(pointer);
   }
