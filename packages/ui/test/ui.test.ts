@@ -11,6 +11,7 @@ import {
 
 afterEach(() => {
   document.body.replaceChildren();
+  vi.useRealTimers();
 });
 
 describe("@bighouse/ui", () => {
@@ -53,6 +54,8 @@ describe("@bighouse/ui", () => {
     expect(chat.shadowRoot!.activeElement).toBe(input);
     input.value = "hello";
     input.dispatchEvent(new InputEvent("input", { bubbles: true }));
+    input.setSelectionRange(2, 2);
+    input.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
     chat.messages = [{
       scope: "room",
       visibility: "public",
@@ -63,9 +66,10 @@ describe("@bighouse/ui", () => {
     }];
     await Promise.resolve();
     const updatedInput = chat.shadowRoot!.querySelector("input")!;
+    expect(updatedInput).toBe(input);
     expect(updatedInput.value).toBe("hello");
+    expect(updatedInput.selectionStart).toBe(2);
     expect(chat.shadowRoot!.activeElement).toBe(updatedInput);
-    updatedInput.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
     chat.shadowRoot!.querySelector("form")!.dispatchEvent(new SubmitEvent("submit", { bubbles: true, cancelable: true, submitter: chat.shadowRoot!.querySelector("button") }));
     expect(sent).not.toHaveBeenCalled();
     updatedInput.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true }));
@@ -73,6 +77,139 @@ describe("@bighouse/ui", () => {
     expect(sent).toHaveBeenCalledOnce();
     updatedInput.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
     expect(chat.open).toBe(false);
+  });
+
+  it("dismisses the expanded composer with a visible close control", async () => {
+    registerBighouseUi();
+    const chat = document.createElement("bighouse-game-chat") as BighouseGameChatElement;
+    document.body.append(chat);
+    chat.open = true;
+    await Promise.resolve();
+    const close = chat.shadowRoot!.querySelector<HTMLButtonElement>("[aria-label='Close chat']");
+    expect(close).not.toBeNull();
+    const input = chat.shadowRoot!.querySelector<HTMLInputElement>("input")!;
+    input.value = "unfinished";
+    input.dispatchEvent(new InputEvent("input", { bubbles: true }));
+    close!.click();
+    expect(chat.open).toBe(false);
+    chat.open = true;
+    await Promise.resolve();
+    expect(chat.shadowRoot!.querySelector<HTMLInputElement>("input")?.value).toBe("unfinished");
+  });
+
+  it("keeps chess moves out of chat and does not refocus during game-only updates", async () => {
+    const host = document.createElement("div");
+    const gameControl = document.createElement("button");
+    gameControl.textContent = "Game control";
+    host.append(gameControl);
+    document.body.append(host);
+    const initial = {
+      ...snapshot(),
+      phase: "active" as const,
+      publicView: { history: [] }
+    };
+    const ui = createGameUi(host, initial, actionSpies());
+    const chat = host.querySelector("bighouse-game-chat") as BighouseGameChatElement;
+    chat.open = true;
+    await Promise.resolve();
+    const originalInput = chat.shadowRoot!.querySelector("input");
+    gameControl.focus();
+
+    ui.update({
+      ...initial,
+      version: 2,
+      uiRevision: 2,
+      publicView: { history: ["e4"] }
+    });
+    await Promise.resolve();
+
+    expect(chat.shadowRoot!.querySelector("input")).toBe(originalInput);
+    expect(document.activeElement).toBe(gameControl);
+    expect(chat.shadowRoot!.querySelector("[role='log']")?.textContent).not.toContain("e4");
+    expect(chat.shadowRoot!.querySelector("[role='log']")?.textContent).not.toContain("Moves");
+
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    expect(chat.shadowRoot!.activeElement).toBe(originalInput);
+    ui.destroy();
+  });
+
+  it("does not extend chat visibility for duplicate snapshots", async () => {
+    vi.useFakeTimers();
+    registerBighouseUi();
+    const chat = document.createElement("bighouse-game-chat") as BighouseGameChatElement;
+    document.body.append(chat);
+    chat.messages = chatHistory(1, 0);
+
+    await vi.advanceTimersByTimeAsync(59_000);
+    chat.messages = chatHistory(1, 0);
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(chat.shadowRoot!.querySelector(".bh-chat")?.classList.contains("is-fading")).toBe(true);
+  });
+
+  it("defers inactivity dismissal while text composition is active", async () => {
+    vi.useFakeTimers();
+    registerBighouseUi();
+    const chat = document.createElement("bighouse-game-chat") as BighouseGameChatElement;
+    document.body.append(chat);
+    chat.open = true;
+    await Promise.resolve();
+    const input = chat.shadowRoot!.querySelector<HTMLInputElement>("input")!;
+    input.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(chat.open).toBe(true);
+    expect(chat.shadowRoot!.querySelector(".bh-chat")?.classList.contains("is-fading")).toBe(false);
+
+    input.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true }));
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(chat.shadowRoot!.querySelector(".bh-chat")?.classList.contains("is-fading")).toBe(true);
+  });
+
+  it("resets inactivity on receive and input, then fades away after one minute", async () => {
+    vi.useFakeTimers();
+    registerBighouseUi();
+    const chat = document.createElement("bighouse-game-chat") as BighouseGameChatElement;
+    const gameControl = document.createElement("button");
+    gameControl.textContent = "Game control";
+    document.body.append(chat, gameControl);
+    chat.messages = chatHistory(1, 0);
+    await vi.advanceTimersByTimeAsync(59_000);
+    expect(chat.shadowRoot!.querySelector(".bh-chat")?.classList.contains("is-fading")).toBe(false);
+
+    chat.messages = chatHistory(2, 0);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(chat.shadowRoot!.querySelector(".bh-chat")?.classList.contains("is-fading")).toBe(false);
+
+    chat.open = true;
+    await Promise.resolve();
+    const input = chat.shadowRoot!.querySelector<HTMLInputElement>("input")!;
+    input.value = "draft";
+    input.dispatchEvent(new InputEvent("input", { bubbles: true }));
+    await vi.advanceTimersByTimeAsync(59_999);
+    expect(chat.open).toBe(true);
+    expect(chat.shadowRoot!.querySelector(".bh-chat")?.classList.contains("is-fading")).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(chat.shadowRoot!.querySelector(".bh-chat")?.classList.contains("is-fading")).toBe(true);
+
+    chat.messages = chatHistory(3, 0);
+    expect(chat.shadowRoot!.querySelector(".bh-chat")?.classList.contains("is-fading")).toBe(false);
+    await vi.advanceTimersByTimeAsync(280);
+    expect(chat.open).toBe(true);
+    expect(chat.shadowRoot!.querySelector(".bh-chat")?.classList.contains("is-visible")).toBe(true);
+
+    gameControl.focus();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(chat.shadowRoot!.querySelector(".bh-chat")?.classList.contains("is-fading")).toBe(true);
+    await vi.advanceTimersByTimeAsync(280);
+    expect(chat.open).toBe(false);
+    expect(chat.shadowRoot!.querySelector(".bh-chat")?.classList.contains("is-visible")).toBe(false);
+    expect(document.activeElement).toBe(gameControl);
+
+    chat.open = true;
+    await Promise.resolve();
+    expect(chat.shadowRoot!.querySelector<HTMLInputElement>("input")?.value).toBe("draft");
   });
 
   it("counts unread messages after capped histories and makes the open log scrollable", () => {

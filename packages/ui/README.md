@@ -23,7 +23,7 @@ export function mountGame(container, context) {
 `createGameUi()` mounts:
 
 - `<bighouse-room-controls>` for waiting, ready/start, host transfer, bot management, interruption/restart, share, and leave actions.
-- `<bighouse-game-chat>` for the transparent in-game log, desktop Enter shortcut, IME-safe input, unread state, and mobile floating trigger.
+- `<bighouse-game-chat>` for the transparent in-game log, desktop Enter shortcut, IME-safe input, unread state, explicit close control, mobile floating trigger, and a one-minute inactivity fade after the latest send, receive, or input activity.
 - `<bighouse-game-result-dialog>` and `<bighouse-game-modal>` for result/rematch and lifecycle notices.
 
 Call `setResult()` with the game-specific winner/result copy. The controller connects component events to the stable `GameClientActions` supplied at mount time.

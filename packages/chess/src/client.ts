@@ -192,7 +192,6 @@ export function createChessGame(container: HTMLElement, client: ChessClient) {
       cell.dataset.gameElastic = "off";
       cell.disabled = !active || Boolean(publicView.result);
       cell.ariaLabel = `${piece ? `${pieceName(piece)} on ${square}` : `empty ${square}`}${legalDestination ? ", legal move" : ""}${unsafeDestination ? ", unsafe move would leave king in check" : ""}`;
-      cell.addEventListener("mousedown", preventButtonFocus);
       cell.addEventListener("click", (event) => {
         event.preventDefault();
         cell.blur();
@@ -496,10 +495,6 @@ function restoreScrollSnapshot(history: HTMLElement, snapshot: ScrollSnapshot): 
     history.scrollTop = snapshot.historyTop;
     window.scrollTo(snapshot.windowX, snapshot.windowY);
   });
-}
-
-function preventButtonFocus(event: MouseEvent): void {
-  event.preventDefault();
 }
 
 function orderedSquares(blackPerspective: boolean): ChessSquare[] {
