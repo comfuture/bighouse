@@ -63,13 +63,14 @@ export function mountGame(container: HTMLElement, context: GameClientContext): M
     leaveFinishedGame: context.leaveFinishedGame
   };
   let client = toTankBattleClient(context, callbacks);
-  container.classList.add("tank-battle-game");
-  container.replaceChildren();
+  const surface = document.createElement("div");
+  surface.className = "game-contained-surface tank-battle-game";
+  container.replaceChildren(surface);
 
   const scene = new TankBattleScene(() => client);
   const game = new Phaser.Game({
     type: Phaser.AUTO,
-    parent: container,
+    parent: surface,
     width: GAME_WIDTH,
     height: GAME_HEIGHT,
     backgroundColor: "#101a35",
@@ -103,8 +104,7 @@ export function mountGame(container: HTMLElement, context: GameClientContext): M
       gameUi.destroy();
       scene.prepareDestroy();
       game.destroy(true, false);
-      container.classList.remove("tank-battle-game");
-      container.replaceChildren();
+      surface.remove();
     }
   };
 }

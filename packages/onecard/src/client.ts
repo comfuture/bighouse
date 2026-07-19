@@ -110,8 +110,10 @@ function toOneCardClient(context: GameClientContext): OneCardClient {
 export function createOneCardGame(container: HTMLElement, client: OneCardClient): OneCardGameInstance {
   const state = { ...client };
 
-  container.classList.add("onecard-game");
-  container.innerHTML = `
+  const surface = document.createElement("div");
+  surface.className = "game-contained-surface onecard-game";
+  container.replaceChildren(surface);
+  surface.innerHTML = `
     <div class="onecard-table">
       <!-- Opponent Seats -->
       <div class="opponent-seats">
@@ -184,24 +186,24 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
   `;
 
   // Query DOM selectors
-  const seatTop = container.querySelector<HTMLElement>("[data-role='seat-top']");
-  const seatLeft = container.querySelector<HTMLElement>("[data-role='seat-left']");
-  const seatRight = container.querySelector<HTMLElement>("[data-role='seat-right']");
-  const deckEl = container.querySelector<HTMLElement>("[data-role='deck']");
-  const deckCountEl = container.querySelector<HTMLElement>("[data-role='deck-count']");
-  const directionEl = container.querySelector<HTMLElement>("[data-role='direction-indicator']");
-  const discardHolder = container.querySelector<HTMLElement>("[data-role='discard-card-holder']");
-  const discardEl = container.querySelector<HTMLElement>("[data-role='discard']");
-  const wildSuitBanner = container.querySelector<HTMLElement>("[data-role='wild-suit-banner']");
-  const actionToast = container.querySelector<HTMLElement>("[data-role='action-toast']");
-  const statusBar = container.querySelector<HTMLElement>("[data-role='status-bar']");
-  const turnTracker = container.querySelector<HTMLElement>("[data-role='turn-tracker']");
-  const playerHandContainer = container.querySelector<HTMLElement>("[data-role='player-hand-container']");
-  const playerName = container.querySelector<HTMLElement>("[data-role='player-name']");
-  const playerHandEl = container.querySelector<HTMLElement>("[data-role='player-hand']");
-  const drawButton = container.querySelector<HTMLButtonElement>("[data-role='draw-button']");
-  const passButton = container.querySelector<HTMLButtonElement>("[data-role='pass-button']");
-  const suitPicker = container.querySelector<HTMLElement>("[data-role='suit-picker']");
+  const seatTop = surface.querySelector<HTMLElement>("[data-role='seat-top']");
+  const seatLeft = surface.querySelector<HTMLElement>("[data-role='seat-left']");
+  const seatRight = surface.querySelector<HTMLElement>("[data-role='seat-right']");
+  const deckEl = surface.querySelector<HTMLElement>("[data-role='deck']");
+  const deckCountEl = surface.querySelector<HTMLElement>("[data-role='deck-count']");
+  const directionEl = surface.querySelector<HTMLElement>("[data-role='direction-indicator']");
+  const discardHolder = surface.querySelector<HTMLElement>("[data-role='discard-card-holder']");
+  const discardEl = surface.querySelector<HTMLElement>("[data-role='discard']");
+  const wildSuitBanner = surface.querySelector<HTMLElement>("[data-role='wild-suit-banner']");
+  const actionToast = surface.querySelector<HTMLElement>("[data-role='action-toast']");
+  const statusBar = surface.querySelector<HTMLElement>("[data-role='status-bar']");
+  const turnTracker = surface.querySelector<HTMLElement>("[data-role='turn-tracker']");
+  const playerHandContainer = surface.querySelector<HTMLElement>("[data-role='player-hand-container']");
+  const playerName = surface.querySelector<HTMLElement>("[data-role='player-name']");
+  const playerHandEl = surface.querySelector<HTMLElement>("[data-role='player-hand']");
+  const drawButton = surface.querySelector<HTMLButtonElement>("[data-role='draw-button']");
+  const passButton = surface.querySelector<HTMLButtonElement>("[data-role='pass-button']");
+  const suitPicker = surface.querySelector<HTMLElement>("[data-role='suit-picker']");
   let gameUi: MountedGameUi | undefined;
 
   // State variable for pending suit choice
@@ -937,8 +939,7 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
       if (localDrawRevealClearTimer) window.clearTimeout(localDrawRevealClearTimer);
       if (directionFlashTimer) window.clearTimeout(directionFlashTimer);
       clearFlightAnimations();
-      container.classList.remove("onecard-game");
-      container.innerHTML = "";
+      surface.remove();
     }
   };
 }

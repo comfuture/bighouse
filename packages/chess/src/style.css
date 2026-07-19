@@ -1,6 +1,10 @@
 .chess-game {
   display: grid;
   gap: 14px;
+  width: min(100%, 820px);
+  max-height: 100svh;
+  overflow: auto;
+  padding: clamp(8px, 1.5vmin, 14px);
   color: inherit;
 }
 
@@ -111,7 +115,7 @@
 .chess-board-frame {
   position: relative;
   aspect-ratio: 1;
-  width: min(100%, 72vh);
+  width: min(100%, 72vh, calc(100svh - 118px));
   overflow-anchor: none;
 }
 
@@ -391,7 +395,7 @@
   color: #ffffff;
 }
 
-@media (max-width: 720px) {
+@media (max-width: 520px) {
   .chess-layout {
     grid-template-columns: 1fr;
   }
@@ -413,6 +417,16 @@
   .chess-history {
     max-block-size: 132px;
   }
+}
+
+@media (max-height: 520px) {
+  .chess-game { gap: 7px; padding: 6px; }
+  .chess-header { min-height: 28px; }
+  .chess-status { min-height: 26px; font-size: .85rem; }
+  .chess-turn-notice { min-height: 28px; font-size: .75rem; }
+  .chess-clock { padding: 5px 8px; }
+  .chess-board-frame { width: min(100%, calc(100svh - 100px)); }
+  .chess-side { display: none; }
 }
 
 @keyframes chess-check-flash {
