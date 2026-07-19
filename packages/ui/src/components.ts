@@ -32,6 +32,17 @@ export class BighouseRoomControlsElement extends HTMLElement {
   #botPanelOpen = false;
   #botDifficulty: BotDifficulty = "medium";
   #botCount = 1;
+  #batchBotSupported = true;
+
+  set batchBotSupported(value: boolean) {
+    this.#batchBotSupported = value;
+    if (!value) this.#botCount = 1;
+    this.render();
+  }
+
+  get batchBotSupported(): boolean {
+    return this.#batchBotSupported;
+  }
 
   set snapshot(value: GameClientSnapshot | undefined) {
     this.#snapshot = value;
@@ -186,7 +197,7 @@ export class BighouseRoomControlsElement extends HTMLElement {
     difficultyLabel.append(difficultySelect);
     fields.append(difficultyLabel);
 
-    if (remainingSlots > 1) {
+    if (this.#batchBotSupported && remainingSlots > 1) {
       const countLabel = textElement("label", "", "Players");
       const countSelect = document.createElement("select");
       countSelect.setAttribute("aria-label", "Bot player count");
@@ -216,7 +227,9 @@ export class BighouseRoomControlsElement extends HTMLElement {
     panel.append(add);
     panel.addEventListener("submit", (event) => {
       event.preventDefault();
-      const count = remainingSlots === 1 ? 1 : Math.max(1, Math.min(this.#botCount, remainingSlots));
+      const count = remainingSlots === 1 || !this.#batchBotSupported
+        ? 1
+        : Math.max(1, Math.min(this.#botCount, remainingSlots));
       emit(this, "bighouse-add-bot", { difficulty: this.#botDifficulty, count });
       this.#botPanelOpen = false;
       this.#botCount = 1;

@@ -175,18 +175,11 @@ const gameActions: GameClientActions = {
   restartGame() {
     ws?.send(JSON.stringify({ type: "restartGame", playerId: identity.playerId }));
   },
-  addBot(difficulty: BotDifficulty, countOrDisplayName: number | string = 1, displayName?: string) {
-    const count = typeof countOrDisplayName === "number" ? countOrDisplayName : 1;
-    const resolvedDisplayName = typeof countOrDisplayName === "string" ? countOrDisplayName : displayName;
-    ws?.send(
-      JSON.stringify({
-        type: "addBot",
-        playerId: identity.playerId,
-        difficulty,
-        count,
-        ...(resolvedDisplayName ? { displayName: resolvedDisplayName } : {})
-      })
-    );
+  addBot(difficulty: BotDifficulty, displayName?: string) {
+    sendAddBotRequest(difficulty, 1, displayName);
+  },
+  addBots(difficulty: BotDifficulty, count: number, displayName?: string) {
+    sendAddBotRequest(difficulty, count, displayName);
   },
   removeBot(botPlayerId) {
     ws?.send(JSON.stringify({ type: "removeBot", playerId: identity.playerId, botPlayerId }));
@@ -211,6 +204,18 @@ const gameActions: GameClientActions = {
     void replaceRoomRoute(lobbyPath.value);
   }
 };
+
+function sendAddBotRequest(difficulty: BotDifficulty, count: number, displayName?: string): void {
+  ws?.send(
+    JSON.stringify({
+      type: "addBot",
+      playerId: identity.playerId,
+      difficulty,
+      count,
+      ...(displayName ? { displayName } : {})
+    })
+  );
+}
 
 onMounted(() => {
   roomViewMounted = true;
