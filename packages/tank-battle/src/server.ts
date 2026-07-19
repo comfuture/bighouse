@@ -1,5 +1,6 @@
 import type {
   ActionResult,
+  BotDifficulty,
   BotGameContext,
   ClientGameAction,
   GameAction,
@@ -15,14 +16,18 @@ import { createGameEventId, defineGameDefinition } from "@bighouse/game-sdk/serv
 import { baseGameMetadata } from "./metadata";
 import {
   carveAndSettleTerrain,
+  clamp,
   generateTerrain,
   hashSeed,
   itemStats,
+  nextRandom,
+  particleSplashDamage,
   simulateTrajectory,
   spawnXForSeat,
   tankFacing,
   terrainHeightAt,
-  windFromState
+  windFromState,
+  type TrajectoryResult
 } from "./physics";
 import {
   MAX_HEALTH,
@@ -30,6 +35,7 @@ import {
   TURN_MS,
   WORLD_HEIGHT,
   WORLD_WIDTH,
+  type BotAimHistoryEntry,
   type LastShot,
   type PendingShotResolution,
   type ShotDamage,
@@ -65,6 +71,7 @@ export const tankBattleDefinition = defineGameDefinition(gameMetadata, {
       gravity: 58,
       wind: randomWind.wind,
       tanks,
+      botAimHistory: {},
       turnPhase: "aiming",
       turnNumber: 1,
       ...(currentPlayerId ? { currentPlayerId, turnDeadline: context.now + TURN_MS } : {})
@@ -147,6 +154,7 @@ export const tankBattleDefinition = defineGameDefinition(gameMetadata, {
     });
     const stats = itemStats(parsed.item);
     const damage: ShotDamage[] = [];
+    const debrisSeed = hashSeed(`${stage.terrainSeed}:${stage.turnNumber}:${action.playerId}`);
     let resolvedTerrain = stage.terrain;
     const resolvedTanks = stage.tanks.map((tank) => ({ ...tank }));
 
@@ -160,20 +168,47 @@ export const tankBattleDefinition = defineGameDefinition(gameMetadata, {
       );
       for (const tank of resolvedTanks) {
         const blastDistance = Math.hypot(trajectory.impact.x - tank.x, trajectory.impact.y - (tank.y - 8));
-        const blastDamage = trajectory.directHitPlayerId === tank.playerId
-          ? stats.maxDamage
+        const damageBudget = Math.min(stats.maxDamage, tank.health);
+        const rawDirectHitDamage = trajectory.directHitPlayerId === tank.playerId ? stats.maxDamage : 0;
+        const directHitDamage = Math.min(rawDirectHitDamage, damageBudget);
+        const rawBlastDamage = directHitDamage > 0
+          ? 0
           : Math.max(0, Math.round(stats.maxDamage * (1 - blastDistance / stats.explosionRadius)));
+        const blastDamage = Math.min(rawBlastDamage, Math.max(0, damageBudget - directHitDamage));
+        const particle = !trajectory.directHitPlayerId && blastDamage === 0
+          ? particleSplashDamage({
+              impact: trajectory.impact,
+              target: tank,
+              explosionRadius: stats.explosionRadius,
+              splashRadius: stats.particleSplashRadius,
+              maxParticleDamage: stats.maxParticleDamage,
+              seed: debrisSeed
+            })
+          : {
+              damage: 0,
+              fragmentHits: 0,
+              distance: Math.round(blastDistance * 100) / 100,
+              splashRadius: stats.particleSplashRadius
+            };
+        const particleDamage = Math.min(particle.damage, Math.max(0, damageBudget - directHitDamage - blastDamage));
         const oldY = tank.y;
         const nextY = terrainHeightAt(resolvedTerrain, tank.x, stage.terrainStep) - 10;
         const fallDistance = Math.max(0, nextY - oldY);
-        const fallDamage = fallDistance > 52 ? Math.min(28, Math.round((fallDistance - 52) * 0.42)) : 0;
-        const totalDamage = Math.max(0, blastDamage + fallDamage);
+        const rawFallDamage = fallDistance > 52 ? Math.min(28, Math.round((fallDistance - 52) * 0.42)) : 0;
+        const impactDamage = directHitDamage + blastDamage + particleDamage;
+        const fallDamage = Math.min(rawFallDamage, Math.max(0, damageBudget - impactDamage));
+        const totalDamage = impactDamage + fallDamage;
         tank.y = Math.round(nextY * 100) / 100;
         if (totalDamage > 0) {
           tank.health = Math.max(0, tank.health - totalDamage);
           damage.push({
             playerId: tank.playerId,
+            directHitDamage,
             blastDamage,
+            particleDamage,
+            particleHits: particle.fragmentHits,
+            particleSplashRadius: particle.splashRadius,
+            impactDistance: particle.distance,
             fallDamage,
             totalDamage,
             remainingHealth: tank.health
@@ -195,7 +230,7 @@ export const tankBattleDefinition = defineGameDefinition(gameMetadata, {
       explosionRadius: trajectory.impact ? stats.explosionRadius : 0,
       maxDamage: trajectory.impact ? stats.maxDamage : 0,
       damage: [],
-      debrisSeed: hashSeed(`${stage.terrainSeed}:${stage.turnNumber}:${action.playerId}`),
+      debrisSeed,
       replayDurationMs: trajectory.impact
         ? Math.min(4_200, Math.max(1_900, 1_150 + trajectory.trajectory.length * 14))
         : Math.min(3_200, Math.max(1_100, 780 + trajectory.trajectory.length * 12)),
@@ -203,10 +238,12 @@ export const tankBattleDefinition = defineGameDefinition(gameMetadata, {
       ...(trajectory.directHitPlayerId ? { directHitPlayerId: trajectory.directHitPlayerId } : {})
     };
     stage.lastShot = lastShot;
+    const botAimUpdate = createBotAimUpdate(stage, state.players, action.playerId, parsed.angle, parsed.power, trajectory);
     stage.pendingResolution = {
       terrain: resolvedTerrain,
       tanks: resolvedTanks,
-      damage
+      damage,
+      ...(botAimUpdate ? { botAimUpdate } : {})
     } satisfies PendingShotResolution;
     beginShotResolution(stage, state.players, action.playerId, context.now, lastShot.replayDurationMs);
 
@@ -266,6 +303,12 @@ export const tankBattleDefinition = defineGameDefinition(gameMetadata, {
       const pending = stage.pendingResolution;
       stage.terrain = pending.terrain;
       stage.tanks = pending.tanks;
+      if (pending.botAimUpdate) {
+        stage.botAimHistory = {
+          ...(stage.botAimHistory ?? {}),
+          [pending.botAimUpdate.playerId]: pending.botAimUpdate.history
+        };
+      }
       if (stage.lastShot) {
         stage.lastShot = {
           ...stage.lastShot,
@@ -433,6 +476,7 @@ export function tankBattleStage(value: JsonObject): TankBattleStageState {
     gravity: stage.gravity ?? 58,
     wind: stage.wind ?? 0,
     tanks: stage.tanks ?? [],
+    botAimHistory: stage.botAimHistory ?? {},
     turnPhase: stage.turnPhase ?? "aiming",
     turnNumber: stage.turnNumber ?? 1,
     ...(stage.currentPlayerId ? { currentPlayerId: stage.currentPlayerId } : {}),
@@ -540,6 +584,81 @@ function event(type: string, visibility: "public" | "private" | "system", payloa
   return { id: createGameEventId(), type, visibility, payload, createdAt: now };
 }
 
+function createBotAimUpdate(
+  stage: TankBattleStageState,
+  players: PlayerSeat[],
+  shooterPlayerId: string,
+  angle: number,
+  power: number,
+  trajectory: TrajectoryResult
+): PendingShotResolution["botAimUpdate"] {
+  const player = players.find((candidate) => candidate.playerId === shooterPlayerId);
+  const shooter = stage.tanks.find((tank) => tank.playerId === shooterPlayerId);
+  const target = stage.tanks.find((tank) => tank.playerId !== shooterPlayerId && tank.health > 0);
+  const finalPoint = trajectory.impact ?? trajectory.trajectory[trajectory.trajectory.length - 1];
+  if (player?.kind !== "bot" || !shooter || !target || !finalPoint) return undefined;
+
+  const facing = tankFacing(shooter);
+  const signedHorizontalError = Math.round((finalPoint.x - target.x) * facing * 10) / 10;
+  const missDistance = Math.round(Math.hypot(finalPoint.x - target.x, finalPoint.y - (target.y - 8)) * 10) / 10;
+  const previous = stage.botAimHistory?.[shooterPlayerId];
+  const hit = trajectory.directHitPlayerId === target.playerId;
+  const history: BotAimHistoryEntry = {
+    targetPlayerId: target.playerId,
+    shots: (previous?.shots ?? 0) + 1,
+    outcome: hit ? "hit" : signedHorizontalError < 0 ? "undershoot" : "overshoot",
+    signedHorizontalError: hit ? 0 : signedHorizontalError,
+    missDistance: hit ? 0 : missDistance,
+    angle,
+    power
+  };
+  return { playerId: shooterPlayerId, history };
+}
+
+type BotAimProfile = {
+  windAwareness: number;
+  distanceError: [number, number];
+  angleError: [number, number];
+  powerError: [number, number];
+  historyGain: number;
+  historyCap: number;
+  angles: number[];
+  powers: number[];
+};
+
+const botAimProfiles: Record<BotDifficulty, BotAimProfile> = {
+  low: {
+    windAwareness: 0.05,
+    distanceError: [75, 165],
+    angleError: [6, 13],
+    powerError: [5, 11],
+    historyGain: 0.012,
+    historyCap: 4,
+    angles: [24, 36, 48, 60, 72],
+    powers: [22, 34, 46, 58, 70, 82, 94]
+  },
+  medium: {
+    windAwareness: 0.46,
+    distanceError: [32, 78],
+    angleError: [2.5, 6],
+    powerError: [2.5, 6.5],
+    historyGain: 0.026,
+    historyCap: 7,
+    angles: [20, 28, 36, 44, 52, 60, 68, 76],
+    powers: [20, 28, 36, 44, 52, 60, 68, 76, 84, 92, 100]
+  },
+  high: {
+    windAwareness: 0.82,
+    distanceError: [12, 34],
+    angleError: [0.8, 2.6],
+    powerError: [1.2, 3.8],
+    historyGain: 0.042,
+    historyCap: 9,
+    angles: [18, 23, 28, 33, 38, 43, 48, 53, 58, 63, 68, 73, 78],
+    powers: [18, 24, 30, 36, 42, 48, 54, 60, 66, 72, 78, 84, 90, 96]
+  }
+};
+
 function selectTankBattleBotAction(context: BotGameContext): GameAction | null {
   const stage = tankBattleStage(context.state.stageState);
   const shooter = stage.tanks.find((tank) => tank.playerId === context.player.playerId);
@@ -555,28 +674,55 @@ function selectTankBattleBotAction(context: BotGameContext): GameAction | null {
     return null;
   }
   const facing = tankFacing(shooter);
-  const angles = context.difficulty === "low" ? [35, 45, 55] : [20, 28, 36, 44, 52, 60, 68, 76];
-  const powers = context.difficulty === "high" ? [22, 30, 38, 46, 54, 62, 70, 78, 86, 94] : [28, 40, 52, 64, 76, 88];
+  const profile = botAimProfiles[context.difficulty];
+  const noiseSeed = hashSeed(`${stage.terrainSeed}:${stage.turnNumber}:${shooter.playerId}:${context.difficulty}:aim`);
+  const distanceError = stableSignedBotNoise(noiseSeed, "distance", profile.distanceError);
+  const estimatedTarget = {
+    x: target.x + facing * distanceError,
+    y: target.y - 8
+  };
+  const modeledWind = stage.wind * profile.windAwareness;
+  const perceivedWind = Math.abs(modeledWind) < 1 ? 0 : modeledWind;
   let best: { angle: number; power: number; score: number } | undefined;
-  for (const angle of angles) {
-    for (const power of powers) {
+  for (const angle of profile.angles) {
+    for (const power of profile.powers) {
       const result = simulateTrajectory({
         start: { x: shooter.x + facing * 19, y: shooter.y - 20 },
         facing,
         angle,
         power,
         gravity: stage.gravity,
-        wind: stage.wind,
+        wind: perceivedWind,
         terrain: stage.terrain,
         tanks: stage.tanks,
         shooterPlayerId: shooter.playerId
       });
       const finalPoint = result.impact ?? result.trajectory[result.trajectory.length - 1];
       if (!finalPoint) continue;
-      const score = Math.hypot(finalPoint.x - target.x, finalPoint.y - (target.y - 8)) - (result.directHitPlayerId === target.playerId ? 1_000 : 0);
+      const score = Math.hypot(finalPoint.x - estimatedTarget.x, finalPoint.y - estimatedTarget.y);
       if (!best || score < best.score) best = { angle, power, score };
     }
   }
   if (!best) return null;
-  return { type: "fire", payload: { angle: best.angle, power: best.power, item: "none" } };
+  const history = stage.botAimHistory?.[shooter.playerId];
+  const historyCorrection = history?.targetPlayerId === target.playerId && history.outcome !== "hit"
+    ? clamp(-history.signedHorizontalError * profile.historyGain, -profile.historyCap, profile.historyCap)
+    : 0;
+  const angleNoise = stableSignedBotNoise(noiseSeed, "angle", profile.angleError);
+  const powerNoise = stableSignedBotNoise(noiseSeed, "power", profile.powerError);
+  return {
+    type: "fire",
+    payload: {
+      angle: Math.round(clamp(best.angle + angleNoise, 10, 80) * 10) / 10,
+      power: Math.round(clamp(best.power + powerNoise + historyCorrection, 10, 100) * 10) / 10,
+      item: "none"
+    }
+  };
+}
+
+function stableSignedBotNoise(seed: number, label: string, range: [number, number]): number {
+  const random = nextRandom(hashSeed(`${seed}:${label}`)).value;
+  const sign = random < 0.5 ? -1 : 1;
+  const normalized = random < 0.5 ? random * 2 : (random - 0.5) * 2;
+  return sign * (range[0] + (range[1] - range[0]) * normalized);
 }

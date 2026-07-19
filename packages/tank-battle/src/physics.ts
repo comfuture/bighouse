@@ -10,6 +10,15 @@ import {
 export type ItemStats = {
   explosionRadius: number;
   maxDamage: number;
+  particleSplashRadius: number;
+  maxParticleDamage: number;
+};
+
+export type ParticleSplashResult = {
+  damage: number;
+  fragmentHits: number;
+  distance: number;
+  splashRadius: number;
 };
 
 export type TrajectoryInput = {
@@ -36,12 +45,49 @@ export type TrajectoryResult = {
 
 export function itemStats(item: TankItemSelection): ItemStats {
   if (item === "megaBlast") {
-    return { explosionRadius: 68, maxDamage: 52 };
+    return { explosionRadius: 68, maxDamage: 52, particleSplashRadius: 132, maxParticleDamage: 18 };
   }
   if (item === "warhead") {
-    return { explosionRadius: 44, maxDamage: 82 };
+    return { explosionRadius: 44, maxDamage: 82, particleSplashRadius: 106, maxParticleDamage: 24 };
   }
-  return { explosionRadius: 44, maxDamage: 52 };
+  return { explosionRadius: 44, maxDamage: 52, particleSplashRadius: 102, maxParticleDamage: 16 };
+}
+
+/**
+ * Models deterministic terrain fragments outside the normal blast circle.
+ * Callers must only use this for terrain impacts; direct hits use their own
+ * mutually-exclusive damage component.
+ */
+export function particleSplashDamage(input: {
+  impact: BattlePoint;
+  target: Pick<TankState, "playerId" | "x" | "y">;
+  explosionRadius: number;
+  splashRadius: number;
+  maxParticleDamage: number;
+  seed: number;
+}): ParticleSplashResult {
+  const distance = Math.hypot(input.impact.x - input.target.x, input.impact.y - (input.target.y - 8));
+  if (distance <= input.explosionRadius || distance >= input.splashRadius || input.maxParticleDamage <= 0) {
+    return {
+      damage: 0,
+      fragmentHits: 0,
+      distance: round(distance * 100) / 100,
+      splashRadius: input.splashRadius
+    };
+  }
+
+  const span = Math.max(1, input.splashRadius - input.explosionRadius);
+  const proximity = clamp((input.splashRadius - distance) / span, 0, 1);
+  const random = nextRandom(hashSeed(`${input.seed}:${input.target.playerId}:${round(input.impact.x * 10)}:${round(input.impact.y * 10)}`));
+  const density = 0.68 + random.value * 0.32;
+  const fragmentHits = Math.max(1, round(1 + proximity * 5 + random.value * 2));
+  const damage = Math.max(1, round(input.maxParticleDamage * proximity * density));
+  return {
+    damage,
+    fragmentHits,
+    distance: round(distance * 100) / 100,
+    splashRadius: input.splashRadius
+  };
 }
 
 export function hashSeed(input: string): number {

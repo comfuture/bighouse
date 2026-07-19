@@ -27,10 +27,25 @@ export type TankState = {
 
 export type ShotDamage = {
   playerId: string;
+  directHitDamage: number;
   blastDamage: number;
+  particleDamage: number;
+  particleHits: number;
+  particleSplashRadius: number;
+  impactDistance: number;
   fallDamage: number;
   totalDamage: number;
   remainingHealth: number;
+};
+
+export type BotAimHistoryEntry = {
+  targetPlayerId: string;
+  shots: number;
+  outcome: "hit" | "undershoot" | "overshoot";
+  signedHorizontalError: number;
+  missDistance: number;
+  angle: number;
+  power: number;
 };
 
 export type LastShot = {
@@ -56,6 +71,10 @@ export type PendingShotResolution = {
   terrain: number[];
   tanks: TankState[];
   damage: ShotDamage[];
+  botAimUpdate?: {
+    playerId: string;
+    history: BotAimHistoryEntry;
+  };
 };
 
 export type TankBattleStageState = {
@@ -75,6 +94,7 @@ export type TankBattleStageState = {
   turnDeadline?: number;
   resolutionDeadline?: number;
   pendingResolution?: PendingShotResolution;
+  botAimHistory?: Record<string, BotAimHistoryEntry>;
   winnerPlayerId?: string;
   result?: "win" | "draw";
   lastShot?: LastShot;

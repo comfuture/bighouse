@@ -1,6 +1,6 @@
 import { cloneState, type ClientGameAction, type RoomState } from "@bighouse/game-sdk/server";
 import { describe, expect, it } from "vitest";
-import { carveAndSettleTerrain, generateTerrain, simulateTrajectory, terrainHeightAt } from "../src/physics";
+import { carveAndSettleTerrain, generateTerrain, simulateTrajectory, tankFacing, terrainHeightAt } from "../src/physics";
 import { tankBattleDefinition, tankBattleStage } from "../src/server";
 import { TERRAIN_STEP, WORLD_HEIGHT, WORLD_WIDTH, type TankBattlePlayerState, type TankBattleStageState } from "../src/types";
 
@@ -45,6 +45,55 @@ function action(playerId = "p1", payload: Record<string, unknown> = { angle: 45,
     type: "fire",
     payload
   };
+}
+
+function flatTerrainShotState(targetOffsetFromImpact: number): RoomState {
+  const state = startedState();
+  const stage = tankBattleStage(state.stageState);
+  stage.terrain = Array.from({ length: WORLD_WIDTH / TERRAIN_STEP + 1 }, () => 540);
+  stage.wind = 0;
+  stage.tanks[0] = { ...stage.tanks[0]!, x: 200, y: 530 };
+  const shooter = stage.tanks[0]!;
+  const facing = tankFacing(shooter);
+  const preview = simulateTrajectory({
+    start: { x: shooter.x + facing * 19, y: shooter.y - 20 },
+    facing,
+    angle: 45,
+    power: 25,
+    gravity: stage.gravity,
+    wind: stage.wind,
+    terrain: stage.terrain,
+    tanks: [shooter],
+    shooterPlayerId: shooter.playerId
+  });
+  if (!preview.impact) throw new Error("flat terrain test shot must impact");
+  stage.tanks[1] = { ...stage.tanks[1]!, x: preview.impact.x + targetOffsetFromImpact, y: 530 };
+  state.stageState = stage as unknown as Record<string, unknown>;
+  return state;
+}
+
+function botState(wind: number): RoomState {
+  const state = startedState();
+  state.players[0] = { ...state.players[0]!, kind: "bot", botDifficulty: "medium" };
+  const stage = tankBattleStage(state.stageState);
+  stage.terrainSeed = 246_810;
+  stage.terrain = Array.from({ length: WORLD_WIDTH / TERRAIN_STEP + 1 }, () => 540);
+  stage.wind = wind;
+  stage.tanks[0] = { ...stage.tanks[0]!, x: 180, y: 530 };
+  stage.tanks[1] = { ...stage.tanks[1]!, x: 800, y: 530 };
+  state.stageState = stage as unknown as Record<string, unknown>;
+  return state;
+}
+
+function selectBotPayload(state: RoomState, difficulty: "low" | "medium" | "high"): { angle: number; power: number; item: string } {
+  const selected = tankBattleDefinition.selectBotAction!({
+    state,
+    now: 500,
+    player: state.players[0]!,
+    difficulty
+  });
+  if (!selected) throw new Error("bot test state must produce an action");
+  return selected.payload as { angle: number; power: number; item: string };
 }
 
 describe("tank battle setup and visibility", () => {
@@ -268,6 +317,17 @@ describe("tank battle validation and transitions", () => {
     expect(finished.tanks.find((tank) => tank.playerId === "p2")?.health).toBe(0);
     expect(finished.lastShot?.resolved).toBe(true);
     expect(finished.lastShot?.damage).toContainEqual(expect.objectContaining({ playerId: "p2", remainingHealth: 0 }));
+    const lethalDamage = finished.lastShot!.damage.find((entry) => entry.playerId === "p2")!;
+    expect(lethalDamage).toMatchObject({
+      directHitDamage: 50,
+      blastDamage: 0,
+      particleDamage: 0,
+      fallDamage: 0,
+      totalDamage: 50
+    });
+    expect(lethalDamage.totalDamage).toBe(
+      lethalDamage.directHitDamage + lethalDamage.blastDamage + lethalDamage.particleDamage + lethalDamage.fallDamage
+    );
     expect(finished.winnerPlayerId).toBe("p1");
     expect(finished.result).toBe("win");
     expect(finished.turnDeadline).toBeUndefined();
@@ -283,6 +343,58 @@ describe("tank battle validation and transitions", () => {
       "tankBattle.gameWon"
     ]));
     expect(tankBattleDefinition.validateAction({ state: result.state, now: deadline + 1 }, action())).toMatchObject({ ok: false, code: "invalid_action" });
+  });
+
+  it("applies deterministic terrain-fragment splash outside the blast radius only after resolution", () => {
+    const state = flatTerrainShotState(60);
+    const beforeHealth = tankBattleStage(state.stageState).tanks[1]!.health;
+    const fired = tankBattleDefinition.applyAction(
+      { state, now: 600 },
+      action("p1", { angle: 45, power: 25, item: "none" })
+    );
+    const resolving = tankBattleStage(fired.state.stageState);
+    const pendingDamage = resolving.pendingResolution!.damage.find((entry) => entry.playerId === "p2")!;
+
+    expect(resolving.tanks[1]!.health).toBe(beforeHealth);
+    expect(resolving.lastShot?.damage).toEqual([]);
+    expect(pendingDamage).toMatchObject({
+      directHitDamage: 0,
+      blastDamage: 0,
+      fallDamage: 0,
+      particleSplashRadius: 102
+    });
+    expect(pendingDamage.impactDistance).toBeGreaterThan(44);
+    expect(pendingDamage.particleDamage).toBeGreaterThan(0);
+    expect(pendingDamage.particleHits).toBeGreaterThan(0);
+    expect(pendingDamage.totalDamage).toBe(pendingDamage.particleDamage);
+    const repeated = tankBattleDefinition.applyAction(
+      { state: flatTerrainShotState(60), now: 600 },
+      action("p1", { angle: 45, power: 25, item: "none" })
+    );
+    expect(tankBattleStage(repeated.state.stageState).pendingResolution!.damage.find((entry) => entry.playerId === "p2"))
+      .toEqual(pendingDamage);
+
+    const deadline = resolving.resolutionDeadline!;
+    const resolved = tankBattleDefinition.applyTimer!({ state: fired.state, now: deadline }, {
+      id: "particle-resolution",
+      kind: "turn_timeout",
+      runAt: deadline,
+      payload: { reason: "shot_resolution", turnNumber: 1 }
+    });
+    const resolvedStage = tankBattleStage(resolved.state.stageState);
+    expect(resolvedStage.tanks[1]!.health).toBe(beforeHealth - pendingDamage.totalDamage);
+    expect(resolvedStage.lastShot?.damage).toContainEqual(pendingDamage);
+  });
+
+  it("does not apply fragment splash beyond the particle radius", () => {
+    const state = flatTerrainShotState(150);
+    const fired = tankBattleDefinition.applyAction(
+      { state, now: 700 },
+      action("p1", { angle: 45, power: 25, item: "none" })
+    );
+    const resolving = tankBattleStage(fired.state.stageState);
+    expect(resolving.pendingResolution!.damage.find((entry) => entry.playerId === "p2")).toBeUndefined();
+    expect(resolving.pendingResolution!.tanks[1]!.health).toBe(100);
   });
 
   it("advances the turn only for the current, due timeout", () => {
@@ -305,6 +417,82 @@ describe("tank battle validation and transitions", () => {
     expect(tankBattleStage(due.state.stageState).currentPlayerId).toBe("p2");
     expect(due.events[0]).toMatchObject({ type: "tankBattle.turnTimedOut", visibility: "system" });
     expect(tankBattleDefinition.nextTimers({ state: due.state, now: dueAt })).toHaveLength(1);
+  });
+});
+
+describe("tank battle bot aiming", () => {
+  it("uses difficulty-specific deterministic estimation and mostly ignores wind on low", () => {
+    const calm = botState(0);
+    const strongWind = botState(12);
+    const lowCalm = selectBotPayload(cloneState(calm), "low");
+    const lowWind = selectBotPayload(cloneState(strongWind), "low");
+    const medium = selectBotPayload(cloneState(strongWind), "medium");
+    const high = selectBotPayload(cloneState(strongWind), "high");
+
+    expect(lowWind).toEqual(lowCalm);
+    expect(new Set([lowWind, medium, high].map((payload) => `${payload.angle}:${payload.power}`)).size).toBe(3);
+    expect(selectBotPayload(cloneState(strongWind), "high")).toEqual(high);
+  });
+
+  it("corrects the next power from signed undershoot and overshoot history", () => {
+    const withoutHistory = botState(6);
+    const withHistory = cloneState(withoutHistory);
+    const stage = tankBattleStage(withHistory.stageState);
+    stage.botAimHistory = {
+      p1: {
+        targetPlayerId: "p2",
+        shots: 1,
+        outcome: "undershoot",
+        signedHorizontalError: -180,
+        missDistance: 190,
+        angle: 44,
+        power: 52
+      }
+    };
+    withHistory.stageState = stage as unknown as Record<string, unknown>;
+
+    const baseline = selectBotPayload(withoutHistory, "medium");
+    const corrected = selectBotPayload(withHistory, "medium");
+    expect(corrected.angle).toBe(baseline.angle);
+    expect(corrected.power).toBeGreaterThan(baseline.power);
+
+    const withOvershoot = cloneState(withoutHistory);
+    const overshootStage = tankBattleStage(withOvershoot.stageState);
+    overshootStage.botAimHistory = {
+      p1: {
+        ...stage.botAimHistory.p1!,
+        outcome: "overshoot",
+        signedHorizontalError: 180
+      }
+    };
+    withOvershoot.stageState = overshootStage as unknown as Record<string, unknown>;
+    const reduced = selectBotPayload(withOvershoot, "medium");
+    expect(reduced.angle).toBe(baseline.angle);
+    expect(reduced.power).toBeLessThan(baseline.power);
+  });
+
+  it("records bot trial results after resolution without exposing aim history publicly", () => {
+    const state = botState(4);
+    const fired = tankBattleDefinition.applyAction(
+      { state, now: 800 },
+      action("p1", { angle: 42, power: 48, item: "none" })
+    );
+    const resolving = tankBattleStage(fired.state.stageState);
+    expect(resolving.botAimHistory?.p1).toBeUndefined();
+    expect(resolving.pendingResolution?.botAimUpdate).toMatchObject({ playerId: "p1" });
+    expect(JSON.stringify(tankBattleDefinition.getPublicView({ state: fired.state, now: 801 }))).not.toContain("botAim");
+
+    const deadline = resolving.resolutionDeadline!;
+    const resolved = tankBattleDefinition.applyTimer!({ state: fired.state, now: deadline }, {
+      id: "bot-history-resolution",
+      kind: "turn_timeout",
+      runAt: deadline,
+      payload: { reason: "shot_resolution", turnNumber: 1 }
+    });
+    const resolvedStage = tankBattleStage(resolved.state.stageState);
+    expect(resolvedStage.botAimHistory?.p1).toMatchObject({ targetPlayerId: "p2", shots: 1, angle: 42, power: 48 });
+    expect(["hit", "undershoot", "overshoot"]).toContain(resolvedStage.botAimHistory?.p1?.outcome);
+    expect(JSON.stringify(tankBattleDefinition.getPublicView({ state: resolved.state, now: deadline }))).not.toContain("botAim");
   });
 });
 

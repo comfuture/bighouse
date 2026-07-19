@@ -44,6 +44,11 @@ const BATTLE_HEIGHT = 600;
 const ANGLE_MIN = 10;
 const ANGLE_MAX = 80;
 const IMPACT_EFFECT_MS = 950;
+const MAX_WIND_SPEED = 12;
+const POWER_GAUGE_X = 166;
+const POWER_GAUGE_Y = 744;
+const POWER_GAUGE_WIDTH = 488;
+const POWER_GAUGE_HEIGHT = 20;
 const itemLabels: Record<Exclude<TankItemSelection, "none">, string> = {
   megaBlast: "광역 폭탄",
   warhead: "고폭탄",
@@ -100,12 +105,15 @@ class TankBattleScene extends Phaser.Scene {
   private tankGraphics?: Phaser.GameObjects.Graphics;
   private previewGraphics?: Phaser.GameObjects.Graphics;
   private hudGraphics?: Phaser.GameObjects.Graphics;
+  private windGraphics?: Phaser.GameObjects.Graphics;
+  private powerGaugeGraphics?: Phaser.GameObjects.Graphics;
   private projectile?: Phaser.GameObjects.Arc;
   private statusText?: Phaser.GameObjects.Text;
   private windText?: Phaser.GameObjects.Text;
   private gravityText?: Phaser.GameObjects.Text;
   private angleText?: Phaser.GameObjects.Text;
   private powerText?: Phaser.GameObjects.Text;
+  private lastPowerText?: Phaser.GameObjects.Text;
   private playerTexts: Phaser.GameObjects.Text[] = [];
   private itemButtons = new Map<Exclude<TankItemSelection, "none">, BattleButton>();
   private angleButtons: BattleButton[] = [];
@@ -117,6 +125,7 @@ class TankBattleScene extends Phaser.Scene {
   private selectedItem: TankItemSelection = "none";
   private angle = 45;
   private power = 55;
+  private lastOwnShotPower: number | undefined;
   private chargeStartedAt: number | undefined;
   private chargingPointerId: number | undefined;
   private awaitingSnapshot = false;
@@ -144,13 +153,18 @@ class TankBattleScene extends Phaser.Scene {
     this.tankGraphics = this.add.graphics().setDepth(4);
     this.previewGraphics = this.add.graphics().setDepth(3);
     this.hudGraphics = this.add.graphics().setDepth(10);
+    this.windGraphics = this.add.graphics().setDepth(11);
     this.projectile = this.add.circle(0, 0, 5, 0xfff2a8).setDepth(7).setVisible(false);
     this.createParticleTextures();
     this.createHud();
     this.createControls();
     this.createResultOverlay();
     this.drawSky();
-    this.seenShotId = this.getClient().publicView.lastShot?.id;
+    const initialShot = this.getClient().publicView.lastShot;
+    this.seenShotId = initialShot?.id;
+    if (initialShot?.shooterPlayerId === this.getClient().playerId) {
+      this.lastOwnShotPower = initialShot.power;
+    }
     this.renderAll();
 
     this.input.on("pointerdown", this.handleBattlefieldPointerDown, this);
@@ -191,6 +205,13 @@ class TankBattleScene extends Phaser.Scene {
       // A rematch starts shot ids over at 1, so the previous match's id must
       // not suppress the first projectile animation in the new match.
       this.seenShotId = undefined;
+      if (previous.publicView.lastShot && next.publicView.turnNumber <= 1) {
+        this.lastOwnShotPower = undefined;
+        this.power = 55;
+        this.angle = 45;
+      }
+    } else if (shot.shooterPlayerId === next.playerId) {
+      this.lastOwnShotPower = shot.power;
     }
     if (shot && shot.id !== this.seenShotId) {
       this.seenShotId = shot.id;
@@ -238,9 +259,9 @@ class TankBattleScene extends Phaser.Scene {
       fontFamily: "Inter, Pretendard, system-ui, sans-serif",
       color: "#f8fbff"
     };
-    this.statusText = this.add.text(500, 84, "", { ...style, fontSize: "20px", fontStyle: "bold" }).setOrigin(0.5).setDepth(12);
-    this.windText = this.add.text(500, 25, "", { ...style, fontSize: "18px", fontStyle: "bold" }).setOrigin(0.5).setDepth(12);
-    this.gravityText = this.add.text(500, 51, "", { ...style, fontSize: "13px", color: "#c7d7f4" }).setOrigin(0.5).setDepth(12);
+    this.statusText = this.add.text(500, 98, "", { ...style, fontSize: "20px", fontStyle: "bold" }).setOrigin(0.5).setDepth(12);
+    this.windText = this.add.text(500, 18, "", { ...style, fontSize: "17px", fontStyle: "bold" }).setOrigin(0.5).setDepth(12);
+    this.gravityText = this.add.text(500, 70, "", { ...style, fontSize: "13px", color: "#c7d7f4" }).setOrigin(0.5).setDepth(12);
     this.playerTexts = [
       this.add.text(28, 19, "", { ...style, fontSize: "16px", fontStyle: "bold" }).setDepth(12),
       this.add.text(972, 19, "", { ...style, fontSize: "16px", fontStyle: "bold", align: "right" }).setOrigin(1, 0).setDepth(12)
@@ -253,20 +274,30 @@ class TankBattleScene extends Phaser.Scene {
       .fillRect(0, BATTLE_HEIGHT, GAME_WIDTH, GAME_HEIGHT - BATTLE_HEIGHT)
       .lineStyle(3, 0x7dd3fc, 0.8)
       .lineBetween(0, BATTLE_HEIGHT + 1, GAME_WIDTH, BATTLE_HEIGHT + 1)
-      .lineStyle(1, 0x38577d, 0.9)
-      .lineBetween(20, 700, GAME_WIDTH - 20, 700);
+      .fillStyle(0x073e78, 0.96)
+      .fillRoundedRect(12, 610, 288, 82, 14)
+      .lineStyle(3, 0x22d3ee, 1)
+      .strokeRoundedRect(12, 610, 288, 82, 14)
+      .fillStyle(0x0b2039, 1)
+      .fillRoundedRect(18, 708, 656, 82, 14)
+      .lineStyle(2, 0x38bdf8, 0.82)
+      .strokeRoundedRect(18, 708, 656, 82, 14)
+      .fillStyle(0x3a160c, 1)
+      .fillRoundedRect(688, 708, 300, 82, 14)
+      .lineStyle(3, 0xfb923c, 1)
+      .strokeRoundedRect(688, 708, 300, 82, 14);
 
-    const minus = this.createButton(54, 650, 76, 62, "−", () => this.changeAngle(-2), 30);
-    const plus = this.createButton(254, 650, 76, 62, "+", () => this.changeAngle(2), 30);
+    const minus = this.createButton(54, 653, 72, 56, "−", () => this.changeAngle(-2), 30);
+    const plus = this.createButton(254, 653, 72, 56, "+", () => this.changeAngle(2), 30);
     this.angleButtons = [minus, plus];
-    this.angleText = this.add.text(154, 637, "", {
+    this.angleText = this.add.text(154, 638, "", {
       fontFamily: "Inter, Pretendard, system-ui, sans-serif",
       fontSize: "21px",
       fontStyle: "bold",
       color: "#ffffff",
       align: "center"
     }).setOrigin(0.5).setDepth(14);
-    this.add.text(154, 669, "← ↓  각도  ↑ →", {
+    this.add.text(154, 674, "← ↓  낮추기   ·   높이기  ↑ →", {
       fontFamily: "Inter, Pretendard, system-ui, sans-serif",
       fontSize: "12px",
       fontStyle: "bold",
@@ -280,20 +311,40 @@ class TankBattleScene extends Phaser.Scene {
       this.itemButtons.set(item, button);
     });
 
-    this.powerText = this.add.text(42, 735, "", {
+    this.powerGaugeGraphics = this.add.graphics().setDepth(13);
+    this.powerText = this.add.text(36, 744, "", {
       fontFamily: "Inter, Pretendard, system-ui, sans-serif",
       fontSize: "22px",
       fontStyle: "bold",
       color: "#ffffff"
     }).setOrigin(0, 0.5).setDepth(14);
-    this.add.text(320, 757, "Space 또는 발사 버튼을 길게 누르고 떼면 발사", {
+    this.lastPowerText = this.add.text(POWER_GAUGE_X, 718, "", {
       fontFamily: "Inter, Pretendard, system-ui, sans-serif",
-      fontSize: "14px",
+      fontSize: "12px",
       fontStyle: "bold",
-      color: "#b9d9ff",
-      align: "center"
+      color: "#fde68a",
+      backgroundColor: "#422006",
+      padding: { x: 5, y: 2 }
+    }).setOrigin(0.5).setDepth(14).setVisible(false);
+    this.add.text(POWER_GAUGE_X, 774, "10", {
+      fontFamily: "Inter, Pretendard, system-ui, sans-serif",
+      fontSize: "12px",
+      fontStyle: "bold",
+      color: "#b9d9ff"
     }).setOrigin(0.5).setDepth(14);
-    this.fireButton = this.createButton(844, 750, 276, 82, "길게 눌러 충전", () => undefined, 22);
+    this.add.text(410, 774, "Space / 버튼을 길게 눌러 충전", {
+      fontFamily: "Inter, Pretendard, system-ui, sans-serif",
+      fontSize: "12px",
+      fontStyle: "bold",
+      color: "#b9d9ff"
+    }).setOrigin(0.5).setDepth(14);
+    this.add.text(POWER_GAUGE_X + POWER_GAUGE_WIDTH, 774, "100", {
+      fontFamily: "Inter, Pretendard, system-ui, sans-serif",
+      fontSize: "12px",
+      fontStyle: "bold",
+      color: "#b9d9ff"
+    }).setOrigin(0.5).setDepth(14);
+    this.fireButton = this.createButton(838, 753, 276, 64, "발사 · 길게 눌러 충전", () => undefined, 20);
     this.fireButton.container.on("pointerdown", (pointer: Phaser.Input.Pointer) => this.startCharge(pointer.id));
   }
 
@@ -478,8 +529,9 @@ class TankBattleScene extends Phaser.Scene {
       const opponent = view.players.find((player) => player.playerId === view.currentPlayerId);
       this.statusText?.setText(`${opponent?.displayName ?? "상대"}의 조준을 기다리는 중${seconds === undefined ? "" : ` · ${seconds}초`}`);
     }
-    const windArrow = view.wind > 0.2 ? "→" : view.wind < -0.2 ? "←" : "·";
-    this.windText?.setText(`바람 ${windArrow} ${Math.abs(view.wind).toFixed(1)}`);
+    const windArrow = view.wind > 0 ? "→" : view.wind < 0 ? "←" : "·";
+    this.windText?.setText(`바람 ${windArrow} ${Math.abs(view.wind).toFixed(1)} / ${MAX_WIND_SPEED}`);
+    this.renderWindIndicator(view.wind);
     this.gravityText?.setText(`중력 ${view.gravity.toFixed(1)} px/s²  ·  턴 ${view.turnNumber}`);
     view.players.slice(0, 2).forEach((player, index) => {
       this.playerTexts[index]?.setText(`${player.displayName}  HP ${player.health}/${player.maxHealth}`)
@@ -488,13 +540,89 @@ class TankBattleScene extends Phaser.Scene {
   }
 
   private renderPowerAndPreview(): void {
-    this.angleText?.setText(`각도 ${Math.round(this.angle)}°`);
-    this.powerText?.setText(`파워  ${Math.round(this.power)}${this.chargeStartedAt === undefined ? "" : "  ·  충전 중!"}`);
+    this.angleText?.setText(`각도 조절  ${Math.round(this.angle)}°`);
+    this.powerText?.setText(`현재\n${Math.round(this.power)}`);
     if (this.fireButton) {
-      this.fireButton.label.setText(this.chargeStartedAt === undefined ? "길게 눌러 충전" : `손을 떼서 발사  ${Math.round(this.power)}`);
+      this.fireButton.label.setText(this.chargeStartedAt === undefined ? "발사 · 길게 눌러 충전" : `손을 떼서 발사  ${Math.round(this.power)}`);
     }
+    this.renderPowerGauge();
     this.drawPreview();
     this.drawTanks();
+  }
+
+  private renderWindIndicator(wind: number): void {
+    const graphics = this.windGraphics;
+    if (!graphics) return;
+    const centerX = 500;
+    const y = 47;
+    const maxLength = 88;
+    const normalized = clamp(Math.abs(wind) / MAX_WIND_SPEED, 0, 1);
+    const direction = wind < 0 ? -1 : wind > 0 ? 1 : 0;
+    const endX = centerX + direction * maxLength * normalized;
+
+    graphics.clear();
+    graphics.lineStyle(2, 0x6083ac, 0.8).lineBetween(centerX - maxLength, y, centerX + maxLength, y);
+    graphics.lineStyle(2, 0xc7d7f4, 0.85).lineBetween(centerX, y - 7, centerX, y + 7);
+    graphics.fillStyle(0xdbeafe, 1).fillCircle(centerX, y, 3);
+    if (direction === 0 || normalized === 0) return;
+
+    const color = direction > 0 ? 0x67e8f9 : 0x93c5fd;
+    const arrowLength = maxLength * normalized;
+    const headLength = clamp(arrowLength * 0.35, 2, 12);
+    const headHeight = clamp(arrowLength * 0.22, 2, 8);
+    graphics.lineStyle(3 + normalized * 3, color, 1).lineBetween(centerX, y, endX, y);
+    graphics.fillStyle(color, 1);
+    graphics.beginPath();
+    graphics.moveTo(endX, y);
+    graphics.lineTo(endX - direction * headLength, y - headHeight);
+    graphics.lineTo(endX - direction * headLength, y + headHeight);
+    graphics.closePath();
+    graphics.fillPath();
+  }
+
+  private renderPowerGauge(): void {
+    const graphics = this.powerGaugeGraphics;
+    if (!graphics) return;
+    const currentPower = clamp(this.power, 10, 100);
+    const currentWidth = POWER_GAUGE_WIDTH * ((currentPower - 10) / 90);
+
+    graphics.clear();
+    graphics.fillStyle(0x030a14, 1).fillRoundedRect(
+      POWER_GAUGE_X,
+      POWER_GAUGE_Y,
+      POWER_GAUGE_WIDTH,
+      POWER_GAUGE_HEIGHT,
+      POWER_GAUGE_HEIGHT / 2
+    );
+    graphics.lineStyle(2, 0x7dd3fc, 0.9).strokeRoundedRect(
+      POWER_GAUGE_X,
+      POWER_GAUGE_Y,
+      POWER_GAUGE_WIDTH,
+      POWER_GAUGE_HEIGHT,
+      POWER_GAUGE_HEIGHT / 2
+    );
+    if (currentWidth > 0) {
+      graphics.fillStyle(this.chargeStartedAt === undefined ? 0x22d3ee : 0xfbbf24, 1).fillRoundedRect(
+        POWER_GAUGE_X + 3,
+        POWER_GAUGE_Y + 3,
+        Math.max(6, currentWidth - 6),
+        POWER_GAUGE_HEIGHT - 6,
+        (POWER_GAUGE_HEIGHT - 6) / 2
+      );
+    }
+
+    if (this.lastOwnShotPower === undefined) {
+      this.lastPowerText?.setVisible(false);
+      return;
+    }
+    const previousPower = clamp(this.lastOwnShotPower, 10, 100);
+    const markerX = POWER_GAUGE_X + POWER_GAUGE_WIDTH * ((previousPower - 10) / 90);
+    graphics.lineStyle(3, 0xfde047, 1).lineBetween(markerX, POWER_GAUGE_Y - 5, markerX, POWER_GAUGE_Y + POWER_GAUGE_HEIGHT + 3);
+    graphics.fillStyle(0xfde047, 1).fillTriangle(markerX, POWER_GAUGE_Y - 1, markerX - 5, POWER_GAUGE_Y - 8, markerX + 5, POWER_GAUGE_Y - 8);
+    this.lastPowerText
+      ?.setText(`이전 발사 ${Math.round(previousPower)}`)
+      .setPosition(clamp(markerX, POWER_GAUGE_X + 42, POWER_GAUGE_X + POWER_GAUGE_WIDTH - 42), 718)
+      .setVisible(true);
   }
 
   private drawPreview(): void {
@@ -565,9 +693,10 @@ class TankBattleScene extends Phaser.Scene {
     const enabled = this.canAim();
     const items = this.getClient().privateView.items ?? { megaBlast: 0, warhead: 0, scope: 0 };
     for (const button of this.angleButtons) {
-      button.container.setAlpha(enabled ? 1 : 0.42);
-      button.background.setFillStyle(enabled ? 0x1d4ed8 : 0x203250, 1);
-      button.background.setStrokeStyle(2, 0xbfdbfe, 1);
+      button.container.setAlpha(enabled ? 1 : 0.78);
+      button.background.setFillStyle(enabled ? 0x075fc7 : 0x173b5c, 1);
+      button.background.setStrokeStyle(2, enabled ? 0x67e8f9 : 0x4d83a6, 1);
+      button.label.setColor(enabled ? "#ffffff" : "#9fc8de");
     }
     for (const [item, button] of this.itemButtons) {
       const available = enabled && (items[item] ?? 0) > 0;
@@ -576,9 +705,13 @@ class TankBattleScene extends Phaser.Scene {
       button.background.setStrokeStyle(2, this.selectedItem === item ? 0x67e8f9 : 0x5475a3, 0.9);
     }
     if (this.fireButton) {
-      this.fireButton.container.setAlpha(enabled ? 1 : 0.42);
-      this.fireButton.background.setFillStyle(this.chargeStartedAt === undefined ? 0xd2563f : 0xf59e0b, 1);
-      this.fireButton.background.setStrokeStyle(2, 0xffd39c, 0.9);
+      this.fireButton.container.setAlpha(enabled ? 1 : 0.78);
+      this.fireButton.background.setFillStyle(
+        enabled ? this.chargeStartedAt === undefined ? 0xdc3e24 : 0xf59e0b : 0x5f291f,
+        1
+      );
+      this.fireButton.background.setStrokeStyle(3, enabled ? 0xffd39c : 0xb8674e, 1);
+      this.fireButton.label.setColor(enabled ? "#ffffff" : "#d7aa9e");
     }
   }
 
@@ -792,12 +925,14 @@ class TankBattleScene extends Phaser.Scene {
     this.chargeStartedAt = undefined;
     this.chargingPointerId = undefined;
     if (send && this.canAim()) {
+      const firedPower = Math.round(this.power * 10) / 10;
+      this.lastOwnShotPower = firedPower;
       this.awaitingSnapshot = true;
       triggerPlacementFeedback();
       this.startFlightAudio(this.getClient().publicView.turnNumber);
       this.getClient().sendAction({
         type: "fire",
-        payload: { angle: this.angle, power: Math.round(this.power * 10) / 10, item: this.selectedItem }
+        payload: { angle: this.angle, power: firedPower, item: this.selectedItem }
       });
     }
     this.renderPowerAndPreview();
