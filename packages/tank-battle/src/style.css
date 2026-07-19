@@ -34,6 +34,30 @@
 }
 
 @media (orientation: landscape) and (max-height: 520px) {
+  .tank-battle-host {
+    --tank-battle-overlay-inline-end:
+      calc(
+        50%
+        - min(16.667%, 31.25svh)
+        + max(8px, env(safe-area-inset-right))
+      );
+    --tank-battle-overlay-block-end:
+      calc(
+        max(0px, calc(50svh - 26.667vw))
+        + max(8px, env(safe-area-inset-bottom))
+      );
+    --bh-game-ui-chat-inline-end: var(--tank-battle-overlay-inline-end);
+    --bh-game-ui-chat-block-end: var(--tank-battle-overlay-block-end);
+    --bh-game-ui-utilities-block-start: auto;
+    --bh-game-ui-utilities-block-end: var(--tank-battle-overlay-block-end);
+    --bh-game-ui-utilities-inline-end:
+      calc(
+        var(--tank-battle-overlay-inline-end)
+        + var(--bh-game-ui-control-size, 48px)
+        + var(--bh-game-ui-gap, 8px)
+      );
+  }
+
   .tank-battle-game {
     inline-size: min(100%, 187.5svh);
     max-block-size: 100svh;
