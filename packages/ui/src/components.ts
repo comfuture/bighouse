@@ -167,6 +167,7 @@ export class BighouseRoomControlsElement extends HTMLElement {
     panelHeader.append(panelTitle, iconButton("x", "Close bot settings", "bh-bot-panel-close", () => {
       this.#botPanelOpen = false;
       this.render();
+      queueMicrotask(() => this.#root.querySelector<HTMLButtonElement>(".bh-add-bots-trigger")?.focus());
     }));
     panel.append(panelHeader);
 
@@ -220,6 +221,11 @@ export class BighouseRoomControlsElement extends HTMLElement {
       this.#botPanelOpen = false;
       this.#botCount = 1;
       this.render();
+      queueMicrotask(() => {
+        const nextControl = this.#root.querySelector<HTMLButtonElement>(".bh-start-game")
+          ?? this.#root.querySelector<HTMLButtonElement>(".bh-add-bots-trigger");
+        nextControl?.focus();
+      });
     });
     panel.addEventListener("keydown", (event) => {
       if (event.key !== "Escape") return;
@@ -335,7 +341,10 @@ export class BighouseGameChatElement extends HTMLElement {
     this.#open = value;
     if (value) {
       const activeElement = document.activeElement;
-      this.#previousFocus = activeElement instanceof HTMLElement && activeElement !== this ? activeElement : null;
+      const shadowFocused = shadowActiveElement(this.#root);
+      this.#previousFocus = shadowFocused instanceof HTMLElement
+        ? shadowFocused
+        : activeElement instanceof HTMLElement && activeElement !== this ? activeElement : null;
       this.#unread = 0;
       this.noteActivity();
     }
@@ -535,7 +544,12 @@ export class BighouseGameChatElement extends HTMLElement {
 
   private restorePreviousFocus(): void {
     const focusIsInsideChat = document.activeElement === this || shadowActiveElement(this.#root) !== null;
-    if (focusIsInsideChat && this.#previousFocus?.isConnected) this.#previousFocus.focus();
+    if (focusIsInsideChat) {
+      const target = this.#previousFocus?.isConnected
+        ? this.#previousFocus
+        : this.#root.querySelector<HTMLButtonElement>(".bh-chat-trigger");
+      target?.focus();
+    }
     this.#previousFocus = null;
   }
 }

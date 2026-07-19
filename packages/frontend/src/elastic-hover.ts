@@ -71,12 +71,6 @@ function getRunningAudioContext(): AudioContext | null {
   return audioContext?.state === "running" ? audioContext : null;
 }
 
-function shouldPlayKeyboardClick(event: KeyboardEvent, clickable: HTMLElement): boolean {
-  if (event.repeat) return false;
-  if (event.key === "Enter") return true;
-  return event.key === " " && (clickable.tagName !== "A" || clickable.getAttribute("role") === "button");
-}
-
 function playTone(
   context: AudioContext,
   options: {
@@ -154,17 +148,10 @@ export function installElasticPointerFeedback(): void {
     restartElasticAnimation(clickable, "game-elastic-leave");
   });
 
-  document.addEventListener("pointerdown", async (event) => {
+  document.addEventListener("click", async (event) => {
+    if (event instanceof MouseEvent && event.button !== 0) return;
     const clickable = findClickable(event);
     if (!clickable) return;
-    const context = await unlockAudio();
-    if (context) playClickSound(context);
-  });
-
-  document.addEventListener("keydown", async (event) => {
-    if (!isFineHoverPointer() || (event.key !== "Enter" && event.key !== " ")) return;
-    const clickable = findClickable(event);
-    if (!clickable || !shouldPlayKeyboardClick(event, clickable)) return;
     const context = await unlockAudio();
     if (context) playClickSound(context);
   });
