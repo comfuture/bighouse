@@ -2,6 +2,7 @@ import "./style.css";
 import Phaser from "phaser";
 import type { GameClientContext, MountedGameClient } from "@bighouse/game-sdk/client";
 import { triggerPlacementFeedback, triggerSelectionFeedback } from "@bighouse/game-sdk/feedback";
+import { createGameUi, type MountedGameUi } from "@bighouse/ui";
 import { createTankBattleAudio, type TankBattleAudioController } from "./audio";
 import { clamp, simulateTrajectory, tankFacing } from "./physics";
 import type {
@@ -81,14 +82,25 @@ export function mountGame(container: HTMLElement, context: GameClientContext): M
     },
     scene: [scene]
   });
+  const gameUi = createGameUi(container, context, context);
+  syncResultDialog(gameUi, client);
+  const handleChatOpenChange = (event: Event): void => {
+    const open = (event as CustomEvent<{ open: boolean }>).detail.open;
+    if (game.input.keyboard) game.input.keyboard.enabled = !open;
+  };
+  container.addEventListener("bighouse-chat-open-change", handleChatOpenChange);
 
   return {
     update(nextContext) {
       const previous = client;
       client = toTankBattleClient({ ...context, ...nextContext }, callbacks);
+      gameUi.update(nextContext);
+      syncResultDialog(gameUi, client);
       scene.applySnapshot(client, previous);
     },
     destroy() {
+      container.removeEventListener("bighouse-chat-open-change", handleChatOpenChange);
+      gameUi.destroy();
       scene.prepareDestroy();
       game.destroy(true, false);
       container.classList.remove("tank-battle-game");
@@ -118,10 +130,6 @@ class TankBattleScene extends Phaser.Scene {
   private itemButtons = new Map<Exclude<TankItemSelection, "none">, BattleButton>();
   private angleButtons: BattleButton[] = [];
   private fireButton?: BattleButton;
-  private resultContainer?: Phaser.GameObjects.Container;
-  private resultTitle?: Phaser.GameObjects.Text;
-  private resultMessage?: Phaser.GameObjects.Text;
-  private rematchButton?: BattleButton;
   private selectedItem: TankItemSelection = "none";
   private angle = 45;
   private power = 55;
@@ -158,7 +166,6 @@ class TankBattleScene extends Phaser.Scene {
     this.createParticleTextures();
     this.createHud();
     this.createControls();
-    this.createResultOverlay();
     this.drawSky();
     const initialShot = this.getClient().publicView.lastShot;
     this.seenShotId = initialShot?.id;
@@ -348,32 +355,6 @@ class TankBattleScene extends Phaser.Scene {
     this.fireButton.container.on("pointerdown", (pointer: Phaser.Input.Pointer) => this.startCharge(pointer.id));
   }
 
-  private createResultOverlay(): void {
-    const panel = this.add.rectangle(0, 0, 480, 260, 0x10192b, 0.98).setStrokeStyle(2, 0x7dd3fc, 0.8);
-    this.resultTitle = this.add.text(0, -75, "", {
-      fontFamily: "Inter, Pretendard, system-ui, sans-serif",
-      fontSize: "36px",
-      fontStyle: "bold",
-      color: "#ffffff"
-    }).setOrigin(0.5);
-    this.resultMessage = this.add.text(0, -24, "", {
-      fontFamily: "Inter, Pretendard, system-ui, sans-serif",
-      fontSize: "16px",
-      color: "#c7d7f4",
-      align: "center",
-      wordWrap: { width: 390 }
-    }).setOrigin(0.5);
-    this.rematchButton = this.createButton(-105, 66, 176, 52, "다시 하기", () => this.getClient().requestPlayAgain(), 15, false);
-    const leaveButton = this.createButton(105, 66, 176, 52, "나가기", () => this.getClient().leaveFinishedGame(), 15, false);
-    this.resultContainer = this.add.container(500, 330, [
-      panel,
-      this.resultTitle,
-      this.resultMessage,
-      this.rematchButton.container,
-      leaveButton.container
-    ]).setDepth(30).setVisible(false);
-  }
-
   private createButton(
     x: number,
     y: number,
@@ -417,7 +398,6 @@ class TankBattleScene extends Phaser.Scene {
     this.renderStatus();
     this.renderPowerAndPreview();
     this.renderItems();
-    this.renderResult();
     this.refreshButtonStyles();
   }
 
@@ -670,22 +650,6 @@ class TankBattleScene extends Phaser.Scene {
     const items = this.getClient().privateView.items ?? { megaBlast: 0, warhead: 0, scope: 0 };
     for (const [item, button] of this.itemButtons) {
       button.label.setText(`${itemLabels[item]}  ×${items[item] ?? 0}`);
-    }
-  }
-
-  private renderResult(): void {
-    const client = this.getClient();
-    const view = this.getVisualView();
-    const finished = view.roomPhase === "finished" && Boolean(view.result);
-    this.resultContainer?.setVisible(finished);
-    if (!finished) return;
-    const requested = view.rematchRequests?.includes(client.playerId) ?? false;
-    this.resultTitle?.setText(view.result === "draw" ? "무승부" : view.winnerPlayerId === client.playerId ? "전장 승리" : "탱크 파괴");
-    this.resultMessage?.setText(requested ? "상대의 재대결 응답을 기다리고 있습니다." : "새 지형에서 다시 싸우거나 로비로 돌아갈 수 있습니다.");
-    if (this.rematchButton) {
-      this.rematchButton.label.setText(requested ? "대기 중…" : "다시 하기");
-      this.rematchButton.container.disableInteractive().setAlpha(requested ? 0.55 : 1);
-      if (!requested) this.rematchButton.container.setInteractive({ useHandCursor: true });
     }
   }
 
@@ -1010,7 +974,7 @@ class TankBattleScene extends Phaser.Scene {
 }
 
 function toTankBattleClient(
-  context: Omit<GameClientContext, "sendAction" | "requestPlayAgain" | "leaveFinishedGame"> & Partial<Pick<GameClientContext, "sendAction" | "requestPlayAgain" | "leaveFinishedGame">>,
+  context: GameClientContext,
   callbacks: Pick<TankBattleClient, "sendAction" | "requestPlayAgain" | "leaveFinishedGame">
 ): TankBattleClient {
   return {
@@ -1025,6 +989,24 @@ function toTankBattleClient(
     privateView: context.privateView as unknown as TankBattlePrivateView,
     ...callbacks
   };
+}
+
+function syncResultDialog(gameUi: MountedGameUi, client: TankBattleClient): void {
+  const view = client.publicView;
+  const finished = view.roomPhase === "finished" && Boolean(view.result);
+  if (!finished) {
+    gameUi.setResult({ open: false, title: "", message: "" });
+    return;
+  }
+  const requested = view.rematchRequests?.includes(client.playerId) ?? false;
+  gameUi.setResult({
+    open: true,
+    title: view.result === "draw" ? "무승부" : view.winnerPlayerId === client.playerId ? "전장 승리" : "탱크 파괴",
+    message: requested ? "상대의 재대결 응답을 기다리고 있습니다." : "새 지형에서 다시 싸우거나 로비로 돌아갈 수 있습니다.",
+    primaryLabel: requested ? "대기 중…" : "다시 하기",
+    primaryDisabled: requested,
+    secondaryLabel: "나가기"
+  });
 }
 
 function chargedPower(elapsedMs: number): number {
