@@ -176,6 +176,37 @@ describe("RoomDO", () => {
     await expect(room.startGame("host")).resolves.toMatchObject({ phase: "active", playerCount: 2, readyCount: 0 });
   });
 
+  it("adds multiple bot players atomically without partially filling the room", async () => {
+    const room = env.ROOM_DO.getByName("room:test-bot-batch") as unknown as RoomDO;
+    await room.initialize({
+      roomId: "test-bot-batch",
+      gameId: "gomoku",
+      mode: "default",
+      minPlayers: 2,
+      maxPlayers: 4
+    });
+    await room.join({ playerId: "host" });
+
+    await expect(room.tryAddBot({ hostPlayerId: "host", difficulty: "high", count: 4 })).resolves.toMatchObject({
+      ok: false,
+      error: { code: "room_full" }
+    });
+    await expect(room.tryAddBot({ hostPlayerId: "host", difficulty: "medium", count: 0 })).resolves.toMatchObject({
+      ok: false,
+      error: { code: "invalid_action" }
+    });
+    expect(await room.getSummary()).toMatchObject({ version: 1, playerCount: 1, readyCount: 0 });
+
+    const summary = await room.addBot({ hostPlayerId: "host", difficulty: "high", count: 3 });
+    expect(summary).toMatchObject({ version: 2, playerCount: 4, readyCount: 3 });
+    const snapshot = await room.getSnapshot("host");
+    const bots = snapshot.players.filter((player) => player.kind === "bot");
+    expect(bots).toHaveLength(3);
+    expect(bots.map((bot) => bot.seat)).toEqual([1, 2, 3]);
+    expect(bots.map((bot) => bot.displayName)).toEqual(["Bot 1", "Bot 2", "Bot 3"]);
+    expect(bots.every((bot) => bot.ready && bot.connected && bot.botDifficulty === "high")).toBe(true);
+  });
+
   it("does not require bot readiness when restarting a waiting room", async () => {
     const room = env.ROOM_DO.getByName("room:test-bot-ready-after-reset") as unknown as RoomDO;
     await room.initialize({
