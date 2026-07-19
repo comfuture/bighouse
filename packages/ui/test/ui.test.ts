@@ -200,6 +200,30 @@ describe("@bighouse/ui", () => {
     ui.destroy();
   });
 
+  it("keeps chat available from the waiting room on desktop and mobile", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const ui = createGameUi(host, snapshot(), actionSpies());
+    const roomControls = host.querySelector("bighouse-room-controls") as BighouseRoomControlsElement;
+    const gameControls = host.querySelector("bighouse-game-controls") as BighouseGameControlsElement;
+    const chat = host.querySelector("bighouse-game-chat") as BighouseGameChatElement;
+    const trigger = roomControls.chatTrigger;
+
+    expect(chat.enabled).toBe(true);
+    expect(trigger).not.toBeNull();
+    expect(gameControls.hidden).toBe(true);
+    expect(gameControls.shadowRoot!.childElementCount).toBe(0);
+    trigger!.click();
+    await Promise.resolve();
+    expect(chat.open).toBe(true);
+    expect(document.activeElement).toBe(chat);
+
+    chat.shadowRoot!.querySelector<HTMLButtonElement>("[aria-label='Close chat']")!.click();
+    await Promise.resolve();
+    expect(document.activeElement).toBe(roomControls);
+    ui.destroy();
+  });
+
   it("keeps compact game controls over the active surface and pauses chat during interruptions", async () => {
     const host = document.createElement("div");
     document.body.append(host);
@@ -219,6 +243,8 @@ describe("@bighouse/ui", () => {
 
     const chat = host.querySelector("bighouse-game-chat") as BighouseGameChatElement;
     chat.open = true;
+    await Promise.resolve();
+    expect(document.activeElement).toBe(chat);
     ui.update({
       ...initial,
       version: 2,
@@ -236,6 +262,7 @@ describe("@bighouse/ui", () => {
     expect(chat.enabled).toBe(false);
     expect(chat.open).toBe(false);
     expect(controls.hidden).toBe(true);
+    expect(controls.shadowRoot!.childElementCount).toBe(0);
     const interruptionControls = host.querySelector("bighouse-room-controls") as BighouseRoomControlsElement;
     expect(interruptionControls.shadowRoot!.querySelector("[data-room-action='fullscreen']")).not.toBeNull();
     expect(interruptionControls.shadowRoot!.querySelector(".bh-room-navigation.has-fullscreen")).not.toBeNull();

@@ -60,6 +60,11 @@ export function createGameUi(container: HTMLElement, snapshot: GameClientSnapsho
   listen(roomControls, "bighouse-transfer-host", ((event: CustomEvent<{ targetPlayerId: string }>) => actions.transferHost(event.detail.targetPlayerId)) as EventListener);
   listen(roomControls, "bighouse-share-room", (() => actions.shareRoom()) as EventListener);
   listen(roomControls, "bighouse-leave-room", (() => actions.leaveRoom()) as EventListener);
+  listen(roomControls, "bighouse-chat-open", (() => {
+    const trigger = roomControls.chatTrigger;
+    if (trigger) chat.openFrom(trigger);
+    else chat.open = true;
+  }) as EventListener);
   listen(gameControls, "bighouse-leave-room", (() => actions.leaveRoom()) as EventListener);
   listen(gameControls, "bighouse-chat-open", (() => {
     const trigger = gameControls.chatTrigger;
@@ -78,7 +83,7 @@ export function createGameUi(container: HTMLElement, snapshot: GameClientSnapsho
   const update = (next: GameClientSnapshot): void => {
     roomControls.snapshot = next;
     gameControls.snapshot = next;
-    chat.enabled = (next.phase === "active" || next.phase === "finished") && !next.room.activeInterruption;
+    chat.enabled = (next.phase === "waiting" || next.phase === "active" || next.phase === "finished") && !next.room.activeInterruption;
     chat.messages = next.chatMessages;
     gameControls.chatState = { open: chat.open, unread: chat.unread };
   };
