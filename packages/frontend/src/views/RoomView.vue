@@ -1,77 +1,18 @@
 <template>
-  <div class="space-y-6">
-    <UHeader
-      title="Room"
-      :toggle="false"
-      class="game-portal-hero rounded-[2rem] border-2 border-default/80"
-      :ui="{ root: 'static', container: 'px-3 sm:px-4', left: 'flex-1', center: 'flex flex-1 justify-center', right: 'flex-1' }"
-    >
-      <template #left>
-        <UButton label="Lobby" icon="i-lucide-arrow-left" color="neutral" variant="ghost" @click="goToLobby" />
-      </template>
+  <div class="game-room-shell">
+    <div ref="gameHost" class="game-room-host" aria-label="Game surface" />
 
-      <div class="flex min-w-0 items-center justify-center gap-2">
-        <h1 class="truncate text-lg font-semibold text-highlighted">{{ displayGameId }}</h1>
-        <UBadge v-if="room?.mode" color="secondary" variant="subtle">{{ room.mode }}</UBadge>
-        <UBadge v-if="room" :color="room.phase === 'active' ? 'success' : room.phase === 'finished' ? 'neutral' : 'warning'" variant="subtle">{{ room.phase }}</UBadge>
-        <UBadge v-else color="neutral" variant="subtle">Connecting</UBadge>
+    <div v-if="!gameReady" class="game-room-loading" role="status" aria-live="polite">
+      <div class="game-room-loading-card">
+        <span class="game-room-loading-icon" aria-hidden="true">
+          <UIcon name="i-lucide-gamepad-2" />
+        </span>
+        <h1>{{ room ? `Preparing ${displayGameId}` : "Joining the table" }}</h1>
+        <p>{{ identityReady ? "Syncing the latest room state…" : "Finish player setup to enter this room." }}</p>
       </div>
+    </div>
 
-      <template #right>
-        <UButton
-          aria-label="Share room QR code"
-          icon="i-lucide-qr-code"
-          color="neutral"
-          variant="ghost"
-          :disabled="!roomCanShareQr"
-          @click="openQrModal"
-        />
-      </template>
-    </UHeader>
-
-    <UAlert v-if="error" color="error" icon="i-lucide-circle-alert" :title="error" />
-    <UAlert
-      v-if="activeInterruption && !isHost"
-      color="warning"
-      icon="i-lucide-triangle-alert"
-      :title="`${interruptedPlayerName} left the game`"
-      :description="`${hostName} is deciding whether to reset and start a new game.`"
-    />
-
-    <UModal
-      v-model:open="restartDialogOpen"
-      title="Player left the game"
-      :description="`${interruptedPlayerName} left. Reset the game and start over with the remaining players?`"
-      :ui="{ close: 'hidden' }"
-    >
-      <template #body>
-        <div class="space-y-3">
-          <UAlert
-            v-if="!canRestartInterruptedGame"
-            color="warning"
-            variant="subtle"
-            icon="i-lucide-users"
-            :title="`Need at least ${room?.minPlayers ?? 0} players to restart`"
-            description="Wait for another player to join from the lobby or leave this room."
-          />
-          <p class="text-sm text-muted">
-            The current game state will be discarded and the stage will be dealt from a fresh state.
-          </p>
-        </div>
-      </template>
-
-      <template #footer>
-        <div class="flex w-full justify-end gap-2">
-          <UButton label="Leave room" color="neutral" variant="subtle" icon="i-lucide-log-out" @click="leaveRoom" />
-          <UButton
-            label="Start new game"
-            icon="i-lucide-refresh-cw"
-            :disabled="!canRestartInterruptedGame"
-            @click="restartGame"
-          />
-        </div>
-      </template>
-    </UModal>
+    <div v-if="error" class="room-connection-banner" role="alert">{{ error }}</div>
 
     <UModal
       v-model:open="leaveConfirmOpen"
@@ -96,154 +37,12 @@
     >
       <template #body>
         <div class="flex flex-col items-center gap-4">
-          <img v-if="qrCodeDataUrl" class="game-stage size-64 rounded-3xl bg-white p-3" :src="qrCodeDataUrl" alt="Room QR code" />
-          <UAlert v-else color="neutral" variant="subtle" title="Preparing QR code" />
+          <img v-if="qrCodeDataUrl" class="room-qr-image" :src="qrCodeDataUrl" alt="Room QR code" />
+          <div v-else class="portal-alert" role="status">Preparing QR code…</div>
           <p class="max-w-full break-all text-center text-xs text-muted">{{ publicRoomUrl }}</p>
         </div>
       </template>
     </UModal>
-
-    <div class="grid gap-6 lg:grid-cols-[360px_1fr]">
-      <div class="order-1 space-y-6 lg:order-1">
-        <UCard>
-          <template #header>
-            <div class="flex items-center justify-between">
-              <h2 class="font-semibold">Players</h2>
-              <UBadge color="neutral" variant="subtle">{{ room?.players.length ?? 0 }}</UBadge>
-            </div>
-          </template>
-
-          <div class="space-y-3">
-            <div v-for="player in room?.players ?? []" :key="player.playerId" class="flex items-center justify-between gap-3">
-              <div>
-                <div class="font-medium text-highlighted">{{ player.displayName || player.playerId }}</div>
-                <div class="text-xs text-muted">
-                  Seat {{ player.seat + 1 }}
-                  <span v-if="player.playerId === room?.hostPlayerId">/ host</span>
-                  <span v-else-if="isBotPlayer(player)">/ bot</span>
-                </div>
-              </div>
-              <div class="flex items-center gap-2">
-                <UBadge v-if="isBotPlayer(player)" color="secondary" variant="subtle">
-                  {{ botDifficultyLabel(player.botDifficulty) }}
-                </UBadge>
-                <UBadge v-else :color="player.connected ? 'success' : 'neutral'" variant="subtle">
-                  {{ player.connected ? "online" : "offline" }}
-                </UBadge>
-                <UBadge v-if="player.playerId === room?.hostPlayerId" color="neutral" variant="subtle">
-                  host
-                </UBadge>
-                <UBadge v-else-if="isBotPlayer(player)" color="neutral" variant="subtle">
-                  ready
-                </UBadge>
-                <UBadge v-else-if="room?.phase === 'waiting'" :color="player.ready ? 'success' : 'warning'" variant="subtle">
-                  {{ player.ready ? "ready" : "not ready" }}
-                </UBadge>
-                <UButton
-                  v-if="canManageBots && isBotPlayer(player)"
-                  :aria-label="`Remove ${player.displayName || player.playerId}`"
-                  icon="i-lucide-trash-2"
-                  size="xs"
-                  color="error"
-                  variant="ghost"
-                  @click="removeBot(player.playerId)"
-                />
-              </div>
-            </div>
-
-            <div v-if="room?.phase === 'waiting'" class="border-t-2 border-default/70 pt-3">
-              <UButton
-                v-if="!isHost"
-                :label="me?.ready ? 'Cancel ready' : 'Ready'"
-                :icon="me?.ready ? 'i-lucide-circle-x' : 'i-lucide-circle-check'"
-                :color="me?.ready ? 'neutral' : 'primary'"
-                :disabled="!room || room.phase !== 'waiting'"
-                block
-                @click="sendReady(!me?.ready)"
-              />
-              <UButton
-                v-if="isHost"
-                label="Start"
-                icon="i-lucide-play"
-                :disabled="!canStart"
-                block
-                @click="startGame"
-              />
-            </div>
-
-            <div v-if="canManageBots" class="space-y-3 border-t-2 border-default/70 pt-3">
-              <div class="flex items-center justify-between gap-2">
-                <div class="text-xs text-muted">Bot players</div>
-                <UBadge color="neutral" variant="subtle">{{ botSlotsRemaining }} slots</UBadge>
-              </div>
-              <div class="grid gap-2">
-                <div class="grid grid-cols-3 gap-1">
-                  <UButton
-                    v-for="option in botDifficultyOptions"
-                    :key="option.value"
-                    size="xs"
-                    :label="option.label"
-                    :color="botDifficulty === option.value ? 'primary' : 'neutral'"
-                    :variant="botDifficulty === option.value ? 'solid' : 'subtle'"
-                    block
-                    @click="botDifficulty = option.value"
-                  />
-                </div>
-                <UButton
-                  label="Add bot"
-                  icon="i-lucide-bot"
-                  :disabled="!canAddBot"
-                  color="secondary"
-                  variant="subtle"
-                  block
-                  @click="addBot"
-                />
-              </div>
-            </div>
-
-            <div v-if="room?.phase === 'active'" class="border-t-2 border-default/70 pt-3">
-              <UButton
-                label="Leave game"
-                icon="i-lucide-log-out"
-                color="error"
-                variant="subtle"
-                block
-                @click="goToLobby"
-              />
-            </div>
-
-            <div v-if="room?.phase === 'waiting' && delegatablePlayers.length > 0" class="space-y-2 border-t-2 border-default/70 pt-3">
-              <div class="text-xs text-muted">Delegate host</div>
-              <div class="flex flex-wrap gap-2">
-                <UButton
-                  v-for="player in delegatablePlayers"
-                  :key="player.playerId"
-                  size="xs"
-                  color="neutral"
-                  variant="subtle"
-                  :label="player.displayName || player.playerId"
-                  @click="transferHost(player.playerId)"
-                />
-              </div>
-            </div>
-          </div>
-        </UCard>
-      </div>
-
-      <UCard class="order-2 min-w-0 -mx-4 sm:mx-0 lg:order-2" :ui="{ header: 'p-3 sm:px-6 sm:py-4', body: 'p-0 sm:p-6' }">
-        <template #header>
-          <div class="flex items-center justify-between">
-            <h2 class="font-semibold">Game</h2>
-            <UBadge v-if="room" color="neutral" variant="subtle">v{{ room.version }}</UBadge>
-          </div>
-        </template>
-        <div ref="gameHost" class="game-stage min-h-48 overflow-hidden rounded-3xl sm:min-h-80">
-          <UAlert v-if="!room" color="neutral" variant="subtle" title="Waiting for snapshot" />
-        </div>
-      </UCard>
-
-      <ChatPanel class="order-3 lg:order-3 lg:col-span-2" title="Room chat" :messages="chat" @send="sendChat" />
-    </div>
   </div>
 </template>
 
@@ -251,30 +50,37 @@
 import { toDataURL } from "qrcode";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { onBeforeRouteLeave, useRoute, useRouter } from "vue-router";
-import type { GameClientContext, MountedGameClient } from "@bighouse/game-sdk/client";
-import ChatPanel from "../components/ChatPanel.vue";
+import type {
+  BotDifficulty,
+  GameClientActions,
+  GameClientChatMessage,
+  GameClientSnapshot,
+  MountedGameClient
+} from "@bighouse/game-sdk/client";
 import { identity, identityReady } from "../identity";
 import { roomWebsocketUrl } from "../api";
 import { loadGameClient } from "../game-plugins";
 import { parseServerMessage } from "../socket";
-import type { BotDifficulty, ChatMessage, Player, RoomSnapshot, ServerMessage } from "../types";
+import type { RoomSnapshot, ServerMessage } from "../types";
 
 const route = useRoute();
 const router = useRouter();
 const roomId = computed(() => String(route.params.roomId));
 const displayGameId = computed(() => room.value?.gameId ?? String(route.params.gameId));
 const room = ref<RoomSnapshot>();
-const chat = ref<ChatMessage[]>([]);
+const chatMessages = ref<GameClientChatMessage[]>([]);
+const uiRevision = ref(0);
 const error = ref("");
 const leaveConfirmOpen = ref(false);
 const qrModalOpen = ref(false);
 const qrCodeDataUrl = ref("");
 const gameHost = ref<HTMLElement>();
+const gameReady = ref(false);
 const lastSnapshotServerTime = ref(Date.now());
-const botDifficulty = ref<BotDifficulty>("medium");
 let ws: WebSocket | undefined;
 let gameInstance: MountedGameClient | undefined;
 let mountedGameId: string | undefined;
+let loadingGameId: string | undefined;
 let reconnectTimer: number | undefined;
 let leaveFallbackTimer: number | undefined;
 let reconnectAttempt = 0;
@@ -284,41 +90,6 @@ let leaveDestination: string | undefined;
 let pendingGuardDestination: string | undefined;
 let guardNavigationAllowed = false;
 
-const botDifficultyOptions: Array<{ value: BotDifficulty; label: string }> = [
-  { value: "low", label: "Low" },
-  { value: "medium", label: "Medium" },
-  { value: "high", label: "High" }
-];
-
-const me = computed(() => room.value?.players.find((player) => player.playerId === identity.playerId));
-const isHost = computed(() => room.value?.hostPlayerId === identity.playerId);
-const activeInterruption = computed(() => room.value?.activeInterruption);
-const restartDialogOpen = computed({
-  get: () => Boolean(activeInterruption.value && isHost.value),
-  set: () => {
-    // The server owns this dialog state; it closes when a fresh snapshot clears activeInterruption.
-  }
-});
-const canRestartInterruptedGame = computed(() => {
-  const snapshot = room.value;
-  return Boolean(activeInterruption.value && isHost.value && snapshot && snapshot.players.length >= snapshot.minPlayers);
-});
-const interruptedPlayerName = computed(() => {
-  const interruption = activeInterruption.value;
-  if (!interruption) return "A player";
-  return interruption.displayName || interruption.playerId;
-});
-const hostName = computed(() => playerName(room.value?.hostPlayerId));
-const canStart = computed(() => {
-  const snapshot = room.value;
-  if (!snapshot || !isHost.value || snapshot.phase !== "waiting") return false;
-  const requiredReadyPlayers = snapshot.players.filter((player) => player.playerId !== snapshot.hostPlayerId);
-  return snapshot.players.length >= snapshot.minPlayers && requiredReadyPlayers.every((player) => isBotPlayer(player) || (player.connected && player.ready));
-});
-const delegatablePlayers = computed<Player[]>(() => {
-  if (!room.value || !isHost.value) return [];
-  return room.value.players.filter((player) => player.playerId !== identity.playerId && !isBotPlayer(player));
-});
 const hasOtherPlayers = computed(() => room.value?.players.some((player) => player.playerId !== identity.playerId) ?? false);
 const roomIsFull = computed(() => {
   const snapshot = room.value;
@@ -328,15 +99,6 @@ const roomCanShareQr = computed(() => {
   const snapshot = room.value;
   return Boolean(snapshot && !roomIsFull.value && (snapshot.phase === "waiting" || snapshot.activeInterruption));
 });
-const canManageBots = computed(() => {
-  const snapshot = room.value;
-  return Boolean(snapshot && isHost.value && (snapshot.phase === "waiting" || snapshot.activeInterruption));
-});
-const botSlotsRemaining = computed(() => {
-  const snapshot = room.value;
-  return snapshot ? Math.max(0, snapshot.maxPlayers - snapshot.players.length) : 0;
-});
-const canAddBot = computed(() => canManageBots.value && botSlotsRemaining.value > 0);
 const lobbyPath = computed(() => {
   const gameId = room.value?.gameId ?? String(route.params.gameId);
   const mode = room.value?.mode ?? "default";
@@ -350,6 +112,61 @@ const publicRoomUrl = computed(() => {
   }).href;
   return new URL(href, window.location.origin).toString();
 });
+
+const gameActions: GameClientActions = {
+  sendAction(action) {
+    ws?.send(
+      JSON.stringify({
+        type: "action",
+        playerId: identity.playerId,
+        clientActionId: crypto.randomUUID(),
+        expectedVersion: room.value?.version ?? 0,
+        action
+      })
+    );
+  },
+  setReady(ready) {
+    ws?.send(JSON.stringify({ type: "ready", playerId: identity.playerId, ready }));
+  },
+  startGame() {
+    ws?.send(JSON.stringify({ type: "startGame", playerId: identity.playerId }));
+  },
+  restartGame() {
+    ws?.send(JSON.stringify({ type: "restartGame", playerId: identity.playerId }));
+  },
+  addBot(difficulty: BotDifficulty, displayName?: string) {
+    ws?.send(
+      JSON.stringify({
+        type: "addBot",
+        playerId: identity.playerId,
+        difficulty,
+        ...(displayName ? { displayName } : {})
+      })
+    );
+  },
+  removeBot(botPlayerId) {
+    ws?.send(JSON.stringify({ type: "removeBot", playerId: identity.playerId, botPlayerId }));
+  },
+  transferHost(targetPlayerId) {
+    ws?.send(JSON.stringify({ type: "transferHost", playerId: identity.playerId, targetPlayerId }));
+  },
+  sendChat(body, targetPlayerId) {
+    ws?.send(JSON.stringify({ type: "chat", playerId: identity.playerId, targetPlayerId, body }));
+  },
+  shareRoom() {
+    openQrModal();
+  },
+  leaveRoom() {
+    goToLobby();
+  },
+  requestPlayAgain() {
+    ws?.send(JSON.stringify({ type: "playAgain", playerId: identity.playerId }));
+  },
+  leaveFinishedGame() {
+    ws?.send(JSON.stringify({ type: "leaveFinishedGame", playerId: identity.playerId }));
+    void replaceRoomRoute(lobbyPath.value);
+  }
+};
 
 onMounted(() => {
   if (identityReady.value) connectRoom();
@@ -412,19 +229,16 @@ function connectRoom(): void {
     socket.send(JSON.stringify({ type: "joinRoom", playerId: identity.playerId, displayName: identity.displayName || undefined }));
   });
   socket.addEventListener("message", (event) => {
-    if (ws === socket) {
-      const message = parseServerMessage(event.data);
-      if (message) void handleRoomMessage(message);
-    }
+    if (ws !== socket) return;
+    const message = parseServerMessage(event.data);
+    if (message) void handleRoomMessage(message);
   });
   socket.addEventListener("error", () => {
     if (ws !== socket) return;
-    error.value = "Room WebSocket failed";
+    error.value = "Room connection failed";
   });
   socket.addEventListener("close", () => {
-    if (!closingRoom && ws === socket) {
-      scheduleReconnect();
-    }
+    if (!closingRoom && ws === socket) scheduleReconnect();
   });
 }
 
@@ -432,6 +246,7 @@ async function handleRoomMessage(message: ServerMessage): Promise<void> {
   if (message.type === "snapshot") {
     lastSnapshotServerTime.value = message.serverTime;
     room.value = message.payload as unknown as RoomSnapshot;
+    uiRevision.value += 1;
     await mountOrUpdateGame();
     return;
   }
@@ -449,7 +264,14 @@ async function handleRoomMessage(message: ServerMessage): Promise<void> {
     return;
   }
   if (message.type === "chat") {
-    chat.value.push((message.payload as { message: ChatMessage }).message);
+    chatMessages.value.push((message.payload as { message: GameClientChatMessage }).message);
+    if (chatMessages.value.length > 200) chatMessages.value.splice(0, chatMessages.value.length - 200);
+    uiRevision.value += 1;
+    updateMountedGame();
+    return;
+  }
+  if (message.type === "roomClosed") {
+    error.value = "This room has closed";
     return;
   }
   if (message.type === "error") {
@@ -459,86 +281,78 @@ async function handleRoomMessage(message: ServerMessage): Promise<void> {
 
 function applyPresence(payload: { playerId: string; connected: boolean }): void {
   const player = room.value?.players.find((candidate) => candidate.playerId === payload.playerId);
-  if (player) {
-    player.connected = payload.connected;
-  }
+  if (!player || player.connected === payload.connected) return;
+  player.connected = payload.connected;
+  uiRevision.value += 1;
+  updateMountedGame();
+}
+
+function createGameSnapshot(): GameClientSnapshot | undefined {
+  const snapshot = room.value;
+  if (!snapshot) return undefined;
+  return {
+    playerId: identity.playerId,
+    version: snapshot.version,
+    uiRevision: uiRevision.value,
+    serverTime: lastSnapshotServerTime.value,
+    phase: snapshot.phase,
+    room: {
+      roomId: snapshot.roomId,
+      gameId: snapshot.gameId,
+      mode: snapshot.mode,
+      minPlayers: snapshot.minPlayers,
+      maxPlayers: snapshot.maxPlayers,
+      ...(snapshot.hostPlayerId ? { hostPlayerId: snapshot.hostPlayerId } : {}),
+      players: snapshot.players,
+      ...(snapshot.activeInterruption ? { activeInterruption: snapshot.activeInterruption } : {}),
+      inviteUrl: publicRoomUrl.value
+    },
+    publicView: snapshot.publicView,
+    privateView: snapshot.privateView,
+    rematchRequests: snapshot.rematchRequests ?? [],
+    chatMessages: [...chatMessages.value]
+  };
 }
 
 async function mountOrUpdateGame(): Promise<void> {
-  const snapshot = room.value;
-  if (!snapshot || !gameHost.value) return;
-  const module = await loadGameClient(snapshot.gameId);
-  if (!module) {
-    gameHost.value.textContent = `No client module installed for ${snapshot.gameId}.`;
+  const snapshot = createGameSnapshot();
+  const host = gameHost.value;
+  if (!snapshot || !host) return;
+
+  if (gameInstance && mountedGameId === snapshot.room.gameId) {
+    gameInstance.update(snapshot);
+    gameReady.value = true;
     return;
   }
-  await nextTick();
-  const client = {
-    playerId: identity.playerId,
-    version: snapshot.version,
-    serverTime: lastSnapshotServerTime.value,
-    phase: snapshot.phase,
-    publicView: snapshot.publicView,
-    privateView: snapshot.privateView,
-    rematchRequests: snapshot.rematchRequests ?? []
-  } satisfies Omit<GameClientContext, "sendAction" | "requestPlayAgain" | "leaveFinishedGame">;
-  if (!gameInstance || mountedGameId !== snapshot.gameId) {
+
+  if (loadingGameId === snapshot.room.gameId) return;
+  loadingGameId = snapshot.room.gameId;
+  try {
+    const module = await loadGameClient(snapshot.room.gameId);
+    if (!module) {
+      error.value = `No client module installed for ${snapshot.room.gameId}.`;
+      return;
+    }
+    const latest = createGameSnapshot();
+    if (!latest || latest.room.gameId !== snapshot.room.gameId || !gameHost.value) return;
+    await nextTick();
     gameInstance?.destroy();
-    mountedGameId = snapshot.gameId;
-    gameInstance = module.mountGame(gameHost.value, {
-      ...client,
-      sendAction(action) {
-        ws?.send(
-          JSON.stringify({
-            type: "action",
-            playerId: identity.playerId,
-            clientActionId: crypto.randomUUID(),
-            expectedVersion: room.value?.version ?? 0,
-            action
-          })
-        );
-      },
-      requestPlayAgain() {
-        ws?.send(JSON.stringify({ type: "playAgain", playerId: identity.playerId }));
-      },
-      leaveFinishedGame() {
-        ws?.send(JSON.stringify({ type: "leaveFinishedGame", playerId: identity.playerId }));
-        void replaceRoomRoute(lobbyPath.value);
-      }
-    });
-    return;
+    mountedGameId = latest.room.gameId;
+    gameInstance = module.mountGame(gameHost.value, { ...latest, ...gameActions });
+    gameReady.value = true;
+    const afterMount = createGameSnapshot();
+    if (afterMount && afterMount.uiRevision !== latest.uiRevision) gameInstance.update(afterMount);
+  } catch (cause) {
+    console.error("Failed to mount game client", cause);
+    error.value = cause instanceof Error ? cause.message : "Failed to open game";
+  } finally {
+    loadingGameId = undefined;
   }
-  gameInstance.update(client);
 }
 
-function sendReady(ready: boolean): void {
-  ws?.send(JSON.stringify({ type: "ready", playerId: identity.playerId, ready }));
-}
-
-function startGame(): void {
-  ws?.send(JSON.stringify({ type: "startGame", playerId: identity.playerId }));
-}
-
-function restartGame(): void {
-  ws?.send(JSON.stringify({ type: "restartGame", playerId: identity.playerId }));
-}
-
-function transferHost(targetPlayerId: string): void {
-  ws?.send(JSON.stringify({ type: "transferHost", playerId: identity.playerId, targetPlayerId }));
-}
-
-function addBot(): void {
-  if (!canAddBot.value) return;
-  ws?.send(JSON.stringify({ type: "addBot", playerId: identity.playerId, difficulty: botDifficulty.value }));
-}
-
-function removeBot(botPlayerId: string): void {
-  if (!canManageBots.value) return;
-  ws?.send(JSON.stringify({ type: "removeBot", playerId: identity.playerId, botPlayerId }));
-}
-
-function sendChat(body: string, targetPlayerId?: string): void {
-  ws?.send(JSON.stringify({ type: "chat", playerId: identity.playerId, targetPlayerId, body }));
+function updateMountedGame(): void {
+  const snapshot = createGameSnapshot();
+  if (snapshot && gameInstance) gameInstance.update(snapshot);
 }
 
 function goToLobby(): void {
@@ -551,9 +365,7 @@ function leaveRoom(destination = lobbyPath.value): void {
   closingRoom = true;
   leaveDestination = destination;
   leaveConfirmOpen.value = false;
-  leaveFallbackTimer = window.setTimeout(() => {
-    replaceAfterLeave();
-  }, 500);
+  leaveFallbackTimer = window.setTimeout(replaceAfterLeave, 500);
   if (ws?.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({ type: "leaveRoom", playerId: identity.playerId }));
   }
@@ -587,27 +399,11 @@ function openQrModal(): void {
   qrModalOpen.value = true;
 }
 
-function playerName(playerId?: string): string {
-  if (!playerId) return "the host";
-  const player = room.value?.players.find((candidate) => candidate.playerId === playerId);
-  return player?.displayName || player?.playerId || playerId;
-}
-
-function isBotPlayer(player: Player): boolean {
-  return player.kind === "bot" || player.botDifficulty !== undefined;
-}
-
-function botDifficultyLabel(difficulty?: BotDifficulty): string {
-  if (difficulty === "low") return "low bot";
-  if (difficulty === "high") return "high bot";
-  return "medium bot";
-}
-
 function scheduleReconnect(): void {
   if (!identityReady.value || reconnectTimer) return;
   const delay = Math.min(500 * 2 ** reconnectAttempt, 5000);
   reconnectAttempt += 1;
-  error.value = "Room connection lost. Reconnecting...";
+  error.value = "Room connection lost. Reconnecting…";
   reconnectTimer = window.setTimeout(() => {
     reconnectTimer = undefined;
     connectRoom();
@@ -615,14 +411,14 @@ function scheduleReconnect(): void {
 }
 
 function clearReconnectTimer(): void {
-  if (reconnectTimer) {
+  if (reconnectTimer !== undefined) {
     window.clearTimeout(reconnectTimer);
     reconnectTimer = undefined;
   }
 }
 
 function clearLeaveFallbackTimer(): void {
-  if (leaveFallbackTimer) {
+  if (leaveFallbackTimer !== undefined) {
     window.clearTimeout(leaveFallbackTimer);
     leaveFallbackTimer = undefined;
   }

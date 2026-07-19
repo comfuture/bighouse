@@ -17,14 +17,10 @@ declare module 'vue' {
     RouterView: typeof import('vue-router')['RouterView']
     UAlert: typeof import('./../../node_modules/.pnpm/@nuxt+ui@4.7.1_@internationalized+date@3.12.1_@internationalized+number@3.6.6_@tiptap+e_1f6155090c18c4bfc60e1919612d7b3b/node_modules/@nuxt/ui/dist/runtime/components/Alert.vue')['default']
     UApp: typeof import('./../../node_modules/.pnpm/@nuxt+ui@4.7.1_@internationalized+date@3.12.1_@internationalized+number@3.6.6_@tiptap+e_1f6155090c18c4bfc60e1919612d7b3b/node_modules/@nuxt/ui/dist/runtime/components/App.vue')['default']
-    UBadge: typeof import('./../../node_modules/.pnpm/@nuxt+ui@4.7.1_@internationalized+date@3.12.1_@internationalized+number@3.6.6_@tiptap+e_1f6155090c18c4bfc60e1919612d7b3b/node_modules/@nuxt/ui/dist/runtime/components/Badge.vue')['default']
     UButton: typeof import('./../../node_modules/.pnpm/@nuxt+ui@4.7.1_@internationalized+date@3.12.1_@internationalized+number@3.6.6_@tiptap+e_1f6155090c18c4bfc60e1919612d7b3b/node_modules/@nuxt/ui/dist/runtime/components/Button.vue')['default']
-    UCard: typeof import('./../../node_modules/.pnpm/@nuxt+ui@4.7.1_@internationalized+date@3.12.1_@internationalized+number@3.6.6_@tiptap+e_1f6155090c18c4bfc60e1919612d7b3b/node_modules/@nuxt/ui/dist/runtime/components/Card.vue')['default']
     UFormField: typeof import('./../../node_modules/.pnpm/@nuxt+ui@4.7.1_@internationalized+date@3.12.1_@internationalized+number@3.6.6_@tiptap+e_1f6155090c18c4bfc60e1919612d7b3b/node_modules/@nuxt/ui/dist/runtime/components/FormField.vue')['default']
-    UHeader: typeof import('./../../node_modules/.pnpm/@nuxt+ui@4.7.1_@internationalized+date@3.12.1_@internationalized+number@3.6.6_@tiptap+e_1f6155090c18c4bfc60e1919612d7b3b/node_modules/@nuxt/ui/dist/runtime/components/Header.vue')['default']
+    UIcon: typeof import('./../../node_modules/.pnpm/@nuxt+ui@4.7.1_@internationalized+date@3.12.1_@internationalized+number@3.6.6_@tiptap+e_1f6155090c18c4bfc60e1919612d7b3b/node_modules/@nuxt/ui/dist/runtime/vue/components/Icon.vue')['default']
     UInput: typeof import('./../../node_modules/.pnpm/@nuxt+ui@4.7.1_@internationalized+date@3.12.1_@internationalized+number@3.6.6_@tiptap+e_1f6155090c18c4bfc60e1919612d7b3b/node_modules/@nuxt/ui/dist/runtime/components/Input.vue')['default']
     UModal: typeof import('./../../node_modules/.pnpm/@nuxt+ui@4.7.1_@internationalized+date@3.12.1_@internationalized+number@3.6.6_@tiptap+e_1f6155090c18c4bfc60e1919612d7b3b/node_modules/@nuxt/ui/dist/runtime/components/Modal.vue')['default']
-    UPageCard: typeof import('./../../node_modules/.pnpm/@nuxt+ui@4.7.1_@internationalized+date@3.12.1_@internationalized+number@3.6.6_@tiptap+e_1f6155090c18c4bfc60e1919612d7b3b/node_modules/@nuxt/ui/dist/runtime/components/PageCard.vue')['default']
-    UPageGrid: typeof import('./../../node_modules/.pnpm/@nuxt+ui@4.7.1_@internationalized+date@3.12.1_@internationalized+number@3.6.6_@tiptap+e_1f6155090c18c4bfc60e1919612d7b3b/node_modules/@nuxt/ui/dist/runtime/components/PageGrid.vue')['default']
   }
 }
