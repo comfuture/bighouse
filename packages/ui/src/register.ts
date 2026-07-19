@@ -1,5 +1,6 @@
 import {
   BighouseGameChatElement,
+  BighouseGameControlsElement,
   BighouseGameModalElement,
   BighouseGameResultDialogElement,
   BighouseRoomControlsElement
@@ -7,6 +8,7 @@ import {
 
 const definitions = [
   ["bighouse-room-controls", BighouseRoomControlsElement],
+  ["bighouse-game-controls", BighouseGameControlsElement],
   ["bighouse-game-chat", BighouseGameChatElement],
   ["bighouse-game-modal", BighouseGameModalElement],
   ["bighouse-game-result-dialog", BighouseGameResultDialogElement]

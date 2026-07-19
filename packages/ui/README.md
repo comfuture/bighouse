@@ -23,7 +23,8 @@ export function mountGame(container, context) {
 `createGameUi()` mounts:
 
 - `<bighouse-room-controls>` for waiting, ready/start, host transfer, atomic multi-bot management, interruption/restart, share, and leave actions.
-- `<bighouse-game-chat>` for the transparent in-game log, desktop Enter shortcut, IME-safe input, unread state, explicit close control, mobile floating trigger, and a one-minute inactivity fade after the latest send, receive, or input activity.
+- `<bighouse-game-controls>` for compact in-game leave, fullscreen, and always-available chat entry controls without reserving a fixed rail beside the game.
+- `<bighouse-game-chat>` for the transparent in-game log, desktop Enter shortcut, IME-safe input, unread state, explicit close control, and a one-minute inactivity fade after the latest send, receive, or input activity.
 - `<bighouse-game-result-dialog>` and `<bighouse-game-modal>` for result/rematch and lifecycle notices.
 
 Call `setResult()` with the game-specific winner/result copy. The controller connects component events to the stable `GameClientActions` supplied at mount time.
@@ -42,8 +43,9 @@ Room-control events are bubbling and composed:
 - `bighouse-transfer-host`
 - `bighouse-share-room`
 - `bighouse-leave-room`
+- `bighouse-toggle-fullscreen` (on an interrupted game so fullscreen remains dismissible)
 
-Chat emits `bighouse-chat-send` and `bighouse-chat-open-change`. Result dialogs emit `bighouse-rematch` and `bighouse-leave-finished`.
+Game controls emit `bighouse-leave-room`, `bighouse-chat-open`, and `bighouse-toggle-fullscreen`. Chat emits `bighouse-chat-send` and `bighouse-chat-open-change`. Result dialogs emit `bighouse-rematch` and `bighouse-leave-finished`.
 
 `bighouse-add-bot` carries `{ difficulty, count }`. The default controller forwards the batch as one `GameClientActions.addBot(difficulty, count)` command so room capacity is validated atomically.
 
@@ -61,4 +63,4 @@ Set these CSS custom properties on the game container or Custom Element host:
 - `--bh-ui-red`
 - `--bh-ui-green`
 
-The components expose `waiting-overlay`, `room-rail`, `chat-overlay`, and `result-dialog` parts for limited host-level styling. Player names and chat messages are rendered through `textContent`.
+The components expose `waiting-overlay`, `game-controls`, `chat-overlay`, and `result-dialog` parts for limited host-level styling. Player names and chat messages are rendered through `textContent`.

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { GameClientActions, GameClientChatMessage, GameClientSnapshot } from "@bighouse/game-sdk/client";
 import {
   BighouseGameChatElement,
+  BighouseGameControlsElement,
   BighouseGameModalElement,
   BighouseGameResultDialogElement,
   BighouseRoomControlsElement,
@@ -21,6 +22,7 @@ describe("@bighouse/ui", () => {
       registerBighouseUi();
     }).not.toThrow();
     expect(customElements.get("bighouse-room-controls")).toBe(BighouseRoomControlsElement);
+    expect(customElements.get("bighouse-game-controls")).toBe(BighouseGameControlsElement);
     expect(customElements.get("bighouse-game-chat")).toBe(BighouseGameChatElement);
   });
 
@@ -171,20 +173,112 @@ describe("@bighouse/ui", () => {
     expect(chat.shadowRoot!.querySelector<HTMLInputElement>("input")?.value).toBe("unfinished");
   });
 
-  it("returns focus to the floating chat trigger after closing", async () => {
-    registerBighouseUi();
-    const chat = document.createElement("bighouse-game-chat") as BighouseGameChatElement;
-    document.body.append(chat);
-    const root = chat.shadowRoot!;
-    const trigger = root.querySelector<HTMLButtonElement>(".bh-chat-trigger")!;
+  it("opens chat from the shared desktop control and returns focus after closing", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const initial = { ...snapshot(), phase: "active" as const };
+    const ui = createGameUi(host, initial, actionSpies());
+    const controls = host.querySelector("bighouse-game-controls") as BighouseGameControlsElement;
+    const chat = host.querySelector("bighouse-game-chat") as BighouseGameChatElement;
+    const trigger = controls.chatTrigger!;
     trigger.focus();
     trigger.click();
     await Promise.resolve();
-    expect(root.activeElement).toBe(root.querySelector("input"));
+    expect(document.activeElement).toBe(chat);
+    expect(controls.chatTrigger?.hidden).toBe(true);
 
-    root.querySelector<HTMLButtonElement>("[aria-label='Close chat']")!.click();
+    chat.shadowRoot!.querySelector<HTMLButtonElement>("[aria-label='Close chat']")!.click();
     await Promise.resolve();
-    expect(root.activeElement).toBe(root.querySelector(".bh-chat-trigger"));
+    await Promise.resolve();
+    expect(document.activeElement).toBe(controls);
+
+    host.tabIndex = -1;
+    host.focus();
+    host.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    await Promise.resolve();
+    expect(document.activeElement).toBe(chat);
+    ui.destroy();
+  });
+
+  it("keeps compact game controls over the active surface and pauses chat during interruptions", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const actions = actionSpies();
+    const initial = { ...snapshot(), phase: "active" as const };
+    const ui = createGameUi(host, initial, actions);
+    const lobby = host.querySelector("bighouse-room-controls") as BighouseRoomControlsElement;
+    const controls = host.querySelector("bighouse-game-controls") as BighouseGameControlsElement;
+
+    expect(lobby.shadowRoot!.childElementCount).toBe(0);
+    expect(lobby.hidden).toBe(true);
+    expect(controls.hidden).toBe(false);
+    expect(controls.shadowRoot!.querySelectorAll(".bh-game-control")).toHaveLength(3);
+    expect(controls.chatTrigger?.hidden).toBe(false);
+    controls.shadowRoot!.querySelector<HTMLButtonElement>("[aria-label='Leave game']")!.click();
+    expect(actions.leaveRoom).toHaveBeenCalledOnce();
+
+    const chat = host.querySelector("bighouse-game-chat") as BighouseGameChatElement;
+    chat.open = true;
+    ui.update({
+      ...initial,
+      version: 2,
+      room: {
+        ...initial.room,
+        activeInterruption: {
+          reason: "player_left",
+          playerId: "guest",
+          displayName: "Guest",
+          hostPlayerId: "host",
+          createdAt: 2
+        }
+      }
+    });
+    expect(chat.enabled).toBe(false);
+    expect(chat.open).toBe(false);
+    expect(controls.hidden).toBe(true);
+    const interruptionControls = host.querySelector("bighouse-room-controls") as BighouseRoomControlsElement;
+    expect(interruptionControls.shadowRoot!.querySelector("[data-room-action='fullscreen']")).not.toBeNull();
+    expect(interruptionControls.shadowRoot!.querySelector(".bh-room-navigation.has-fullscreen")).not.toBeNull();
+    await Promise.resolve();
+    expect(document.activeElement).toBe(interruptionControls);
+    host.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    expect(chat.open).toBe(false);
+    ui.destroy();
+  });
+
+  it("forwards the fullscreen control request through the game host", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const enabledDescriptor = Object.getOwnPropertyDescriptor(document, "fullscreenEnabled");
+    const requestDescriptor = Object.getOwnPropertyDescriptor(document.documentElement, "requestFullscreen");
+    Object.defineProperty(document, "fullscreenEnabled", { configurable: true, value: true });
+    Object.defineProperty(document.documentElement, "requestFullscreen", {
+      configurable: true,
+      value: vi.fn(() => Promise.resolve())
+    });
+
+    try {
+      const ui = createGameUi(host, { ...snapshot(), phase: "active" }, actionSpies());
+      const listener = vi.fn();
+      host.addEventListener("bighouse-toggle-fullscreen", listener);
+      const controls = host.querySelector("bighouse-game-controls") as BighouseGameControlsElement;
+      const fullscreen = controls.shadowRoot!.querySelector<HTMLButtonElement>("[data-game-control='fullscreen']")!;
+      expect(fullscreen.disabled).toBe(false);
+      fullscreen.focus();
+      fullscreen.click();
+
+      expect(listener).toHaveBeenCalledOnce();
+      expect((listener.mock.calls[0]?.[0] as CustomEvent).composed).toBe(true);
+      document.dispatchEvent(new Event("fullscreenerror"));
+      await Promise.resolve();
+      expect(document.activeElement).toBe(controls);
+      ui.destroy();
+    } finally {
+      if (enabledDescriptor) Object.defineProperty(document, "fullscreenEnabled", enabledDescriptor);
+      else Reflect.deleteProperty(document, "fullscreenEnabled");
+      if (requestDescriptor) Object.defineProperty(document.documentElement, "requestFullscreen", requestDescriptor);
+      else Reflect.deleteProperty(document.documentElement, "requestFullscreen");
+    }
   });
 
   it("keeps the legacy addBot signature alongside the optional batched API", () => {
@@ -310,18 +404,21 @@ describe("@bighouse/ui", () => {
     expect(chat.shadowRoot!.querySelector<HTMLInputElement>("input")?.value).toBe("draft");
   });
 
-  it("counts unread messages after capped histories and makes the open log scrollable", () => {
-    registerBighouseUi();
-    const chat = document.createElement("bighouse-game-chat") as BighouseGameChatElement;
-    document.body.append(chat);
-    chat.messages = chatHistory(200, 0);
-    expect(chat.shadowRoot!.querySelector(".bh-chat-trigger")?.getAttribute("aria-label")).toBe("Open chat");
-    chat.messages = chatHistory(200, 1);
-    expect(chat.shadowRoot!.querySelector(".bh-chat-trigger")?.getAttribute("aria-label")).toBe("Open chat, 1 unread");
-    chat.messages = chatHistory(200, 2);
-    expect(chat.shadowRoot!.querySelector(".bh-chat-trigger")?.getAttribute("aria-label")).toBe("Open chat, 2 unread");
+  it("counts unread messages after capped histories on the shared chat control", () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const initial = { ...snapshot(), phase: "active" as const, chatMessages: chatHistory(200, 0) };
+    const ui = createGameUi(host, initial, actionSpies());
+    const chat = host.querySelector("bighouse-game-chat") as BighouseGameChatElement;
+    const controls = host.querySelector("bighouse-game-controls") as BighouseGameControlsElement;
+    expect(controls.chatTrigger?.getAttribute("aria-label")).toBe("Open chat");
+    ui.update({ ...initial, version: 2, chatMessages: chatHistory(200, 1) });
+    expect(controls.chatTrigger?.getAttribute("aria-label")).toBe("Open chat, 1 unread");
+    ui.update({ ...initial, version: 3, chatMessages: chatHistory(200, 2) });
+    expect(controls.chatTrigger?.getAttribute("aria-label")).toBe("Open chat, 2 unread");
     chat.open = true;
     expect(chat.shadowRoot!.textContent).toContain("overflow-y:auto; pointer-events:auto");
+    ui.destroy();
   });
 
   it("preserves focused actions when open dialogs update", async () => {
@@ -352,6 +449,7 @@ describe("@bighouse/ui", () => {
     const actions = actionSpies();
     const ui = createGameUi(host, snapshot(), actions);
     expect(host.querySelector("bighouse-room-controls")).not.toBeNull();
+    expect(host.querySelector("bighouse-game-controls")).not.toBeNull();
     const chat = host.querySelector("bighouse-game-chat") as BighouseGameChatElement;
     chat.dispatchEvent(new CustomEvent("bighouse-chat-send", { detail: { body: "hi" }, bubbles: true, composed: true }));
     expect(actions.sendChat).toHaveBeenCalledWith("hi", undefined);

@@ -6,7 +6,7 @@ import type {
   PlayerSeat
 } from "@bighouse/game-sdk/client";
 import { iconMarkup } from "./icons";
-import { baseStyles, chatStyles, modalStyles, roomStyles } from "./styles";
+import { baseStyles, chatStyles, gameControlsStyles, modalStyles, roomStyles } from "./styles";
 
 export type GameResultDialogState = {
   open: boolean;
@@ -33,6 +33,14 @@ export class BighouseRoomControlsElement extends HTMLElement {
   #botDifficulty: BotDifficulty = "medium";
   #botCount = 1;
   #batchBotSupported = true;
+  readonly #onFullscreenSettled = (): void => {
+    const activeElement = shadowActiveElement(this.#root);
+    const restoreFocus = activeElement instanceof HTMLElement && activeElement.dataset.roomAction === "fullscreen";
+    this.render();
+    if (restoreFocus) {
+      queueMicrotask(() => this.#root.querySelector<HTMLButtonElement>("[data-room-action='fullscreen']")?.focus());
+    }
+  };
 
   set batchBotSupported(value: boolean) {
     this.#batchBotSupported = value;
@@ -45,11 +53,15 @@ export class BighouseRoomControlsElement extends HTMLElement {
   }
 
   set snapshot(value: GameClientSnapshot | undefined) {
+    const focusInterruption = Boolean(value?.room.activeInterruption && !this.#snapshot?.room.activeInterruption);
     this.#snapshot = value;
     const remainingSlots = value ? Math.max(0, value.room.maxPlayers - value.room.players.length) : 0;
     this.#botCount = Math.max(1, Math.min(this.#botCount, remainingSlots || 1));
     if (remainingSlots === 0) this.#botPanelOpen = false;
     this.render();
+    if (focusInterruption) {
+      queueMicrotask(() => this.#root.querySelector<HTMLElement>(".bh-room-heading")?.focus());
+    }
   }
 
   get snapshot(): GameClientSnapshot | undefined {
@@ -57,12 +69,20 @@ export class BighouseRoomControlsElement extends HTMLElement {
   }
 
   connectedCallback(): void {
+    document.addEventListener("fullscreenchange", this.#onFullscreenSettled);
+    document.addEventListener("fullscreenerror", this.#onFullscreenSettled, true);
     this.render();
+  }
+
+  disconnectedCallback(): void {
+    document.removeEventListener("fullscreenchange", this.#onFullscreenSettled);
+    document.removeEventListener("fullscreenerror", this.#onFullscreenSettled, true);
   }
 
   private render(): void {
     const snapshot = this.#snapshot;
     if (!snapshot) {
+      this.hidden = true;
       this.#root.replaceChildren();
       return;
     }
@@ -71,6 +91,12 @@ export class BighouseRoomControlsElement extends HTMLElement {
     const isWaiting = phase === "waiting";
     const interruption = room.activeInterruption;
     const showLobby = isWaiting || Boolean(interruption);
+    if (!showLobby) {
+      this.hidden = true;
+      this.#root.replaceChildren();
+      return;
+    }
+    this.hidden = false;
     const isHost = room.hostPlayerId === playerId;
     const me = room.players.find((player) => player.playerId === playerId);
     const canManageBots = isHost && (isWaiting || Boolean(interruption));
@@ -82,72 +108,79 @@ export class BighouseRoomControlsElement extends HTMLElement {
     const canRestart = isHost && Boolean(interruption) && room.players.length >= room.minPlayers;
 
     this.#root.innerHTML = `${commonStyles}<style>${roomStyles}</style>`;
-    const root = element("section", `bh-room${showLobby ? "" : " is-rail"}`);
-    root.setAttribute("part", showLobby ? "waiting-overlay" : "room-rail");
+    const root = element("section", "bh-room");
+    root.setAttribute("part", "waiting-overlay");
     const panel = element("div", "bh-room-panel");
 
-    if (showLobby) {
-      const navigation = element("div", "bh-room-navigation");
-      navigation.append(
-        iconTextButton("log-out", "Leave", "bh-room-leave", () => emit(this, "bighouse-leave-room")),
-        iconButton("share-2", "Share room", "bh-room-share", () => emit(this, "bighouse-share-room"))
+    const navigation = element("div", `bh-room-navigation${interruption ? " has-fullscreen" : ""}`);
+    navigation.append(
+      iconTextButton("log-out", "Leave", "bh-room-leave", () => emit(this, "bighouse-leave-room")),
+      iconButton("share-2", "Share room", "bh-room-share", () => emit(this, "bighouse-share-room"))
+    );
+    if (interruption) {
+      const fullscreenActive = document.fullscreenElement !== null;
+      const fullscreen = iconButton(
+        fullscreenActive ? "minimize-2" : "maximize-2",
+        fullscreenActive ? "Exit fullscreen" : "Enter fullscreen",
+        "bh-room-fullscreen",
+        () => emit(this, "bighouse-toggle-fullscreen")
       );
-      panel.append(navigation);
-
-      const heading = element("header", "bh-room-heading");
-      const headingCopy = element("div");
-      headingCopy.append(textElement("div", "bh-room-kicker", interruption ? "Game interrupted" : "Ready room"));
-      headingCopy.append(textElement("h2", "", interruption ? "Reset the table?" : "Players at the table"));
-      heading.append(headingCopy, textElement("div", "bh-capacity", `${room.players.length}/${room.maxPlayers}`));
-      panel.append(heading);
-
-      if (interruption) {
-        const person = interruption.displayName || interruption.playerId;
-        panel.append(textElement(
-          "div",
-          "bh-interruption",
-          isHost
-            ? `${person} left. Start again from a fresh game state when enough players are ready.`
-            : `${person} left. The host is deciding when to restart.`
-        ));
-      } else {
-        panel.append(textElement(
-          "p",
-          "bh-room-copy",
-          isHost ? "Add players or bots, then launch the game." : "Mark yourself ready while the host prepares the table."
-        ));
-      }
-
-      const list = element("ol", "bh-player-list");
-      room.players.forEach((player) => list.append(this.renderPlayer(player, room, canManageBots)));
-      panel.append(list);
-
-      const footer = element("footer", "bh-room-footer");
-      const actions = element("div", "bh-primary-actions");
-      if (!isHost && isWaiting && !isBot(me)) {
-        actions.append(commandButton(me?.ready ? "Cancel ready" : "Ready", "is-primary", () => {
-          emit(this, "bighouse-ready-change", { ready: !me?.ready });
-        }));
-      }
-      if (isHost && isWaiting) {
-        const start = commandButton("Start game", "is-primary bh-start-game", () => emit(this, "bighouse-start-game"));
-        start.disabled = !canStart;
-        actions.append(start);
-      }
-      if (interruption && isHost) {
-        const restart = commandButton("Start fresh game", "is-primary bh-start-game", () => emit(this, "bighouse-restart-game"));
-        restart.disabled = !canRestart;
-        actions.append(restart);
-      }
-      if (actions.childElementCount > 0) footer.append(actions);
-
-      if (canManageBots && remainingSlots > 0) footer.append(this.renderBotManager(remainingSlots));
-      if (footer.childElementCount > 0) panel.append(footer);
-    } else {
-      const rail = element("div", "bh-rail-actions");
-      rail.append(iconTextButton("log-out", "Leave", "bh-room-leave is-compact", () => emit(this, "bighouse-leave-room")));
-      panel.append(rail);
+      fullscreen.dataset.roomAction = "fullscreen";
+      fullscreen.disabled = !document.fullscreenEnabled || typeof document.documentElement.requestFullscreen !== "function";
+      navigation.append(fullscreen);
     }
+    panel.append(navigation);
+
+    const heading = element("header", "bh-room-heading");
+    heading.tabIndex = -1;
+    const headingCopy = element("div");
+    headingCopy.append(textElement("div", "bh-room-kicker", interruption ? "Game interrupted" : "Ready room"));
+    headingCopy.append(textElement("h2", "", interruption ? "Reset the table?" : "Players at the table"));
+    heading.append(headingCopy, textElement("div", "bh-capacity", `${room.players.length}/${room.maxPlayers}`));
+    panel.append(heading);
+
+    if (interruption) {
+      const person = interruption.displayName || interruption.playerId;
+      panel.append(textElement(
+        "div",
+        "bh-interruption",
+        isHost
+          ? `${person} left. Start again from a fresh game state when enough players are ready.`
+          : `${person} left. The host is deciding when to restart.`
+      ));
+    } else {
+      panel.append(textElement(
+        "p",
+        "bh-room-copy",
+        isHost ? "Add players or bots, then launch the game." : "Mark yourself ready while the host prepares the table."
+      ));
+    }
+
+    const list = element("ol", "bh-player-list");
+    room.players.forEach((player) => list.append(this.renderPlayer(player, room, canManageBots)));
+    panel.append(list);
+
+    const footer = element("footer", "bh-room-footer");
+    const actions = element("div", "bh-primary-actions");
+    if (!isHost && isWaiting && !isBot(me)) {
+      actions.append(commandButton(me?.ready ? "Cancel ready" : "Ready", "is-primary", () => {
+        emit(this, "bighouse-ready-change", { ready: !me?.ready });
+      }));
+    }
+    if (isHost && isWaiting) {
+      const start = commandButton("Start game", "is-primary bh-start-game", () => emit(this, "bighouse-start-game"));
+      start.disabled = !canStart;
+      actions.append(start);
+    }
+    if (interruption && isHost) {
+      const restart = commandButton("Start fresh game", "is-primary bh-start-game", () => emit(this, "bighouse-restart-game"));
+      restart.disabled = !canRestart;
+      actions.append(restart);
+    }
+    if (actions.childElementCount > 0) footer.append(actions);
+
+    if (canManageBots && remainingSlots > 0) footer.append(this.renderBotManager(remainingSlots));
+    if (footer.childElementCount > 0) panel.append(footer);
 
     root.append(panel);
     this.#root.append(root);
@@ -292,6 +325,116 @@ export class BighouseRoomControlsElement extends HTMLElement {
   }
 }
 
+export class BighouseGameControlsElement extends HTMLElement {
+  readonly #root = this.attachShadow({ mode: "open" });
+  #visible = false;
+  #chatOpen = false;
+  #unread = 0;
+  #fullscreenBusy = false;
+  #restoreFullscreenFocus = false;
+  #fullscreenFallbackTimer: ReturnType<typeof setTimeout> | undefined;
+  readonly #onFullscreenSettled = (): void => {
+    const restoreFocus = this.#restoreFullscreenFocus;
+    this.#restoreFullscreenFocus = false;
+    this.#fullscreenBusy = false;
+    if (this.#fullscreenFallbackTimer !== undefined) clearTimeout(this.#fullscreenFallbackTimer);
+    this.#fullscreenFallbackTimer = undefined;
+    this.render();
+    if (restoreFocus) {
+      queueMicrotask(() => this.#root.querySelector<HTMLButtonElement>("[data-game-control='fullscreen']")?.focus());
+    }
+  };
+
+  set snapshot(value: GameClientSnapshot | undefined) {
+    const phase = value?.phase;
+    const visible = (phase === "active" || phase === "finished") && !value?.room.activeInterruption;
+    if (this.#visible === visible) return;
+    this.#visible = visible;
+    this.render();
+  }
+
+  set chatState(value: { open: boolean; unread: number }) {
+    if (this.#chatOpen === value.open && this.#unread === value.unread) return;
+    this.#chatOpen = value.open;
+    this.#unread = value.unread;
+    this.render();
+  }
+
+  get chatTrigger(): HTMLButtonElement | null {
+    return this.#root.querySelector<HTMLButtonElement>("[data-game-control='chat']");
+  }
+
+  focusChatTrigger(): void {
+    const trigger = this.chatTrigger;
+    if (trigger && !trigger.hidden) trigger.focus();
+  }
+
+  connectedCallback(): void {
+    document.addEventListener("fullscreenchange", this.#onFullscreenSettled);
+    document.addEventListener("fullscreenerror", this.#onFullscreenSettled, true);
+    this.render();
+  }
+
+  disconnectedCallback(): void {
+    document.removeEventListener("fullscreenchange", this.#onFullscreenSettled);
+    document.removeEventListener("fullscreenerror", this.#onFullscreenSettled, true);
+    if (this.#fullscreenFallbackTimer !== undefined) clearTimeout(this.#fullscreenFallbackTimer);
+  }
+
+  private render(): void {
+    const activeElement = shadowActiveElement(this.#root);
+    const focusedControl = activeElement instanceof HTMLElement ? activeElement.dataset.gameControl : undefined;
+    this.toggleAttribute("hidden", !this.#visible);
+    this.#root.innerHTML = `${commonStyles}<style>${gameControlsStyles}</style>`;
+    const controls = element("section", "bh-game-controls");
+    controls.setAttribute("part", "game-controls");
+    controls.setAttribute("aria-label", "Game controls");
+
+    const utilities = element("div", "bh-game-utilities");
+    const fullscreenActive = document.fullscreenElement !== null;
+    const fullscreenAvailable = document.fullscreenEnabled && typeof document.documentElement.requestFullscreen === "function";
+    const fullscreen = iconButton(
+      fullscreenActive ? "minimize-2" : "maximize-2",
+      fullscreenActive ? "Exit fullscreen" : "Enter fullscreen",
+      "bh-game-control bh-fullscreen-control",
+      () => this.requestFullscreenToggle()
+    );
+    fullscreen.dataset.gameControl = "fullscreen";
+    fullscreen.disabled = !fullscreenAvailable || this.#fullscreenBusy;
+    fullscreen.setAttribute("aria-pressed", String(fullscreenActive));
+    fullscreen.setAttribute("aria-busy", String(this.#fullscreenBusy));
+    const leave = iconButton("log-out", "Leave game", "bh-game-control bh-leave-control", () => {
+      emit(this, "bighouse-leave-room");
+    });
+    leave.dataset.gameControl = "leave";
+    utilities.append(fullscreen, leave);
+
+    const chatLabel = this.#unread > 0 ? `Open chat, ${this.#unread} unread` : "Open chat";
+    const chat = iconButton("message-circle", chatLabel, "bh-game-control bh-chat-control", () => {
+      emit(this, "bighouse-chat-open");
+    });
+    chat.dataset.gameControl = "chat";
+    chat.hidden = this.#chatOpen;
+    if (this.#unread > 0) chat.append(textElement("span", "bh-unread", String(Math.min(this.#unread, 99))));
+
+    controls.append(utilities, chat);
+    this.#root.append(controls);
+    if (focusedControl && !this.#chatOpen) {
+      queueMicrotask(() => this.#root.querySelector<HTMLButtonElement>(`[data-game-control='${focusedControl}']`)?.focus());
+    }
+  }
+
+  private requestFullscreenToggle(): void {
+    if (this.#fullscreenBusy) return;
+    const activeElement = shadowActiveElement(this.#root);
+    this.#restoreFullscreenFocus = activeElement instanceof HTMLElement && activeElement.dataset.gameControl === "fullscreen";
+    this.#fullscreenBusy = true;
+    this.render();
+    emit(this, "bighouse-toggle-fullscreen");
+    this.#fullscreenFallbackTimer = setTimeout(this.#onFullscreenSettled, 1_500);
+  }
+}
+
 export class BighouseGameChatElement extends HTMLElement {
   readonly #root = this.attachShadow({ mode: "open" });
   #messages: GameClientChatMessage[] = [];
@@ -299,6 +442,7 @@ export class BighouseGameChatElement extends HTMLElement {
   #unread = 0;
   #connectedOnce = false;
   #messagesInitialized = false;
+  #enabled = true;
   #composing = false;
   #draft = "";
   #visible = false;
@@ -307,7 +451,9 @@ export class BighouseGameChatElement extends HTMLElement {
   #hideTimer: ReturnType<typeof setTimeout> | undefined;
   #fadeTimer: ReturnType<typeof setTimeout> | undefined;
   #previousFocus: HTMLElement | null = null;
+  #requestedFocus: HTMLElement | null = null;
   readonly #onDocumentKeyDown = (event: KeyboardEvent): void => {
+    if (!this.#enabled) return;
     if (event.key === "Escape" && this.#open) {
       event.preventDefault();
       this.open = false;
@@ -331,11 +477,11 @@ export class BighouseGameChatElement extends HTMLElement {
     const next = incoming.slice(-80);
     if (this.#messagesInitialized && sameMessages(this.#messages, next)) return;
     const appendedCount = this.#messagesInitialized ? countAppendedMessages(this.#messages, incoming) : 0;
-    if (this.#connectedOnce && this.#messagesInitialized && !this.#open) {
+    if (this.#enabled && this.#connectedOnce && this.#messagesInitialized && !this.#open) {
       this.#unread += appendedCount;
     }
     this.#messages = next;
-    if ((!this.#messagesInitialized && next.length > 0) || appendedCount > 0) this.noteActivity();
+    if (this.#enabled && ((!this.#messagesInitialized && next.length > 0) || appendedCount > 0)) this.noteActivity();
     this.#messagesInitialized = true;
     if (this.#root.querySelector(".bh-chat")) {
       this.renderMessages();
@@ -349,15 +495,33 @@ export class BighouseGameChatElement extends HTMLElement {
     return this.#messages;
   }
 
+  set enabled(value: boolean) {
+    if (this.#enabled === value) return;
+    this.#enabled = value;
+    this.toggleAttribute("hidden", !value);
+    if (!value) {
+      this.clearActivityTimers();
+      this.#visible = false;
+      if (this.#open) this.open = false;
+      else this.updateChatState();
+    }
+  }
+
+  get enabled(): boolean {
+    return this.#enabled;
+  }
+
   set open(value: boolean) {
+    if (value && !this.#enabled) return;
     if (this.#open === value) return;
     this.#open = value;
     if (value) {
       const activeElement = document.activeElement;
       const shadowFocused = shadowActiveElement(this.#root);
-      this.#previousFocus = shadowFocused instanceof HTMLElement
+      this.#previousFocus = this.#requestedFocus ?? (shadowFocused instanceof HTMLElement
         ? shadowFocused
-        : activeElement instanceof HTMLElement && activeElement !== this ? activeElement : null;
+        : activeElement instanceof HTMLElement && activeElement !== this ? activeElement : null);
+      this.#requestedFocus = null;
       this.#unread = 0;
       this.noteActivity();
     }
@@ -375,9 +539,20 @@ export class BighouseGameChatElement extends HTMLElement {
     return this.#open;
   }
 
+  get unread(): number {
+    return this.#unread;
+  }
+
+  openFrom(returnFocus: HTMLElement): void {
+    if (!this.#enabled) return;
+    this.#requestedFocus = returnFocus;
+    this.open = true;
+  }
+
   connectedCallback(): void {
     document.addEventListener("keydown", this.#onDocumentKeyDown, true);
     this.#connectedOnce = true;
+    this.toggleAttribute("hidden", !this.#enabled);
     this.render();
     if (this.#visible) this.noteActivity();
   }
@@ -458,16 +633,6 @@ export class BighouseGameChatElement extends HTMLElement {
     composer.append(input, send, close);
     chat.append(composer);
 
-    const trigger = document.createElement("button");
-    trigger.type = "button";
-    trigger.className = "bh-chat-trigger";
-    trigger.setAttribute("aria-label", this.#unread > 0 ? `Open chat, ${this.#unread} unread` : "Open chat");
-    const triggerIcon = element("span", "bh-icon");
-    triggerIcon.innerHTML = iconMarkup("message-circle");
-    trigger.append(triggerIcon);
-    if (this.#unread > 0) trigger.append(textElement("span", "bh-unread", String(Math.min(this.#unread, 99))));
-    trigger.addEventListener("click", () => { this.open = true; });
-    chat.append(trigger);
     this.#root.append(chat);
     this.updateChatState();
     this.renderMessages();
@@ -496,11 +661,6 @@ export class BighouseGameChatElement extends HTMLElement {
     chat.classList.toggle("is-visible", this.#visible);
     const composer = chat.querySelector<HTMLFormElement>(".bh-chat-composer");
     composer?.toggleAttribute("inert", !this.#open);
-    const trigger = chat.querySelector<HTMLButtonElement>(".bh-chat-trigger");
-    if (!trigger) return;
-    trigger.setAttribute("aria-label", this.#unread > 0 ? `Open chat, ${this.#unread} unread` : "Open chat");
-    trigger.querySelector(".bh-unread")?.remove();
-    if (this.#unread > 0) trigger.append(textElement("span", "bh-unread", String(Math.min(this.#unread, 99))));
   }
 
   private focusInput(): void {
@@ -558,10 +718,7 @@ export class BighouseGameChatElement extends HTMLElement {
   private restorePreviousFocus(): void {
     const focusIsInsideChat = document.activeElement === this || shadowActiveElement(this.#root) !== null;
     if (focusIsInsideChat) {
-      const target = this.#previousFocus?.isConnected
-        ? this.#previousFocus
-        : this.#root.querySelector<HTMLButtonElement>(".bh-chat-trigger");
-      target?.focus();
+      if (this.#previousFocus?.isConnected) this.#previousFocus.focus();
     }
     this.#previousFocus = null;
   }

@@ -1,6 +1,11 @@
 <template>
   <div class="game-room-shell">
-    <div ref="gameHost" class="game-room-host" aria-label="Game surface" />
+    <div
+      ref="gameHost"
+      class="game-room-host"
+      aria-label="Game surface"
+      @bighouse-toggle-fullscreen="toggleFullscreen"
+    />
 
     <div v-if="!gameReady" class="game-room-loading" role="status" aria-live="polite">
       <div class="game-room-loading-card">
@@ -22,24 +27,9 @@
 
     <div v-if="error && gameReady" class="room-connection-banner" role="alert">{{ error }}</div>
 
-    <div v-if="gameControlsVisible" class="room-route-tools" aria-label="Game view controls">
-      <UButton
-        class="room-route-button"
-        :icon="isFullscreen ? 'i-lucide-minimize-2' : 'i-lucide-maximize-2'"
-        color="neutral"
-        variant="ghost"
-        :disabled="!fullscreenAvailable || fullscreenBusy"
-        :loading="fullscreenBusy"
-        :aria-label="fullscreenLabel"
-        :aria-pressed="isFullscreen"
-        :aria-busy="fullscreenBusy"
-        :title="fullscreenTitle"
-        @click="toggleFullscreen"
-      />
-      <span v-if="fullscreenMessage" class="room-fullscreen-status" role="status" aria-live="polite">
-        {{ fullscreenMessage }}
-      </span>
-    </div>
+    <span v-if="fullscreenMessage" class="room-fullscreen-status" role="status" aria-live="polite">
+      {{ fullscreenMessage }}
+    </span>
 
     <UModal
       v-model:open="leaveConfirmOpen"
@@ -104,7 +94,6 @@ const qrCodeDataUrl = ref("");
 const gameHost = ref<HTMLElement>();
 const gameReady = ref(false);
 const fullscreenAvailable = ref(false);
-const isFullscreen = ref(false);
 const fullscreenBusy = ref(false);
 const fullscreenMessage = ref("");
 const lastSnapshotServerTime = ref(Date.now());
@@ -132,14 +121,6 @@ const roomCanShareQr = computed(() => {
   const snapshot = room.value;
   return Boolean(snapshot && !roomIsFull.value && (snapshot.phase === "waiting" || snapshot.activeInterruption));
 });
-const gameControlsVisible = computed(() => {
-  const phase = room.value?.phase;
-  return gameReady.value && (phase === "active" || phase === "finished");
-});
-const fullscreenLabel = computed(() => (isFullscreen.value ? "Exit fullscreen" : "Enter fullscreen"));
-const fullscreenTitle = computed(() =>
-  fullscreenAvailable.value ? fullscreenLabel.value : "Fullscreen is not supported in this browser"
-);
 const lobbyPath = computed(() => {
   const gameId = room.value?.gameId ?? String(route.params.gameId);
   const mode = room.value?.mode ?? "default";
@@ -278,8 +259,7 @@ onBeforeUnmount(() => {
 });
 
 function handleFullscreenChange(): void {
-  isFullscreen.value = document.fullscreenElement !== null;
-  if (isFullscreen.value) {
+  if (document.fullscreenElement !== null) {
     fullscreenMessage.value = "";
     return;
   }
@@ -287,7 +267,6 @@ function handleFullscreenChange(): void {
 }
 
 function handleFullscreenError(): void {
-  isFullscreen.value = document.fullscreenElement !== null;
   fullscreenMessage.value = "Fullscreen could not be opened. Try again.";
 }
 
