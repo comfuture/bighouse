@@ -174,8 +174,7 @@ input.game-plastic-input::placeholder {
   .portal-primary-action:focus-visible,
   .portal-secondary-action:focus-visible,
   .portal-refresh-button:focus-visible,
-  .lobby-room-join:focus-visible,
-  .room-route-button:focus-visible {
+  .lobby-room-join:focus-visible {
     outline: 4px solid #fff;
     outline-offset: 3px;
   }
@@ -300,8 +299,7 @@ input.game-plastic-input::placeholder {
   .portal-primary-action,
   .portal-secondary-action,
   .lobby-room-join,
-  .portal-refresh-button,
-  .room-route-button {
+  .portal-refresh-button {
     display: inline-flex;
     min-height: 48px;
     align-items: center;
@@ -325,8 +323,7 @@ input.game-plastic-input::placeholder {
   .portal-primary-action:hover:not(:disabled),
   .portal-secondary-action:hover:not(:disabled),
   .lobby-room-join:hover:not(:disabled),
-  .portal-refresh-button:hover:not(:disabled),
-  .room-route-button:hover:not(:disabled) {
+  .portal-refresh-button:hover:not(:disabled) {
     transform: translateY(-2px);
     filter: saturate(1.1) brightness(1.04);
   }
@@ -334,8 +331,7 @@ input.game-plastic-input::placeholder {
   .portal-primary-action:active:not(:disabled),
   .portal-secondary-action:active:not(:disabled),
   .lobby-room-join:active:not(:disabled),
-  .portal-refresh-button:active:not(:disabled),
-  .room-route-button:active:not(:disabled) {
+  .portal-refresh-button:active:not(:disabled) {
     transform: translateY(4px);
     box-shadow: 0 2px 0 #031532, inset 0 3px 7px rgb(0 24 77 / 0.22);
   }
@@ -343,8 +339,7 @@ input.game-plastic-input::placeholder {
   .portal-primary-action:disabled,
   .portal-secondary-action:disabled,
   .lobby-room-join:disabled,
-  .portal-refresh-button:disabled,
-  .room-route-button:disabled {
+  .portal-refresh-button:disabled {
     cursor: not-allowed;
     filter: grayscale(0.35);
     opacity: 0.62;
@@ -1059,6 +1054,11 @@ input.game-plastic-input::placeholder {
       radial-gradient(circle at 82% 72%, rgb(255 255 255 / 0.11) 0 6px, transparent 7px),
       linear-gradient(145deg, var(--game-blue) 0%, #7047f5 100%);
     --bh-room-backdrop-size: 44px 44px, 72px 72px, auto;
+    --bh-game-ui-block-start: max(10px, env(safe-area-inset-top));
+    --bh-game-ui-inline-end: max(10px, env(safe-area-inset-right));
+    --bh-game-ui-block-end: max(12px, env(safe-area-inset-bottom));
+    --bh-game-ui-control-size: 46px;
+    --bh-game-ui-gap: 8px;
     background-image: var(--bh-room-backdrop-image);
     background-size: var(--bh-room-backdrop-size);
     color: #fff;
@@ -1072,7 +1072,6 @@ input.game-plastic-input::placeholder {
     height: 100svh;
     min-height: 0;
     place-items: center;
-    padding-right: 84px;
     overflow: hidden;
   }
 
@@ -1195,34 +1194,6 @@ input.game-plastic-input::placeholder {
     background: #fff;
     padding: 0.7rem;
     box-shadow: var(--game-small-shadow);
-  }
-
-  .room-route-tools {
-    position: fixed;
-    top: calc(max(0.7rem, env(safe-area-inset-top)) + 4.5rem);
-    right: max(0.7rem, env(safe-area-inset-right));
-    z-index: 70;
-    display: flex;
-    gap: 0.45rem;
-    opacity: 0.82;
-    transition: opacity 140ms ease;
-  }
-
-  .room-route-tools:hover,
-  .room-route-tools:focus-within {
-    opacity: 1;
-  }
-
-  .room-route-button {
-    width: 44px;
-    min-width: 44px;
-    min-height: 44px;
-    padding: 0;
-    border-color: rgb(153 227 255 / 0.3);
-    background: rgb(3 18 48 / 0.84);
-    color: #fff;
-    box-shadow: 0 3px 0 rgb(0 7 24 / 0.82), inset 0 1px 0 rgb(255 255 255 / 0.13);
-    backdrop-filter: blur(12px);
   }
 
   .room-fullscreen-status {
@@ -1418,8 +1389,11 @@ input.game-plastic-input::placeholder {
       width: 100%;
     }
 
-    .room-route-tools {
-      opacity: 0.92;
+    .game-room-shell {
+      --bh-game-ui-block-start: max(8px, env(safe-area-inset-top));
+      --bh-game-ui-inline-end: max(8px, env(safe-area-inset-right));
+      --bh-game-ui-block-end: max(10px, env(safe-area-inset-bottom));
+      --bh-game-ui-control-size: 48px;
     }
   }
 
