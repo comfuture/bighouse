@@ -28,9 +28,11 @@
         :icon="isFullscreen ? 'i-lucide-minimize-2' : 'i-lucide-maximize-2'"
         color="neutral"
         variant="ghost"
-        :disabled="!fullscreenAvailable"
+        :disabled="!fullscreenAvailable || fullscreenBusy"
+        :loading="fullscreenBusy"
         :aria-label="fullscreenLabel"
         :aria-pressed="isFullscreen"
+        :aria-busy="fullscreenBusy"
         :title="fullscreenTitle"
         @click="toggleFullscreen"
       />
@@ -103,6 +105,7 @@ const gameHost = ref<HTMLElement>();
 const gameReady = ref(false);
 const fullscreenAvailable = ref(false);
 const isFullscreen = ref(false);
+const fullscreenBusy = ref(false);
 const fullscreenMessage = ref("");
 const lastSnapshotServerTime = ref(Date.now());
 let ws: WebSocket | undefined;
@@ -117,6 +120,8 @@ let leavingRoom = false;
 let leaveDestination: string | undefined;
 let pendingGuardDestination: string | undefined;
 let guardNavigationAllowed = false;
+let roomViewMounted = false;
+let fullscreenRequestVersion = 0;
 
 const hasOtherPlayers = computed(() => room.value?.players.some((player) => player.playerId !== identity.playerId) ?? false);
 const roomIsFull = computed(() => {
@@ -129,7 +134,7 @@ const roomCanShareQr = computed(() => {
 });
 const gameControlsVisible = computed(() => {
   const phase = room.value?.phase;
-  return gameReady.value && (phase === "active" || phase === "finished");
+  return gameReady.value && phase === "active";
 });
 const fullscreenLabel = computed(() => (isFullscreen.value ? "Exit fullscreen" : "Enter fullscreen"));
 const fullscreenTitle = computed(() =>
@@ -170,14 +175,16 @@ const gameActions: GameClientActions = {
   restartGame() {
     ws?.send(JSON.stringify({ type: "restartGame", playerId: identity.playerId }));
   },
-  addBot(difficulty: BotDifficulty, count = 1, displayName?: string) {
+  addBot(difficulty: BotDifficulty, countOrDisplayName: number | string = 1, displayName?: string) {
+    const count = typeof countOrDisplayName === "number" ? countOrDisplayName : 1;
+    const resolvedDisplayName = typeof countOrDisplayName === "string" ? countOrDisplayName : displayName;
     ws?.send(
       JSON.stringify({
         type: "addBot",
         playerId: identity.playerId,
         difficulty,
         count,
-        ...(displayName ? { displayName } : {})
+        ...(resolvedDisplayName ? { displayName: resolvedDisplayName } : {})
       })
     );
   },
@@ -206,6 +213,7 @@ const gameActions: GameClientActions = {
 };
 
 onMounted(() => {
+  roomViewMounted = true;
   fullscreenAvailable.value =
     document.fullscreenEnabled && typeof document.documentElement.requestFullscreen === "function";
   document.addEventListener("fullscreenchange", handleFullscreenChange);
@@ -252,12 +260,12 @@ onBeforeRouteLeave((to) => {
 
 onBeforeUnmount(() => {
   closingRoom = true;
+  roomViewMounted = false;
+  fullscreenRequestVersion += 1;
+  fullscreenBusy.value = false;
   document.removeEventListener("fullscreenchange", handleFullscreenChange);
   document.removeEventListener("fullscreenerror", handleFullscreenError, true);
-  unlockScreenOrientation();
-  if (document.fullscreenElement === document.documentElement) {
-    void document.exitFullscreen().catch(() => undefined);
-  }
+  void releaseOwnedFullscreen();
   clearReconnectTimer();
   clearLeaveFallbackTimer();
   ws?.close();
@@ -284,7 +292,10 @@ async function toggleFullscreen(): Promise<void> {
     fullscreenMessage.value = "Fullscreen is not supported in this browser.";
     return;
   }
+  if (fullscreenBusy.value) return;
 
+  const requestVersion = ++fullscreenRequestVersion;
+  fullscreenBusy.value = true;
   try {
     if (document.fullscreenElement) {
       await document.exitFullscreen();
@@ -292,10 +303,21 @@ async function toggleFullscreen(): Promise<void> {
     }
 
     await document.documentElement.requestFullscreen();
+    if (!roomViewMounted || requestVersion !== fullscreenRequestVersion) {
+      await releaseOwnedFullscreen();
+      return;
+    }
     if (isMobileDevice()) await lockLandscapeBestEffort();
+    if (!roomViewMounted || requestVersion !== fullscreenRequestVersion) {
+      await releaseOwnedFullscreen();
+    }
   } catch (cause) {
-    console.warn("Failed to toggle fullscreen", cause);
-    handleFullscreenError();
+    if (roomViewMounted && requestVersion === fullscreenRequestVersion) {
+      console.warn("Failed to toggle fullscreen", cause);
+      handleFullscreenError();
+    }
+  } finally {
+    if (roomViewMounted && requestVersion === fullscreenRequestVersion) fullscreenBusy.value = false;
   }
 }
 
@@ -323,6 +345,12 @@ function unlockScreenOrientation(): void {
   } catch {
     // Orientation unlocking is best effort for browsers with partial support.
   }
+}
+
+async function releaseOwnedFullscreen(): Promise<void> {
+  unlockScreenOrientation();
+  if (document.fullscreenElement !== document.documentElement || typeof document.exitFullscreen !== "function") return;
+  await document.exitFullscreen().catch(() => undefined);
 }
 
 function connectRoom(): void {
