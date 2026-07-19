@@ -31,6 +31,7 @@ import {
   WORLD_HEIGHT,
   WORLD_WIDTH,
   type LastShot,
+  type PendingShotResolution,
   type ShotDamage,
   type TankBattlePlayerState,
   type TankBattleStageState,
@@ -146,23 +147,24 @@ export const tankBattleDefinition = defineGameDefinition(gameMetadata, {
     });
     const stats = itemStats(parsed.item);
     const damage: ShotDamage[] = [];
+    let resolvedTerrain = stage.terrain;
+    const resolvedTanks = stage.tanks.map((tank) => ({ ...tank }));
 
     if (trajectory.impact) {
-      const terrainBefore = stage.terrain;
-      const nextTerrain = carveAndSettleTerrain(
-        terrainBefore,
+      resolvedTerrain = carveAndSettleTerrain(
+        stage.terrain,
         trajectory.impact,
         stats.explosionRadius,
         stage.worldHeight,
         stage.terrainStep
       );
-      for (const tank of stage.tanks) {
+      for (const tank of resolvedTanks) {
         const blastDistance = Math.hypot(trajectory.impact.x - tank.x, trajectory.impact.y - (tank.y - 8));
         const blastDamage = trajectory.directHitPlayerId === tank.playerId
           ? stats.maxDamage
           : Math.max(0, Math.round(stats.maxDamage * (1 - blastDistance / stats.explosionRadius)));
         const oldY = tank.y;
-        const nextY = terrainHeightAt(nextTerrain, tank.x, stage.terrainStep) - 10;
+        const nextY = terrainHeightAt(resolvedTerrain, tank.x, stage.terrainStep) - 10;
         const fallDistance = Math.max(0, nextY - oldY);
         const fallDamage = fallDistance > 52 ? Math.min(28, Math.round((fallDistance - 52) * 0.42)) : 0;
         const totalDamage = Math.max(0, blastDamage + fallDamage);
@@ -178,11 +180,11 @@ export const tankBattleDefinition = defineGameDefinition(gameMetadata, {
           });
         }
       }
-      stage.terrain = nextTerrain;
     }
 
     const lastShot: LastShot = {
       id: stage.turnNumber,
+      resolved: false,
       shooterPlayerId: action.playerId,
       angle: parsed.angle,
       power: parsed.power,
@@ -192,13 +194,21 @@ export const tankBattleDefinition = defineGameDefinition(gameMetadata, {
       result: trajectory.result,
       explosionRadius: trajectory.impact ? stats.explosionRadius : 0,
       maxDamage: trajectory.impact ? stats.maxDamage : 0,
-      damage,
+      damage: [],
       debrisSeed: hashSeed(`${stage.terrainSeed}:${stage.turnNumber}:${action.playerId}`),
-      replayDurationMs: Math.min(2_600, Math.max(1_100, 780 + trajectory.trajectory.length * 12)),
+      replayDurationMs: trajectory.impact
+        ? Math.min(4_200, Math.max(1_900, 1_150 + trajectory.trajectory.length * 14))
+        : Math.min(3_200, Math.max(1_100, 780 + trajectory.trajectory.length * 12)),
       ...(trajectory.impact ? { impact: trajectory.impact } : {}),
       ...(trajectory.directHitPlayerId ? { directHitPlayerId: trajectory.directHitPlayerId } : {})
     };
     stage.lastShot = lastShot;
+    stage.pendingResolution = {
+      terrain: resolvedTerrain,
+      tanks: resolvedTanks,
+      damage
+    } satisfies PendingShotResolution;
+    beginShotResolution(stage, state.players, action.playerId, context.now, lastShot.replayDurationMs);
 
     const events: GameEvent[] = [
       event("tankBattle.shotFired", "public", {
@@ -207,41 +217,14 @@ export const tankBattleDefinition = defineGameDefinition(gameMetadata, {
         power: parsed.power,
         item: parsed.item,
         wind: firedWind
-      }, context.now),
-      event("tankBattle.shotResolved", "public", lastShot as unknown as JsonObject, context.now)
+      }, context.now)
     ];
-    if (trajectory.impact) {
-      events.push(event("tankBattle.terrainChanged", "public", {
-        impact: trajectory.impact,
-        explosionRadius: stats.explosionRadius,
-        debrisSeed: lastShot.debrisSeed
-      }, context.now));
-    }
-    for (const entry of damage) {
-      events.push(event("tankBattle.tankDamaged", "public", entry as unknown as JsonObject, context.now));
-    }
     if (parsed.item !== "none") {
       events.push(event("tankBattle.itemUsed", "public", {
         playerId: action.playerId,
         item: parsed.item,
         remaining: playerState.items[parsed.item]
       }, context.now));
-    }
-
-    const livingTanks = stage.tanks.filter((tank) => tank.health > 0);
-    if (stage.tanks.length >= 2 && livingTanks.length <= 1) {
-      delete stage.turnDeadline;
-      state.phase = "finished";
-      if (livingTanks[0]) {
-        stage.winnerPlayerId = livingTanks[0].playerId;
-        stage.result = "win";
-        events.push(event("tankBattle.gameWon", "system", { winnerPlayerId: livingTanks[0].playerId }, context.now));
-      } else {
-        stage.result = "draw";
-        events.push(event("tankBattle.gameDrawn", "system", { reason: "mutual_destruction" }, context.now));
-      }
-    } else {
-      beginShotResolution(stage, state.players, action.playerId, context.now, lastShot.replayDurationMs);
     }
 
     state.stageState = stage as unknown as JsonObject;
@@ -262,16 +245,75 @@ export const tankBattleDefinition = defineGameDefinition(gameMetadata, {
       timer.payload?.turnNumber === stage.turnNumber
     ) {
       const previousPlayerId = stage.currentPlayerId;
-      finishShotResolution(stage, context.now);
-      state.stageState = stage as unknown as JsonObject;
-      return {
-        state,
-        events: [event("tankBattle.turnChanged", "public", {
+      if (!stage.pendingResolution) {
+        // Rooms that were already resolving when this version was deployed
+        // have applied their terrain and damage eagerly and do not contain the
+        // new pending payload. Let their existing alarm finish the old turn.
+        if (stage.lastShot) {
+          stage.lastShot = { ...stage.lastShot, resolved: true };
+        }
+        finishShotResolution(stage, context.now);
+        state.stageState = stage as unknown as JsonObject;
+        return {
+          state,
+          events: [event("tankBattle.turnChanged", "public", {
+            previousPlayerId,
+            currentPlayerId: stage.currentPlayerId,
+            wind: stage.wind
+          }, context.now)]
+        };
+      }
+      const pending = stage.pendingResolution;
+      stage.terrain = pending.terrain;
+      stage.tanks = pending.tanks;
+      if (stage.lastShot) {
+        stage.lastShot = {
+          ...stage.lastShot,
+          resolved: true,
+          damage: pending.damage
+        };
+      }
+      delete stage.pendingResolution;
+
+      const events: GameEvent[] = [];
+      if (stage.lastShot) {
+        events.push(event("tankBattle.shotResolved", "public", stage.lastShot as unknown as JsonObject, context.now));
+        if (stage.lastShot.impact) {
+          events.push(event("tankBattle.terrainChanged", "public", {
+            impact: stage.lastShot.impact,
+            explosionRadius: stage.lastShot.explosionRadius,
+            debrisSeed: stage.lastShot.debrisSeed
+          }, context.now));
+        }
+      }
+      for (const entry of pending.damage) {
+        events.push(event("tankBattle.tankDamaged", "public", entry as unknown as JsonObject, context.now));
+      }
+
+      const livingTanks = stage.tanks.filter((tank) => tank.health > 0);
+      if (stage.tanks.length >= 2 && livingTanks.length <= 1) {
+        delete stage.turnDeadline;
+        delete stage.resolutionDeadline;
+        delete stage.pendingNextPlayerId;
+        state.phase = "finished";
+        if (livingTanks[0]) {
+          stage.winnerPlayerId = livingTanks[0].playerId;
+          stage.result = "win";
+          events.push(event("tankBattle.gameWon", "system", { winnerPlayerId: livingTanks[0].playerId }, context.now));
+        } else {
+          stage.result = "draw";
+          events.push(event("tankBattle.gameDrawn", "system", { reason: "mutual_destruction" }, context.now));
+        }
+      } else {
+        finishShotResolution(stage, context.now);
+        events.push(event("tankBattle.turnChanged", "public", {
           previousPlayerId,
           currentPlayerId: stage.currentPlayerId,
           wind: stage.wind
-        }, context.now)]
-      };
+        }, context.now));
+      }
+      state.stageState = stage as unknown as JsonObject;
+      return { state, events };
     }
     const timedPlayerId = typeof timer.payload?.playerId === "string" ? timer.payload.playerId : undefined;
     if (
@@ -397,6 +439,7 @@ export function tankBattleStage(value: JsonObject): TankBattleStageState {
     ...(stage.pendingNextPlayerId ? { pendingNextPlayerId: stage.pendingNextPlayerId } : {}),
     ...(stage.turnDeadline ? { turnDeadline: stage.turnDeadline } : {}),
     ...(stage.resolutionDeadline ? { resolutionDeadline: stage.resolutionDeadline } : {}),
+    ...(stage.pendingResolution ? { pendingResolution: stage.pendingResolution } : {}),
     ...(stage.winnerPlayerId ? { winnerPlayerId: stage.winnerPlayerId } : {}),
     ...(stage.result ? { result: stage.result } : {}),
     ...(stage.lastShot ? { lastShot: stage.lastShot } : {})

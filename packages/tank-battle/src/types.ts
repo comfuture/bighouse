@@ -35,6 +35,7 @@ export type ShotDamage = {
 
 export type LastShot = {
   id: number;
+  resolved: boolean;
   shooterPlayerId: string;
   angle: number;
   power: number;
@@ -49,6 +50,12 @@ export type LastShot = {
   damage: ShotDamage[];
   debrisSeed: number;
   replayDurationMs: number;
+};
+
+export type PendingShotResolution = {
+  terrain: number[];
+  tanks: TankState[];
+  damage: ShotDamage[];
 };
 
 export type TankBattleStageState = {
@@ -67,6 +74,7 @@ export type TankBattleStageState = {
   turnNumber: number;
   turnDeadline?: number;
   resolutionDeadline?: number;
+  pendingResolution?: PendingShotResolution;
   winnerPlayerId?: string;
   result?: "win" | "draw";
   lastShot?: LastShot;

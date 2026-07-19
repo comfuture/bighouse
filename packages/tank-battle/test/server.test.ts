@@ -120,8 +120,11 @@ describe("tank battle validation and transitions", () => {
     });
   });
 
-  it("resolves a shot authoritatively, consumes an item, and advances after the replay timer", () => {
+  it("keeps authoritative terrain and tank state unchanged until the replay timer resolves the shot", () => {
     const state = startedState();
+    const beforeStage = tankBattleStage(state.stageState);
+    const terrainBefore = [...beforeStage.terrain];
+    const tanksBefore = beforeStage.tanks.map((tank) => ({ ...tank }));
     const result = tankBattleDefinition.applyAction({ state: cloneState(state), now: 300 }, action("p1", { angle: 48, power: 52, item: "scope" }));
     const stage = tankBattleStage(result.state.stageState);
     const player = result.state.playerStates.p1 as unknown as TankBattlePlayerState;
@@ -129,21 +132,52 @@ describe("tank battle validation and transitions", () => {
     expect(stage.currentPlayerId).toBe("p1");
     expect(stage.turnPhase).toBe("resolving");
     expect(stage.turnNumber).toBe(1);
-    expect(stage.lastShot).toMatchObject({ shooterPlayerId: "p1", angle: 48, power: 52, item: "scope" });
+    expect(stage.lastShot).toMatchObject({ resolved: false, shooterPlayerId: "p1", angle: 48, power: 52, item: "scope", damage: [] });
     expect(stage.lastShot!.trajectory.length).toBeGreaterThan(2);
+    expect(stage.terrain).toEqual(terrainBefore);
+    expect(stage.tanks).toEqual(tanksBefore);
+    expect(stage.pendingResolution).toBeDefined();
     expect(player.items.scope).toBe(1);
     expect(result.events.map((entry) => [entry.type, entry.visibility])).toEqual(expect.arrayContaining([
       ["tankBattle.shotFired", "public"],
-      ["tankBattle.shotResolved", "public"],
       ["tankBattle.itemUsed", "public"]
     ]));
+    expect(result.events.map((entry) => entry.type)).not.toEqual(expect.arrayContaining([
+      "tankBattle.shotResolved",
+      "tankBattle.terrainChanged",
+      "tankBattle.tankDamaged",
+      "tankBattle.gameWon"
+    ]));
     expect(result.events.find((entry) => entry.type === "tankBattle.itemUsed")?.payload).toMatchObject({ playerId: "p1", item: "scope" });
+    expect(tankBattleDefinition.getPublicView({ state: result.state, now: 301 })).not.toHaveProperty("pendingResolution");
     expect(tankBattleDefinition.validateAction({ state: result.state, now: 301 }, action())).toMatchObject({
       ok: false,
       code: "shot_resolving"
     });
 
     const deadline = stage.resolutionDeadline!;
+    const staleState = cloneState(result.state);
+    const staleSnapshot = cloneState(staleState);
+    const stale = tankBattleDefinition.applyTimer!({ state: staleState, now: deadline }, {
+      id: "stale-resolution",
+      kind: "turn_timeout",
+      runAt: deadline,
+      payload: { reason: "shot_resolution", turnNumber: 0 }
+    });
+    expect(stale.events).toEqual([]);
+    expect(stale.state).toEqual(staleSnapshot);
+
+    const earlyState = cloneState(result.state);
+    const earlySnapshot = cloneState(earlyState);
+    const early = tankBattleDefinition.applyTimer!({ state: earlyState, now: deadline - 1 }, {
+      id: "early-resolution",
+      kind: "turn_timeout",
+      runAt: deadline,
+      payload: { reason: "shot_resolution", turnNumber: 1 }
+    });
+    expect(early.events).toEqual([]);
+    expect(early.state).toEqual(earlySnapshot);
+
     const advanced = tankBattleDefinition.applyTimer!({ state: result.state, now: deadline }, {
       id: "resolution",
       kind: "turn_timeout",
@@ -154,10 +188,45 @@ describe("tank battle validation and transitions", () => {
     expect(nextStage.currentPlayerId).toBe("p2");
     expect(nextStage.turnPhase).toBe("aiming");
     expect(nextStage.turnNumber).toBe(2);
-    expect(advanced.events[0]).toMatchObject({ type: "tankBattle.turnChanged", visibility: "public" });
+    expect(nextStage.lastShot).toMatchObject({ resolved: true });
+    expect(nextStage.pendingResolution).toBeUndefined();
+    expect(advanced.events.map((entry) => entry.type)).toEqual(expect.arrayContaining([
+      "tankBattle.shotResolved",
+      "tankBattle.turnChanged"
+    ]));
   });
 
-  it("closes a lethal direct hit as a finished win with a system event", () => {
+  it("finishes a legacy in-flight shot that predates pending resolution state", () => {
+    const fired = tankBattleDefinition.applyAction(
+      { state: startedState(), now: 350 },
+      action("p1", { angle: 42, power: 50, item: "none" })
+    );
+    const legacyStage = tankBattleStage(fired.state.stageState);
+    const pending = legacyStage.pendingResolution!;
+    legacyStage.terrain = pending.terrain;
+    legacyStage.tanks = pending.tanks;
+    legacyStage.lastShot!.damage = pending.damage;
+    delete (legacyStage.lastShot as unknown as { resolved?: boolean }).resolved;
+    delete legacyStage.pendingResolution;
+    fired.state.stageState = legacyStage as unknown as Record<string, unknown>;
+
+    const deadline = legacyStage.resolutionDeadline!;
+    const advanced = tankBattleDefinition.applyTimer!({ state: fired.state, now: deadline }, {
+      id: "legacy-resolution",
+      kind: "turn_timeout",
+      runAt: deadline,
+      payload: { reason: "shot_resolution", turnNumber: 1 }
+    });
+    const nextStage = tankBattleStage(advanced.state.stageState);
+
+    expect(nextStage.turnPhase).toBe("aiming");
+    expect(nextStage.currentPlayerId).toBe("p2");
+    expect(nextStage.turnNumber).toBe(2);
+    expect(nextStage.lastShot?.resolved).toBe(true);
+    expect(advanced.events.map((entry) => entry.type)).toEqual(["tankBattle.turnChanged"]);
+  });
+
+  it("delays lethal damage, terrain destruction, and the finished result until the replay timer", () => {
     const state = startedState();
     const stage = tankBattleStage(state.stageState);
     stage.terrain = Array.from({ length: WORLD_WIDTH / TERRAIN_STEP + 1 }, () => 540);
@@ -165,13 +234,40 @@ describe("tank battle validation and transitions", () => {
     stage.tanks[0] = { ...stage.tanks[0]!, x: 200, y: 530 };
     stage.tanks[1] = { ...stage.tanks[1]!, x: 260, y: 530, health: 50 };
     state.stageState = stage as unknown as Record<string, unknown>;
+    const terrainBefore = [...stage.terrain];
+    const tanksBefore = stage.tanks.map((tank) => ({ ...tank }));
 
-    const result = tankBattleDefinition.applyAction(
+    const fired = tankBattleDefinition.applyAction(
       { state, now: 400 },
       action("p1", { angle: 10, power: 10, item: "warhead" })
     );
+    const resolving = tankBattleStage(fired.state.stageState);
+    expect(fired.state.phase).toBe("active");
+    expect(resolving.turnPhase).toBe("resolving");
+    expect(resolving.terrain).toEqual(terrainBefore);
+    expect(resolving.tanks).toEqual(tanksBefore);
+    expect(resolving.lastShot).toMatchObject({ resolved: false, damage: [] });
+    expect(resolving.winnerPlayerId).toBeUndefined();
+    expect(resolving.result).toBeUndefined();
+    expect(fired.events.map((entry) => entry.type)).not.toEqual(expect.arrayContaining([
+      "tankBattle.terrainChanged",
+      "tankBattle.tankDamaged",
+      "tankBattle.gameWon"
+    ]));
+
+    const deadline = resolving.resolutionDeadline!;
+    const result = tankBattleDefinition.applyTimer!({ state: fired.state, now: deadline }, {
+      id: "lethal-resolution",
+      kind: "turn_timeout",
+      runAt: deadline,
+      payload: { reason: "shot_resolution", turnNumber: 1 }
+    });
     const finished = tankBattleStage(result.state.stageState);
     expect(result.state.phase).toBe("finished");
+    expect(finished.terrain).not.toEqual(terrainBefore);
+    expect(finished.tanks.find((tank) => tank.playerId === "p2")?.health).toBe(0);
+    expect(finished.lastShot?.resolved).toBe(true);
+    expect(finished.lastShot?.damage).toContainEqual(expect.objectContaining({ playerId: "p2", remainingHealth: 0 }));
     expect(finished.winnerPlayerId).toBe("p1");
     expect(finished.result).toBe("win");
     expect(finished.turnDeadline).toBeUndefined();
@@ -180,7 +276,13 @@ describe("tank battle validation and transitions", () => {
       visibility: "system",
       payload: { winnerPlayerId: "p1" }
     }));
-    expect(tankBattleDefinition.validateAction({ state: result.state, now: 401 }, action())).toMatchObject({ ok: false, code: "invalid_action" });
+    expect(result.events.map((entry) => entry.type)).toEqual(expect.arrayContaining([
+      "tankBattle.shotResolved",
+      "tankBattle.terrainChanged",
+      "tankBattle.tankDamaged",
+      "tankBattle.gameWon"
+    ]));
+    expect(tankBattleDefinition.validateAction({ state: result.state, now: deadline + 1 }, action())).toMatchObject({ ok: false, code: "invalid_action" });
   });
 
   it("advances the turn only for the current, due timeout", () => {

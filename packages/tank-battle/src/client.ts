@@ -2,13 +2,13 @@ import "./style.css";
 import Phaser from "phaser";
 import type { GameClientContext, MountedGameClient } from "@bighouse/game-sdk/client";
 import { triggerPlacementFeedback, triggerSelectionFeedback } from "@bighouse/game-sdk/feedback";
+import { createTankBattleAudio, type TankBattleAudioController } from "./audio";
 import { clamp, simulateTrajectory, tankFacing } from "./physics";
 import type {
   LastShot,
   TankBattlePrivateView,
   TankBattlePublicView,
-  TankItemSelection,
-  TankState
+  TankItemSelection
 } from "./types";
 export { gameMetadata } from "./client-metadata";
 
@@ -32,13 +32,18 @@ type BattleButton = {
 type ShotAnimation = {
   shot: LastShot;
   startedAt: number;
-  previousTerrain: number[];
+  baseView: TankBattlePublicView;
   exploded: boolean;
 };
 
+type QueuedShotAnimation = Pick<ShotAnimation, "shot" | "baseView">;
+
 const GAME_WIDTH = 1000;
-const GAME_HEIGHT = 700;
+const GAME_HEIGHT = 800;
 const BATTLE_HEIGHT = 600;
+const ANGLE_MIN = 10;
+const ANGLE_MAX = 80;
+const IMPACT_EFFECT_MS = 950;
 const itemLabels: Record<Exclude<TankItemSelection, "none">, string> = {
   megaBlast: "광역 폭탄",
   warhead: "고폭탄",
@@ -89,6 +94,7 @@ export function mountGame(container: HTMLElement, context: GameClientContext): M
 
 class TankBattleScene extends Phaser.Scene {
   private readonly getClient: () => TankBattleClient;
+  private readonly audio: TankBattleAudioController = createTankBattleAudio();
   private skyGraphics?: Phaser.GameObjects.Graphics;
   private terrainGraphics?: Phaser.GameObjects.Graphics;
   private tankGraphics?: Phaser.GameObjects.Graphics;
@@ -116,8 +122,15 @@ class TankBattleScene extends Phaser.Scene {
   private awaitingSnapshot = false;
   private receivedAt = 0;
   private shotAnimation: ShotAnimation | undefined;
+  private readonly shotAnimationQueue: QueuedShotAnimation[] = [];
   private seenShotId: number | undefined;
   private lastUiSecond = -1;
+  private readonly heldAngleKeys = new Set<string>();
+  private angleHoldStartedAt: number | undefined;
+  private nextGearCreakAt = 0;
+  private activeAimPointerId: number | undefined;
+  private flightSafetyTimer: Phaser.Time.TimerEvent | undefined;
+  private soundingShotId: number | undefined;
 
   constructor(getClient: () => TankBattleClient) {
     super({ key: "tank-battle" });
@@ -140,14 +153,19 @@ class TankBattleScene extends Phaser.Scene {
     this.seenShotId = this.getClient().publicView.lastShot?.id;
     this.renderAll();
 
+    this.input.on("pointerdown", this.handleBattlefieldPointerDown, this);
+    this.input.on("pointermove", this.handleBattlefieldPointerMove, this);
     this.input.on("pointerup", this.handleGlobalPointerUp, this);
-    this.input.on("gameout", this.cancelCharge, this);
+    this.input.on("gameout", this.handleGameOut, this);
+    this.input.keyboard?.on("keydown", this.handleKeyDown, this);
+    this.input.keyboard?.on("keyup", this.handleKeyUp, this);
     this.input.keyboard?.on("keydown-SPACE", this.handleSpaceDown, this);
     this.input.keyboard?.on("keyup-SPACE", this.handleSpaceUp, this);
-    this.game.events.on(Phaser.Core.Events.BLUR, this.cancelCharge, this);
+    this.game.events.on(Phaser.Core.Events.BLUR, this.handleBlur, this);
   }
 
-  update(time: number): void {
+  update(time: number, delta: number): void {
+    this.updateHeldAngle(time, delta);
     if (this.chargeStartedAt !== undefined) {
       this.power = chargedPower(time - this.chargeStartedAt);
       this.renderPowerAndPreview();
@@ -169,14 +187,22 @@ class TankBattleScene extends Phaser.Scene {
       this.awaitingSnapshot = false;
     }
     const shot = next.publicView.lastShot;
+    if (!shot) {
+      // A rematch starts shot ids over at 1, so the previous match's id must
+      // not suppress the first projectile animation in the new match.
+      this.seenShotId = undefined;
+    }
     if (shot && shot.id !== this.seenShotId) {
       this.seenShotId = shot.id;
-      this.shotAnimation = {
+      const nextAnimation = {
         shot,
-        startedAt: performance.now(),
-        previousTerrain: [...previous.publicView.terrain],
-        exploded: false
+        baseView: clonePublicView(previous.publicView)
       };
+      if (this.shotAnimation) {
+        this.shotAnimationQueue.push(nextAnimation);
+      } else {
+        this.beginShotAnimation(nextAnimation);
+      }
     }
     this.ensureSelectedItemAvailable();
     this.renderAll();
@@ -184,12 +210,25 @@ class TankBattleScene extends Phaser.Scene {
 
   prepareDestroy(): void {
     this.cancelCharge();
-    if (!this.sys.isActive()) return;
+    this.stopAngleAdjustment();
+    this.activeAimPointerId = undefined;
+    this.shotAnimationQueue.length = 0;
+    if (!this.sys.isActive()) {
+      this.audio.destroy();
+      return;
+    }
+    this.input.off("pointerdown", this.handleBattlefieldPointerDown, this);
+    this.input.off("pointermove", this.handleBattlefieldPointerMove, this);
     this.input.off("pointerup", this.handleGlobalPointerUp, this);
-    this.input.off("gameout", this.cancelCharge, this);
+    this.input.off("gameout", this.handleGameOut, this);
+    this.input.keyboard?.off("keydown", this.handleKeyDown, this);
+    this.input.keyboard?.off("keyup", this.handleKeyUp, this);
     this.input.keyboard?.off("keydown-SPACE", this.handleSpaceDown, this);
     this.input.keyboard?.off("keyup-SPACE", this.handleSpaceUp, this);
-    this.game.events.off(Phaser.Core.Events.BLUR, this.cancelCharge, this);
+    this.game.events.off(Phaser.Core.Events.BLUR, this.handleBlur, this);
+    this.flightSafetyTimer?.remove(false);
+    this.flightSafetyTimer = undefined;
+    this.audio.destroy();
     this.tweens.killAll();
     this.time.removeAllEvents();
   }
@@ -209,30 +248,52 @@ class TankBattleScene extends Phaser.Scene {
   }
 
   private createControls(): void {
-    this.hudGraphics?.fillStyle(0x0b1428, 0.96).fillRoundedRect(0, BATTLE_HEIGHT, GAME_WIDTH, 100, 0);
-    const minus = this.createButton(78, 651, 54, 48, "−", () => this.changeAngle(-2));
-    const plus = this.createButton(254, 651, 54, 48, "+", () => this.changeAngle(2));
+    this.hudGraphics
+      ?.fillStyle(0x07101f, 1)
+      .fillRect(0, BATTLE_HEIGHT, GAME_WIDTH, GAME_HEIGHT - BATTLE_HEIGHT)
+      .lineStyle(3, 0x7dd3fc, 0.8)
+      .lineBetween(0, BATTLE_HEIGHT + 1, GAME_WIDTH, BATTLE_HEIGHT + 1)
+      .lineStyle(1, 0x38577d, 0.9)
+      .lineBetween(20, 700, GAME_WIDTH - 20, 700);
+
+    const minus = this.createButton(54, 650, 76, 62, "−", () => this.changeAngle(-2), 30);
+    const plus = this.createButton(254, 650, 76, 62, "+", () => this.changeAngle(2), 30);
     this.angleButtons = [minus, plus];
-    this.angleText = this.add.text(166, 638, "", {
+    this.angleText = this.add.text(154, 637, "", {
       fontFamily: "Inter, Pretendard, system-ui, sans-serif",
-      fontSize: "17px",
+      fontSize: "21px",
       fontStyle: "bold",
-      color: "#f8fbff",
+      color: "#ffffff",
       align: "center"
     }).setOrigin(0.5).setDepth(14);
-    this.powerText = this.add.text(166, 666, "", {
+    this.add.text(154, 669, "← ↓  각도  ↑ →", {
       fontFamily: "Inter, Pretendard, system-ui, sans-serif",
-      fontSize: "13px",
-      color: "#9fc9ff",
+      fontSize: "12px",
+      fontStyle: "bold",
+      color: "#a9d8ff",
       align: "center"
     }).setOrigin(0.5).setDepth(14);
 
     const itemEntries = ["megaBlast", "warhead", "scope"] as const;
     itemEntries.forEach((item, index) => {
-      const button = this.createButton(382 + index * 152, 651, 138, 52, itemLabels[item], () => this.selectItem(item), 13);
+      const button = this.createButton(385 + index * 168, 650, 154, 62, itemLabels[item], () => this.selectItem(item), 14);
       this.itemButtons.set(item, button);
     });
-    this.fireButton = this.createButton(891, 651, 172, 64, "눌러서 충전", () => undefined, 17);
+
+    this.powerText = this.add.text(42, 735, "", {
+      fontFamily: "Inter, Pretendard, system-ui, sans-serif",
+      fontSize: "22px",
+      fontStyle: "bold",
+      color: "#ffffff"
+    }).setOrigin(0, 0.5).setDepth(14);
+    this.add.text(320, 757, "Space 또는 발사 버튼을 길게 누르고 떼면 발사", {
+      fontFamily: "Inter, Pretendard, system-ui, sans-serif",
+      fontSize: "14px",
+      fontStyle: "bold",
+      color: "#b9d9ff",
+      align: "center"
+    }).setOrigin(0.5).setDepth(14);
+    this.fireButton = this.createButton(844, 750, 276, 82, "길게 눌러 충전", () => undefined, 22);
     this.fireButton.container.on("pointerdown", (pointer: Phaser.Input.Pointer) => this.startCharge(pointer.id));
   }
 
@@ -283,7 +344,9 @@ class TankBattleScene extends Phaser.Scene {
     const container = this.add.container(x, y, [background, label]).setSize(width, height).setInteractive({ useHandCursor: true });
     container.on("pointerover", () => background.setFillStyle(0x2c4772, 1));
     container.on("pointerout", () => this.refreshButtonStyles());
-    container.on("pointerdown", () => {
+    container.on("pointerdown", (_pointer: Phaser.Input.Pointer, _localX: number, _localY: number, event: Phaser.Types.Input.EventData) => {
+      void this.audio.unlock();
+      event.stopPropagation();
       if (addToScene && !this.canAim()) return;
       triggerSelectionFeedback();
       onPress();
@@ -298,14 +361,24 @@ class TankBattleScene extends Phaser.Scene {
 
   private renderAll(): void {
     if (!this.sys.isActive()) return;
-    const terrain = this.shotAnimation ? this.shotAnimation.previousTerrain : this.getClient().publicView.terrain;
-    this.drawTerrain(terrain);
+    this.drawTerrain(this.getVisualView().terrain);
     this.drawTanks();
     this.renderStatus();
     this.renderPowerAndPreview();
     this.renderItems();
     this.renderResult();
     this.refreshButtonStyles();
+  }
+
+  private getVisualView(): TankBattlePublicView {
+    return this.shotAnimation?.baseView ?? this.getClient().publicView;
+  }
+
+  private beginShotAnimation(animation: QueuedShotAnimation, startedAt = performance.now()): void {
+    this.shotAnimation = { ...animation, startedAt, exploded: false };
+    if (this.soundingShotId !== animation.shot.id) {
+      this.startFlightAudio(animation.shot.id);
+    }
   }
 
   private drawSky(): void {
@@ -326,7 +399,7 @@ class TankBattleScene extends Phaser.Scene {
 
   private drawTerrain(terrain: number[]): void {
     const graphics = this.terrainGraphics;
-    const view = this.getClient().publicView;
+    const view = this.getVisualView();
     if (!graphics || terrain.length === 0) return;
     graphics.clear();
     graphics.fillStyle(0x405639, 1);
@@ -355,12 +428,14 @@ class TankBattleScene extends Phaser.Scene {
     const graphics = this.tankGraphics;
     if (!graphics) return;
     graphics.clear();
-    const { publicView, playerId } = this.getClient();
+    const { playerId } = this.getClient();
+    const publicView = this.getVisualView();
     for (const tank of publicView.players) {
       const alive = tank.health > 0;
       const facing = tankFacing(tank);
-      const barrelAngle = publicView.lastShot?.shooterPlayerId === tank.playerId
-        ? publicView.lastShot.angle
+      const displayedShot = this.shotAnimation?.shot ?? publicView.lastShot;
+      const barrelAngle = displayedShot?.shooterPlayerId === tank.playerId
+        ? displayedShot.angle
         : tank.playerId === playerId ? this.angle : 45;
       const radians = (barrelAngle * Math.PI) / 180;
       const barrelStartY = tank.y - 21;
@@ -385,11 +460,13 @@ class TankBattleScene extends Phaser.Scene {
 
   private renderStatus(): void {
     const client = this.getClient();
-    const view = client.publicView;
+    const view = this.getVisualView();
     const myTurn = view.currentPlayerId === client.playerId;
     const estimatedServerTime = client.serverTime + (performance.now() - this.receivedAt);
     const seconds = view.turnDeadline ? Math.max(0, Math.ceil((view.turnDeadline - estimatedServerTime) / 1000)) : undefined;
-    if (view.result) {
+    if (this.shotAnimation) {
+      this.statusText?.setText(this.shotAnimation.exploded ? "폭발 충격과 잔해가 가라앉는 중" : "포탄 비행 중");
+    } else if (view.result) {
       this.statusText?.setText(view.result === "draw" ? "동시 격파 — 무승부" : view.winnerPlayerId === client.playerId ? "승리!" : "패배");
     } else if (view.roomPhase !== "active") {
       this.statusText?.setText("상대 플레이어를 기다리는 중");
@@ -411,10 +488,10 @@ class TankBattleScene extends Phaser.Scene {
   }
 
   private renderPowerAndPreview(): void {
-    this.angleText?.setText(`각도 ${this.angle}°`);
-    this.powerText?.setText(`파워 ${Math.round(this.power)}${this.chargeStartedAt === undefined ? "" : "  충전 중!"}`);
+    this.angleText?.setText(`각도 ${Math.round(this.angle)}°`);
+    this.powerText?.setText(`파워  ${Math.round(this.power)}${this.chargeStartedAt === undefined ? "" : "  ·  충전 중!"}`);
     if (this.fireButton) {
-      this.fireButton.label.setText(this.chargeStartedAt === undefined ? "눌러서 충전" : `떼서 발사  ${Math.round(this.power)}`);
+      this.fireButton.label.setText(this.chargeStartedAt === undefined ? "길게 눌러 충전" : `손을 떼서 발사  ${Math.round(this.power)}`);
     }
     this.drawPreview();
     this.drawTanks();
@@ -425,7 +502,7 @@ class TankBattleScene extends Phaser.Scene {
     if (!graphics) return;
     graphics.clear();
     const client = this.getClient();
-    const view = client.publicView;
+    const view = this.getVisualView();
     const tank = view.players.find((player) => player.playerId === client.playerId);
     if (!tank || !this.canAim()) return;
     const facing = tankFacing(tank);
@@ -470,7 +547,7 @@ class TankBattleScene extends Phaser.Scene {
 
   private renderResult(): void {
     const client = this.getClient();
-    const view = client.publicView;
+    const view = this.getVisualView();
     const finished = view.roomPhase === "finished" && Boolean(view.result);
     this.resultContainer?.setVisible(finished);
     if (!finished) return;
@@ -489,12 +566,13 @@ class TankBattleScene extends Phaser.Scene {
     const items = this.getClient().privateView.items ?? { megaBlast: 0, warhead: 0, scope: 0 };
     for (const button of this.angleButtons) {
       button.container.setAlpha(enabled ? 1 : 0.42);
-      button.background.setFillStyle(0x203250, 1);
+      button.background.setFillStyle(enabled ? 0x1d4ed8 : 0x203250, 1);
+      button.background.setStrokeStyle(2, 0xbfdbfe, 1);
     }
     for (const [item, button] of this.itemButtons) {
       const available = enabled && (items[item] ?? 0) > 0;
       button.container.setAlpha(available ? 1 : 0.36);
-      button.background.setFillStyle(this.selectedItem === item ? 0x176b73 : 0x203250, 1);
+      button.background.setFillStyle(this.selectedItem === item ? 0x0f766e : available ? 0x244b78 : 0x203250, 1);
       button.background.setStrokeStyle(2, this.selectedItem === item ? 0x67e8f9 : 0x5475a3, 0.9);
     }
     if (this.fireButton) {
@@ -507,35 +585,44 @@ class TankBattleScene extends Phaser.Scene {
   private updateShotAnimation(time: number): void {
     const animation = this.shotAnimation;
     if (!animation) return;
-    const duration = clamp(animation.shot.replayDurationMs || 1_500, 900, 3_000);
-    const progress = clamp((time - animation.startedAt) / duration, 0, 1);
-    const flightProgress = clamp(progress / 0.78, 0, 1);
+    const serverReplayDuration = clamp(animation.shot.replayDurationMs || 1_900, 900, 4_500);
+    const impactDuration = animation.shot.impact ? IMPACT_EFFECT_MS : 0;
+    const flightDuration = Math.max(700, serverReplayDuration - impactDuration);
+    const elapsed = time - animation.startedAt;
+    const flightProgress = clamp(elapsed / flightDuration, 0, 1);
     const point = pointAlongPath(animation.shot.trajectory, flightProgress);
     if (point && flightProgress < 1) {
       this.projectile?.setPosition(point.x, point.y).setVisible(true);
     } else {
       this.projectile?.setVisible(false);
     }
-    if (progress >= 0.76 && !animation.exploded) {
+    if (flightProgress >= 1 && !animation.exploded) {
       animation.exploded = true;
-      if (animation.shot.impact) this.playExplosion(animation.shot);
+      this.audio.stopFlight();
+      if (animation.shot.impact) {
+        this.playExplosion(animation.shot);
+      }
+      this.renderStatus();
     }
-    if (progress >= 0.76) {
-      const terrainMix = clamp((progress - 0.76) / 0.2, 0, 1);
-      this.drawTerrain(interpolateTerrain(animation.previousTerrain, this.getClient().publicView.terrain, terrainMix));
-      this.drawTanks();
-    }
-    if (progress >= 1) {
+    if (elapsed >= flightDuration + impactDuration) {
       this.shotAnimation = undefined;
       this.projectile?.setVisible(false);
-      this.drawTerrain(this.getClient().publicView.terrain);
-      this.drawTanks();
-      this.refreshButtonStyles();
+      this.stopFlightAudio();
+      const nextAnimation = this.shotAnimationQueue.shift();
+      if (nextAnimation) this.beginShotAnimation(nextAnimation, time);
+      // Commit the newest authoritative terrain, tank positions, HP, and result
+      // only after the projectile and impact effects have both completed.
+      this.renderAll();
     }
   }
 
   private playExplosion(shot: LastShot): void {
     if (!shot.impact) return;
+    if (shot.directHitPlayerId) {
+      this.audio.playTankExplosion();
+    } else {
+      this.audio.playTerrainExplosion();
+    }
     const { x, y } = shot.impact;
     const blast = this.add.circle(x, y, Math.max(14, shot.explosionRadius * 0.6), 0xffb347, 0.68).setDepth(8);
     this.tweens.add({
@@ -549,7 +636,7 @@ class TankBattleScene extends Phaser.Scene {
     const sparks = this.add.particles(x, y, "tank-battle-spark", {
       speed: { min: 110, max: 320 },
       angle: { min: 195, max: 345 },
-      lifespan: { min: 450, max: 950 },
+      lifespan: { min: 300, max: 650 },
       gravityY: 260,
       scale: { start: 1.2, end: 0 },
       quantity: 0,
@@ -559,7 +646,7 @@ class TankBattleScene extends Phaser.Scene {
     const debris = this.add.particles(x, y, "tank-battle-debris", {
       speedX: { min: -190, max: 190 },
       speedY: { min: -310, max: -80 },
-      lifespan: { min: 850, max: 1_550 },
+      lifespan: { min: 520, max: 880 },
       gravityY: 390,
       rotate: { min: 0, max: 360 },
       scale: { min: 0.65, max: 1.5 },
@@ -567,7 +654,7 @@ class TankBattleScene extends Phaser.Scene {
       emitting: false
     }).setDepth(8);
     debris.explode(26);
-    this.time.delayedCall(1_700, () => {
+    this.time.delayedCall(IMPACT_EFFECT_MS - 50, () => {
       sparks.destroy();
       debris.destroy();
     });
@@ -587,7 +674,97 @@ class TankBattleScene extends Phaser.Scene {
 
   private changeAngle(delta: number): void {
     if (!this.canAim()) return;
-    this.angle = clamp(this.angle + delta, 10, 80);
+    this.angle = clamp(this.angle + delta, ANGLE_MIN, ANGLE_MAX);
+    this.renderPowerAndPreview();
+  }
+
+  private updateHeldAngle(time: number, delta: number): void {
+    if (this.heldAngleKeys.size === 0) return;
+    if (!this.canAim()) {
+      this.stopAngleAdjustment();
+      return;
+    }
+    const direction = this.currentAngleKeyDirection();
+    if (direction === 0) return;
+    this.angleHoldStartedAt ??= time;
+    const heldMs = Math.max(0, time - this.angleHoldStartedAt);
+    const speed = clamp(24 + heldMs * 0.05, 24, 120);
+    const previousAngle = this.angle;
+    this.angle = clamp(this.angle + direction * speed * (Math.min(delta, 50) / 1_000), ANGLE_MIN, ANGLE_MAX);
+    if (this.angle === previousAngle) return;
+
+    this.renderPowerAndPreview();
+    if (time >= this.nextGearCreakAt) {
+      const intensity = clamp((speed - 24) / 96, 0, 1);
+      this.audio.playGearCreak(intensity);
+      this.nextGearCreakAt = time + 210 - intensity * 125;
+    }
+  }
+
+  private handleKeyDown(event: KeyboardEvent): void {
+    void this.audio.unlock();
+    const direction = angleDirectionForKey(event.code);
+    if (direction === 0) return;
+    if (this.canAim()) event.preventDefault();
+    if (!this.canAim() || this.heldAngleKeys.has(event.code)) return;
+    const previousDirection = this.currentAngleKeyDirection();
+    this.heldAngleKeys.add(event.code);
+    if (this.currentAngleKeyDirection() !== previousDirection) {
+      this.angleHoldStartedAt = performance.now();
+      this.nextGearCreakAt = 0;
+    }
+  }
+
+  private handleKeyUp(event: KeyboardEvent): void {
+    const direction = angleDirectionForKey(event.code);
+    if (direction === 0) return;
+    if (this.heldAngleKeys.delete(event.code)) event.preventDefault();
+    if (this.currentAngleKeyDirection() === 0) {
+      this.angleHoldStartedAt = undefined;
+    } else {
+      this.angleHoldStartedAt = performance.now();
+    }
+  }
+
+  private currentAngleKeyDirection(): number {
+    let direction = 0;
+    for (const code of this.heldAngleKeys) direction += angleDirectionForKey(code);
+    return clamp(direction, -1, 1);
+  }
+
+  private stopAngleAdjustment(): void {
+    this.heldAngleKeys.clear();
+    this.angleHoldStartedAt = undefined;
+    this.nextGearCreakAt = 0;
+  }
+
+  private handleBattlefieldPointerDown(pointer: Phaser.Input.Pointer): void {
+    void this.audio.unlock();
+    if (!pointer.wasTouch || pointer.worldY < 0 || pointer.worldY >= GAME_HEIGHT || !this.canAim()) return;
+    this.activeAimPointerId = pointer.id;
+    this.updateAngleFromPointer(pointer);
+  }
+
+  private handleBattlefieldPointerMove(pointer: Phaser.Input.Pointer): void {
+    if (!pointer.wasTouch || !pointer.isDown || pointer.id !== this.activeAimPointerId) return;
+    this.updateAngleFromPointer(pointer);
+  }
+
+  private updateAngleFromPointer(pointer: Phaser.Input.Pointer): void {
+    const client = this.getClient();
+    const tank = this.getVisualView().players.find((candidate) => candidate.playerId === client.playerId);
+    if (!tank || !this.canAim()) return;
+    const facing = tankFacing(tank);
+    const barrelX = tank.x + facing * 4;
+    const barrelY = tank.y - 21;
+    const vectorX = pointer.worldX - barrelX;
+    const vectorY = pointer.worldY - barrelY;
+    const magnitude = Math.hypot(vectorX, vectorY);
+    if (magnitude < 1) return;
+    const cosine = clamp((vectorX * facing) / magnitude, -1, 1);
+    const unsignedAngle = Math.acos(cosine) * (180 / Math.PI);
+    const elevationAngle = vectorY <= 0 ? unsignedAngle : -unsignedAngle;
+    this.angle = Math.round(clamp(elevationAngle, ANGLE_MIN, ANGLE_MAX) * 10) / 10;
     this.renderPowerAndPreview();
   }
 
@@ -617,6 +794,7 @@ class TankBattleScene extends Phaser.Scene {
     if (send && this.canAim()) {
       this.awaitingSnapshot = true;
       triggerPlacementFeedback();
+      this.startFlightAudio(this.getClient().publicView.turnNumber);
       this.getClient().sendAction({
         type: "fire",
         payload: { angle: this.angle, power: Math.round(this.power * 10) / 10, item: this.selectedItem }
@@ -630,18 +808,51 @@ class TankBattleScene extends Phaser.Scene {
     this.releaseCharge(false);
   }
 
+  private handleBlur(): void {
+    this.cancelCharge();
+    this.stopAngleAdjustment();
+    this.activeAimPointerId = undefined;
+  }
+
+  private handleGameOut(): void {
+    this.cancelCharge();
+    this.activeAimPointerId = undefined;
+  }
+
   private handleGlobalPointerUp(pointer: Phaser.Input.Pointer): void {
+    if (pointer.id === this.activeAimPointerId) this.activeAimPointerId = undefined;
     if (this.chargingPointerId === undefined || pointer.id === this.chargingPointerId) {
       this.releaseCharge(true);
     }
   }
 
   private handleSpaceDown(event: KeyboardEvent): void {
+    event.preventDefault();
+    void this.audio.unlock();
     if (!event.repeat) this.startCharge();
   }
 
-  private handleSpaceUp(): void {
+  private handleSpaceUp(event: KeyboardEvent): void {
+    event.preventDefault();
     this.releaseCharge(true);
+  }
+
+  private startFlightAudio(shotId: number): void {
+    this.soundingShotId = shotId;
+    this.flightSafetyTimer?.remove(false);
+    this.flightSafetyTimer = this.time.delayedCall(5_000, () => this.stopFlightAudio());
+    void this.audio.resume().then((ready) => {
+      if (!ready || this.soundingShotId !== shotId) return;
+      this.audio.playLaunch();
+      this.audio.playFlight();
+    });
+  }
+
+  private stopFlightAudio(): void {
+    this.flightSafetyTimer?.remove(false);
+    this.flightSafetyTimer = undefined;
+    this.soundingShotId = undefined;
+    this.audio.stopFlight();
   }
 
   private canAim(): boolean {
@@ -685,6 +896,32 @@ function chargedPower(elapsedMs: number): number {
   return clamp(10 + elapsedMs / 15, 10, 100);
 }
 
+function angleDirectionForKey(code: string): -1 | 0 | 1 {
+  if (code === "ArrowUp" || code === "ArrowRight") return 1;
+  if (code === "ArrowDown" || code === "ArrowLeft") return -1;
+  return 0;
+}
+
+function clonePublicView(view: TankBattlePublicView): TankBattlePublicView {
+  return {
+    ...view,
+    terrain: [...view.terrain],
+    players: view.players.map((player) => ({
+      ...player,
+      itemCounts: { ...player.itemCounts }
+    })),
+    ...(view.lastShot ? {
+      lastShot: {
+        ...view.lastShot,
+        trajectory: view.lastShot.trajectory.map((point) => ({ ...point })),
+        damage: view.lastShot.damage.map((entry) => ({ ...entry })),
+        ...(view.lastShot.impact ? { impact: { ...view.lastShot.impact } } : {})
+      }
+    } : {}),
+    ...(view.rematchRequests ? { rematchRequests: [...view.rematchRequests] } : {})
+  };
+}
+
 function pointAlongPath(path: Array<{ x: number; y: number }>, progress: number): { x: number; y: number } | undefined {
   if (path.length === 0) return undefined;
   const index = progress * (path.length - 1);
@@ -694,13 +931,4 @@ function pointAlongPath(path: Array<{ x: number; y: number }>, progress: number)
   const a = path[left]!;
   const b = path[right]!;
   return { x: a.x + (b.x - a.x) * mix, y: a.y + (b.y - a.y) * mix };
-}
-
-function interpolateTerrain(previous: number[], next: number[], progress: number): number[] {
-  const length = Math.max(previous.length, next.length);
-  return Array.from({ length }, (_, index) => {
-    const before = previous[index] ?? next[index] ?? 600;
-    const after = next[index] ?? before;
-    return before + (after - before) * progress;
-  });
 }
