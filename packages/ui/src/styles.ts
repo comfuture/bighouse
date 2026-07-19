@@ -187,7 +187,7 @@ export const roomStyles = `
     .bh-bot-manager { justify-self:stretch; }
     .bh-start-game { min-height:48px; padding:10px 14px; font-size:15px; }
     .bh-add-bots-trigger { width:100%; min-height:44px; }
-    .bh-bot-panel { right:auto; left:0; width:min(360px,calc(100vw - 32px)); max-height:calc(100svh - 24px); overflow:auto; }
+    .bh-bot-panel { right:auto; left:0; width:min(360px,calc(100vw - 32px)); max-block-size:calc(100svh - 24px); overflow:auto; }
   }
 `;
 
@@ -268,9 +268,9 @@ export const chatStyles = `
     .bh-chat.is-open .bh-chat-log { left:10px; bottom:86px; width:calc(100% - 20px); }
   }
   @media (orientation:landscape) and (max-height:520px) {
-    .bh-chat:not(.is-open) .bh-chat-log { right:88px; max-height:52svh; }
+    .bh-chat:not(.is-open) .bh-chat-log { right:88px; max-block-size:52svh; }
     .bh-chat-composer { left:max(8px,env(safe-area-inset-left)); bottom:max(8px,env(safe-area-inset-bottom)); width:min(560px,calc(100% - 104px)); padding:7px; }
-    .bh-chat.is-open .bh-chat-log { left:max(8px,env(safe-area-inset-left)); bottom:76px; width:min(560px,calc(100% - 104px)); max-height:calc(100svh - 92px); }
+    .bh-chat.is-open .bh-chat-log { left:max(8px,env(safe-area-inset-left)); bottom:76px; width:min(560px,calc(100% - 104px)); max-block-size:calc(100svh - 92px); }
     .bh-chat-trigger { right:max(13px,env(safe-area-inset-right)); bottom:max(13px,env(safe-area-inset-bottom)); width:54px; height:54px; border-radius:17px; padding:12px; }
   }
 `;
