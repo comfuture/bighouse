@@ -1078,9 +1078,12 @@ input.game-plastic-input::placeholder {
   }
 
   .game-room-host > .game-contained-surface {
+    position: relative;
+    z-index: 0;
     grid-area: 1 / 1;
     max-width: 100%;
     max-height: 100svh;
+    isolation: isolate;
   }
 
   .game-room-loading {
@@ -1197,12 +1200,12 @@ input.game-plastic-input::placeholder {
 
   .room-route-tools {
     position: fixed;
-    top: max(0.7rem, env(safe-area-inset-top));
+    top: calc(max(0.7rem, env(safe-area-inset-top)) + 4.5rem);
     right: max(0.7rem, env(safe-area-inset-right));
     z-index: 80;
     display: flex;
     gap: 0.45rem;
-    opacity: 0.38;
+    opacity: 0.82;
     transition: opacity 140ms ease;
   }
 
@@ -1213,6 +1216,7 @@ input.game-plastic-input::placeholder {
 
   .room-route-button {
     width: 44px;
+    min-width: 44px;
     min-height: 44px;
     padding: 0;
     border-color: rgb(153 227 255 / 0.3);
@@ -1220,6 +1224,16 @@ input.game-plastic-input::placeholder {
     color: #fff;
     box-shadow: 0 3px 0 rgb(0 7 24 / 0.82), inset 0 1px 0 rgb(255 255 255 / 0.13);
     backdrop-filter: blur(12px);
+  }
+
+  .room-fullscreen-status {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    clip-path: inset(50%);
+    white-space: nowrap;
   }
 
   .room-connection-banner {

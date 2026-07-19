@@ -157,6 +157,38 @@ export const roomStyles = `
     .bh-room.is-rail { inset:max(8px,env(safe-area-inset-top)) max(8px,env(safe-area-inset-right)) auto auto; }
     .bh-room.is-rail .bh-room-leave { width:auto; }
   }
+  @media (orientation:landscape) and (max-height:520px) {
+    .bh-room:not(.is-rail) { place-items:start center; padding:max(8px,env(safe-area-inset-top)) max(8px,env(safe-area-inset-right)) max(8px,env(safe-area-inset-bottom)) max(8px,env(safe-area-inset-left)); }
+    .bh-room:not(.is-rail) .bh-room-panel {
+      display:grid;
+      width:min(920px,100%);
+      grid-template-columns:minmax(176px,.68fr) minmax(310px,1.32fr);
+      grid-template-areas:"navigation players" "heading players" "copy players" "interruption players" "footer players";
+      column-gap:14px;
+      align-items:start;
+      border-radius:18px;
+      padding:10px 12px;
+    }
+    .bh-room-navigation { position:static; grid-area:navigation; width:100%; }
+    .bh-room-heading { grid-area:heading; align-items:start; gap:8px; margin:4px 0 6px; padding-top:0; }
+    .bh-room h2 { font-size:clamp(22px,5.6vh,30px); }
+    .bh-capacity { border-radius:10px; padding:6px 8px; font-size:12px; }
+    .bh-room-copy { grid-area:copy; margin:0 0 8px; font-size:12px; line-height:1.3; }
+    .bh-interruption { grid-area:interruption; margin:0 0 8px; padding:8px; font-size:12px; }
+    .bh-player-list { grid-area:players; align-self:center; gap:7px; }
+    .bh-player { min-height:52px; grid-template-columns:34px minmax(0,1fr) auto; gap:8px; border-radius:13px; padding:6px 8px; }
+    .bh-seat { width:32px; height:32px; border-radius:9px; }
+    .bh-badges { grid-column:auto; justify-content:flex-end; padding-left:0; margin-top:0; }
+    .bh-badge { padding:4px 6px; font-size:10px; }
+    .bh-remove { flex-basis:40px; width:40px; min-height:40px; }
+    .bh-room-footer { grid-area:footer; grid-template-columns:1fr; gap:8px; align-self:end; margin-top:4px; }
+    .bh-primary-actions,.bh-bot-manager { grid-column:1; width:100%; }
+    .bh-primary-actions { display:grid; grid-template-columns:1fr; }
+    .bh-bot-manager { justify-self:stretch; }
+    .bh-start-game { min-height:48px; padding:10px 14px; font-size:15px; }
+    .bh-add-bots-trigger { width:100%; min-height:44px; }
+    .bh-bot-panel { right:auto; left:0; width:min(360px,calc(100vw - 32px)); max-height:calc(100svh - 24px); overflow:auto; }
+  }
 `;
 
 export const chatStyles = `
@@ -235,6 +267,12 @@ export const chatStyles = `
     .bh-chat-composer { left:10px; bottom:max(10px,env(safe-area-inset-bottom)); width:calc(100% - 20px); }
     .bh-chat.is-open .bh-chat-log { left:10px; bottom:86px; width:calc(100% - 20px); }
   }
+  @media (orientation:landscape) and (max-height:520px) {
+    .bh-chat:not(.is-open) .bh-chat-log { right:88px; max-height:52svh; }
+    .bh-chat-composer { left:max(8px,env(safe-area-inset-left)); bottom:max(8px,env(safe-area-inset-bottom)); width:min(560px,calc(100% - 104px)); padding:7px; }
+    .bh-chat.is-open .bh-chat-log { left:max(8px,env(safe-area-inset-left)); bottom:76px; width:min(560px,calc(100% - 104px)); max-height:calc(100svh - 92px); }
+    .bh-chat-trigger { right:max(13px,env(safe-area-inset-right)); bottom:max(13px,env(safe-area-inset-bottom)); width:54px; height:54px; border-radius:17px; padding:12px; }
+  }
 `;
 
 export const modalStyles = `
@@ -247,4 +285,11 @@ export const modalStyles = `
   .bh-modal p { margin:0; color:#52617b; line-height:1.55; font-weight:750; }
   .bh-modal-actions { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-top:24px; }
   @media (max-width:480px) { .bh-modal { padding:16px; } .bh-modal-panel { padding:22px 16px; } .bh-modal-actions { grid-template-columns:1fr; } }
+  @media (orientation:landscape) and (max-height:520px) {
+    .bh-modal { padding:max(8px,env(safe-area-inset-top)) max(8px,env(safe-area-inset-right)) max(8px,env(safe-area-inset-bottom)) max(8px,env(safe-area-inset-left)); }
+    .bh-modal-panel { width:min(620px,100%); border-radius:18px; padding:16px 20px; }
+    .bh-modal h2 { margin:5px 0 7px; font-size:clamp(23px,8vh,34px); }
+    .bh-modal p { font-size:13px; line-height:1.35; }
+    .bh-modal-actions { grid-template-columns:1fr 1fr; gap:8px; margin-top:13px; }
+  }
 `;
