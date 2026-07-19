@@ -1136,6 +1136,59 @@ input.game-plastic-input::placeholder {
     font-size: 0.8rem;
   }
 
+  .room-creation-progress {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+    gap: 1rem;
+    min-height: 112px;
+    border: 2px solid #062355;
+    border-radius: 20px;
+    padding: 1rem;
+    color: #fff;
+    background:
+      radial-gradient(circle at 82% 18%, rgb(129 231 255 / 0.22), transparent 8rem),
+      linear-gradient(145deg, #0a4aa1, #09316f);
+    box-shadow: 0 7px 0 #051c46, inset 0 2px 0 rgb(255 255 255 / 0.16);
+  }
+
+  .room-creation-progress strong {
+    display: block;
+    font-family: var(--game-font-display);
+    font-size: 1.15rem;
+    letter-spacing: -0.02em;
+  }
+
+  .room-creation-progress p {
+    margin: 0.25rem 0 0;
+    color: #c6e7ff;
+    font-size: 0.9rem;
+    font-weight: 650;
+  }
+
+  .room-creation-orbit {
+    position: relative;
+    display: grid;
+    width: 58px;
+    height: 58px;
+    place-items: center;
+    border: 3px solid rgb(129 231 255 / 0.28);
+    border-radius: 50%;
+    color: #fff;
+    background: #0b5bc0;
+  }
+
+  .room-creation-orbit::after {
+    position: absolute;
+    inset: -3px;
+    border: 3px solid transparent;
+    border-top-color: var(--game-yellow);
+    border-right-color: var(--game-cyan);
+    border-radius: inherit;
+    content: "";
+    animation: portal-spin 800ms linear infinite;
+  }
+
   .room-qr-image {
     width: min(16rem, 100%);
     aspect-ratio: 1;

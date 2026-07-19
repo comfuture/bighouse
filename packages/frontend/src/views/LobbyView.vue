@@ -102,6 +102,26 @@
 
       <ChatPanel class="lobby-chat-panel" title="Lobby chat" :messages="chat" @send="sendChat" />
     </div>
+
+    <UModal
+      v-model:open="creatingRoom"
+      title="Creating game room"
+      description="Preparing a fresh table and connecting you to it."
+      :dismissible="false"
+      :ui="{ close: 'hidden' }"
+    >
+      <template #body>
+        <div class="room-creation-progress" role="status" aria-live="polite" aria-busy="true">
+          <span class="room-creation-orbit" aria-hidden="true">
+            <UIcon name="i-lucide-gamepad-2" />
+          </span>
+          <div>
+            <strong>Creating game room</strong>
+            <p>Reserving seats and loading the game table…</p>
+          </div>
+        </div>
+      </template>
+    </UModal>
   </div>
 </template>
 
