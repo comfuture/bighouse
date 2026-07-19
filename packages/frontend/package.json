@@ -13,6 +13,7 @@
     "@bighouse/game-sdk": "workspace:*",
     "@bighouse/gomoku": "workspace:*",
     "@bighouse/onecard": "workspace:*",
+    "@bighouse/tank-battle": "workspace:*",
     "@iconify-json/lucide": "^1.2.108",
     "@nuxt/ui": "^4.7.1",
     "qrcode": "^1.5.4",

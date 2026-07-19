@@ -9,7 +9,7 @@
     "build:frontend": "pnpm --filter @bighouse/frontend build",
     "build": "pnpm build:frontend",
     "deploy": "pnpm build:frontend && wrangler deploy",
-    "typecheck": "tsc --noEmit && pnpm --filter @bighouse/game-sdk typecheck && pnpm --filter @bighouse/chess typecheck && pnpm --filter @bighouse/gomoku typecheck && pnpm --filter @bighouse/onecard typecheck && pnpm --filter @bighouse/frontend typecheck",
+    "typecheck": "tsc --noEmit && pnpm --filter @bighouse/game-sdk typecheck && pnpm --filter @bighouse/chess typecheck && pnpm --filter @bighouse/gomoku typecheck && pnpm --filter @bighouse/onecard typecheck && pnpm --filter @bighouse/tank-battle typecheck && pnpm --filter @bighouse/frontend typecheck",
     "test": "vitest run"
   },
   "dependencies": {
@@ -17,6 +17,7 @@
     "@bighouse/game-sdk": "workspace:*",
     "@bighouse/gomoku": "workspace:*",
     "@bighouse/onecard": "workspace:*",
+    "@bighouse/tank-battle": "workspace:*",
     "zod": "^3.25.76"
   },
   "devDependencies": {
