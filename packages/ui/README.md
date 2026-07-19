@@ -63,4 +63,14 @@ Set these CSS custom properties on the game container or Custom Element host:
 - `--bh-ui-red`
 - `--bh-ui-green`
 
+Game packages can integrate the fixed controls with their own safe areas without reserving a global rail:
+
+- `--bh-game-ui-utilities-block-start`
+- `--bh-game-ui-utilities-block-end`
+- `--bh-game-ui-utilities-inline-end`
+- `--bh-game-ui-chat-block-end`
+- `--bh-game-ui-chat-inline-end`
+
+Unset game-specific properties fall back to the shared `--bh-game-ui-block-start`, `--bh-game-ui-block-end`, and `--bh-game-ui-inline-end` positions.
+
 The components expose `waiting-overlay`, `game-controls`, `chat-overlay`, and `result-dialog` parts for limited host-level styling. Player names and chat messages are rendered through `textContent`.

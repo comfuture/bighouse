@@ -239,6 +239,7 @@ export function mountGame(container: HTMLElement, context: GameClientContext): M
     startPhaser(event.matches ? compactLandscapeLayout : standardLayout, localState);
   };
   layoutMedia.addEventListener("change", handleLayoutChange);
+  container.classList.add("tank-battle-host");
 
   return {
     update(nextContext) {
@@ -249,6 +250,7 @@ export function mountGame(container: HTMLElement, context: GameClientContext): M
       scene.applySnapshot(client, previous);
     },
     destroy() {
+      container.classList.remove("tank-battle-host");
       layoutMedia.removeEventListener("change", handleLayoutChange);
       container.removeEventListener("bighouse-chat-open-change", handleChatOpenChange);
       gameUi.destroy();

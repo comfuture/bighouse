@@ -183,8 +183,9 @@ export const gameControlsStyles = `
   .bh-game-controls { position:absolute; inset:0; pointer-events:none; }
   .bh-game-utilities {
     position:absolute;
-    inset-block-start:var(--bh-game-ui-block-start,max(10px,env(safe-area-inset-top)));
-    inset-inline-end:var(--bh-game-ui-inline-end,max(10px,env(safe-area-inset-right)));
+    inset-block-start:var(--bh-game-ui-utilities-block-start,var(--bh-game-ui-block-start,max(10px,env(safe-area-inset-top))));
+    inset-block-end:var(--bh-game-ui-utilities-block-end,auto);
+    inset-inline-end:var(--bh-game-ui-utilities-inline-end,var(--bh-game-ui-inline-end,max(10px,env(safe-area-inset-right))));
     display:flex;
     gap:var(--bh-game-ui-gap,8px);
   }
@@ -210,8 +211,8 @@ export const gameControlsStyles = `
   .bh-leave-control { color:#ffaaa5; }
   .bh-chat-control {
     position:absolute;
-    inset-inline-end:var(--bh-game-ui-inline-end,max(10px,env(safe-area-inset-right)));
-    inset-block-end:var(--bh-game-ui-block-end,max(12px,env(safe-area-inset-bottom)));
+    inset-inline-end:var(--bh-game-ui-chat-inline-end,var(--bh-game-ui-inline-end,max(10px,env(safe-area-inset-right))));
+    inset-block-end:var(--bh-game-ui-chat-block-end,var(--bh-game-ui-block-end,max(12px,env(safe-area-inset-bottom))));
     color:#fff;
     background:linear-gradient(180deg,rgba(139,98,255,.9),rgba(88,52,207,.9));
   }
