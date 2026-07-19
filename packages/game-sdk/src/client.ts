@@ -72,6 +72,7 @@ export type GameClientActions = {
   setReady(ready: boolean): void;
   startGame(): void;
   restartGame(): void;
+  addBot(difficulty: BotDifficulty, displayName?: string): void;
   addBot(difficulty: BotDifficulty, count?: number, displayName?: string): void;
   removeBot(botPlayerId: string): void;
   transferHost(targetPlayerId: string): void;
