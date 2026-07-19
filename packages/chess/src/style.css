@@ -2,7 +2,7 @@
   display: grid;
   gap: 14px;
   width: min(100%, 820px);
-  max-height: 100svh;
+  max-block-size: 100svh;
   overflow: auto;
   padding: clamp(8px, 1.5vmin, 14px);
   color: inherit;

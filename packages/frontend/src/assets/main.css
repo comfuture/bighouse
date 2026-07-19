@@ -1081,7 +1081,7 @@ input.game-plastic-input::placeholder {
     z-index: 0;
     grid-area: 1 / 1;
     max-width: 100%;
-    max-height: 100svh;
+    max-block-size: 100svh;
     isolation: isolate;
   }
 

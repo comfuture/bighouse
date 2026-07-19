@@ -5,7 +5,7 @@
   max-width: 100%;
   min-width: 0;
   min-height: 680px;
-  max-height: 100svh;
+  max-block-size: 100svh;
   position: relative;
   box-sizing: border-box;
   background: radial-gradient(circle, #144f28 0%, #082613 100%);
