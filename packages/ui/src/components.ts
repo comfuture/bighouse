@@ -23,6 +23,8 @@ export type GameModalState = GameResultDialogState & {
 };
 
 const commonStyles = `<style>${baseStyles}</style>`;
+const chatInactivityMs = 60_000;
+const chatFadeMs = 280;
 
 export class BighouseRoomControlsElement extends HTMLElement {
   readonly #root = this.attachShadow({ mode: "open" });
@@ -194,8 +196,11 @@ export class BighouseGameChatElement extends HTMLElement {
   #messagesInitialized = false;
   #composing = false;
   #draft = "";
+  #visible = false;
   #logScrollTop = 0;
   #followLatest = true;
+  #hideTimer: ReturnType<typeof setTimeout> | undefined;
+  #fadeTimer: ReturnType<typeof setTimeout> | undefined;
   #previousFocus: HTMLElement | null = null;
   readonly #onDocumentKeyDown = (event: KeyboardEvent): void => {
     if (event.key === "Escape" && this.#open) {
@@ -204,23 +209,35 @@ export class BighouseGameChatElement extends HTMLElement {
       return;
     }
     if (
-      event.key !== "Enter" || this.#open || event.repeat || event.isComposing ||
+      event.key !== "Enter" || event.repeat || event.isComposing ||
       event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || eventHasEditableTarget(event)
     ) return;
     event.preventDefault();
-    this.open = true;
+    if (this.#open) {
+      this.noteActivity();
+      this.focusInput();
+    } else {
+      this.open = true;
+    }
   };
 
   set messages(value: readonly GameClientChatMessage[]) {
-    const shouldRestoreInputFocus = shadowActiveElement(this.#root) instanceof HTMLInputElement;
     const incoming = [...value];
+    const next = incoming.slice(-80);
+    if (this.#messagesInitialized && sameMessages(this.#messages, next)) return;
+    const appendedCount = this.#messagesInitialized ? countAppendedMessages(this.#messages, incoming) : 0;
     if (this.#connectedOnce && this.#messagesInitialized && !this.#open) {
-      this.#unread += countAppendedMessages(this.#messages, incoming);
+      this.#unread += appendedCount;
     }
-    this.#messages = incoming.slice(-80);
+    this.#messages = next;
+    if ((!this.#messagesInitialized && next.length > 0) || appendedCount > 0) this.noteActivity();
     this.#messagesInitialized = true;
-    this.render();
-    if (shouldRestoreInputFocus) queueMicrotask(() => this.focusInput());
+    if (this.#root.querySelector(".bh-chat")) {
+      this.renderMessages();
+      this.updateChatState();
+    } else {
+      this.render();
+    }
   }
 
   get messages(): readonly GameClientChatMessage[] {
@@ -231,14 +248,17 @@ export class BighouseGameChatElement extends HTMLElement {
     if (this.#open === value) return;
     this.#open = value;
     if (value) {
-      this.#previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      const activeElement = document.activeElement;
+      this.#previousFocus = activeElement instanceof HTMLElement && activeElement !== this ? activeElement : null;
       this.#unread = 0;
+      this.noteActivity();
     }
-    this.render();
+    if (this.#root.querySelector(".bh-chat")) this.updateChatState();
+    else this.render();
     if (value) {
       queueMicrotask(() => this.focusInput());
     } else {
-      this.#previousFocus?.focus();
+      this.restorePreviousFocus();
     }
     emit(this, "bighouse-chat-open-change", { open: value });
   }
@@ -251,15 +271,17 @@ export class BighouseGameChatElement extends HTMLElement {
     document.addEventListener("keydown", this.#onDocumentKeyDown, true);
     this.#connectedOnce = true;
     this.render();
+    if (this.#visible) this.noteActivity();
   }
 
   disconnectedCallback(): void {
     document.removeEventListener("keydown", this.#onDocumentKeyDown, true);
+    this.clearActivityTimers();
   }
 
   private render(): void {
     this.#root.innerHTML = `${commonStyles}<style>${chatStyles}</style>`;
-    const chat = element("section", `bh-chat${this.#open ? " is-open" : ""}`);
+    const chat = element("section", ["bh-chat", this.#open ? "is-open" : "", this.#visible ? "is-visible" : ""].filter(Boolean).join(" "));
     chat.setAttribute("part", "chat-overlay");
     chat.setAttribute("aria-label", "Game chat");
 
@@ -269,13 +291,6 @@ export class BighouseGameChatElement extends HTMLElement {
     log.addEventListener("scroll", () => {
       this.#logScrollTop = log.scrollTop;
       this.#followLatest = log.scrollHeight - log.clientHeight - log.scrollTop < 24;
-    });
-    this.#messages.forEach((message) => {
-      const line = element("div", `bh-message${message.visibility === "private" ? " is-private" : ""}`);
-      const author = textElement("strong", "", message.displayName || message.playerId);
-      const separator = document.createTextNode(message.visibility === "private" ? " [private] · " : " · ");
-      line.append(author, separator, document.createTextNode(message.body));
-      log.append(line);
     });
     chat.append(log);
 
@@ -288,9 +303,18 @@ export class BighouseGameChatElement extends HTMLElement {
     input.value = this.#draft;
     input.placeholder = "Message the room";
     input.setAttribute("aria-label", "Game chat message");
-    input.addEventListener("input", () => { this.#draft = input.value; });
-    input.addEventListener("compositionstart", () => { this.#composing = true; });
-    input.addEventListener("compositionend", () => { this.#composing = false; });
+    input.addEventListener("input", () => {
+      this.#draft = input.value;
+      this.noteActivity();
+    });
+    input.addEventListener("compositionstart", () => {
+      this.#composing = true;
+      this.noteActivity();
+    });
+    input.addEventListener("compositionend", () => {
+      this.#composing = false;
+      this.noteActivity();
+    });
     input.addEventListener("keydown", (event) => {
       if (event.key === "Escape") {
         event.preventDefault();
@@ -310,10 +334,20 @@ export class BighouseGameChatElement extends HTMLElement {
       const body = input.value.trim();
       if (!body) return;
       emit(this, "bighouse-chat-send", { body });
+      this.noteActivity();
       this.#draft = "";
       input.value = "";
     });
-    composer.append(input, send);
+    const close = document.createElement("button");
+    close.type = "button";
+    close.className = "bh-chat-close";
+    close.setAttribute("aria-label", "Close chat");
+    const closeIcon = element("span", "bh-icon");
+    closeIcon.innerHTML = iconMarkup("x");
+    close.append(closeIcon);
+    close.addEventListener("click", () => { this.open = false; });
+    composer.toggleAttribute("inert", !this.#open);
+    composer.append(input, send, close);
     chat.append(composer);
 
     const trigger = document.createElement("button");
@@ -327,13 +361,96 @@ export class BighouseGameChatElement extends HTMLElement {
     trigger.addEventListener("click", () => { this.open = true; });
     chat.append(trigger);
     this.#root.append(chat);
+    this.updateChatState();
+    this.renderMessages();
+  }
+
+  private renderMessages(): void {
+    const log = this.#root.querySelector<HTMLElement>(".bh-chat-log");
+    if (!log) return;
+    log.replaceChildren();
+    this.#messages.forEach((message) => {
+      const line = element("div", `bh-message${message.visibility === "private" ? " is-private" : ""}`);
+      const author = textElement("strong", "", message.displayName || message.playerId);
+      const separator = document.createTextNode(message.visibility === "private" ? " [private] · " : " · ");
+      line.append(author, separator, document.createTextNode(message.body));
+      log.append(line);
+    });
     queueMicrotask(() => {
       log.scrollTop = this.#followLatest ? log.scrollHeight : this.#logScrollTop;
     });
   }
 
+  private updateChatState(): void {
+    const chat = this.#root.querySelector<HTMLElement>(".bh-chat");
+    if (!chat) return;
+    chat.classList.toggle("is-open", this.#open);
+    chat.classList.toggle("is-visible", this.#visible);
+    const composer = chat.querySelector<HTMLFormElement>(".bh-chat-composer");
+    composer?.toggleAttribute("inert", !this.#open);
+    const trigger = chat.querySelector<HTMLButtonElement>(".bh-chat-trigger");
+    if (!trigger) return;
+    trigger.setAttribute("aria-label", this.#unread > 0 ? `Open chat, ${this.#unread} unread` : "Open chat");
+    trigger.querySelector(".bh-unread")?.remove();
+    if (this.#unread > 0) trigger.append(textElement("span", "bh-unread", String(Math.min(this.#unread, 99))));
+  }
+
   private focusInput(): void {
-    this.#root.querySelector<HTMLInputElement>("input")?.focus();
+    if (this.#open) this.#root.querySelector<HTMLInputElement>("input")?.focus();
+  }
+
+  private noteActivity(): void {
+    this.#visible = true;
+    if (this.#fadeTimer !== undefined) {
+      clearTimeout(this.#fadeTimer);
+      this.#fadeTimer = undefined;
+    }
+    this.#root.querySelector(".bh-chat")?.classList.remove("is-fading");
+    this.updateChatState();
+    if (this.#hideTimer !== undefined) clearTimeout(this.#hideTimer);
+    if (this.isConnected) {
+      this.#hideTimer = setTimeout(() => this.beginFade(), chatInactivityMs);
+    }
+  }
+
+  private beginFade(): void {
+    this.#hideTimer = undefined;
+    if (this.#composing) {
+      this.noteActivity();
+      return;
+    }
+    const chat = this.#root.querySelector(".bh-chat");
+    if (!chat) {
+      this.finishAutoHide();
+      return;
+    }
+    chat.classList.add("is-fading");
+    this.#fadeTimer = setTimeout(() => this.finishAutoHide(), prefersReducedMotion() ? 0 : chatFadeMs);
+  }
+
+  private finishAutoHide(): void {
+    this.#fadeTimer = undefined;
+    const wasOpen = this.#open;
+    this.#open = false;
+    this.#visible = false;
+    this.updateChatState();
+    if (wasOpen) {
+      this.restorePreviousFocus();
+      emit(this, "bighouse-chat-open-change", { open: false });
+    }
+  }
+
+  private clearActivityTimers(): void {
+    if (this.#hideTimer !== undefined) clearTimeout(this.#hideTimer);
+    if (this.#fadeTimer !== undefined) clearTimeout(this.#fadeTimer);
+    this.#hideTimer = undefined;
+    this.#fadeTimer = undefined;
+  }
+
+  private restorePreviousFocus(): void {
+    const focusIsInsideChat = document.activeElement === this || shadowActiveElement(this.#root) !== null;
+    if (focusIsInsideChat && this.#previousFocus?.isConnected) this.#previousFocus.focus();
+    this.#previousFocus = null;
   }
 }
 
@@ -480,10 +597,28 @@ function countAppendedMessages(previous: readonly GameClientChatMessage[], incom
   return incoming.length;
 }
 
+function sameMessages(previous: readonly GameClientChatMessage[], next: readonly GameClientChatMessage[]): boolean {
+  return previous.length === next.length && previous.every((message, index) => {
+    const candidate = next[index];
+    return Boolean(candidate && messageRenderIdentity(message) === messageRenderIdentity(candidate));
+  });
+}
+
 function messageIdentity(message: GameClientChatMessage): string {
   return message.id
     ? `id:${message.id}`
     : [message.createdAt, message.playerId, message.targetPlayerId ?? "", message.visibility, message.body].join("\u0000");
+}
+
+function messageRenderIdentity(message: GameClientChatMessage): string {
+  return [
+    messageIdentity(message),
+    message.displayName ?? "",
+    message.scope,
+    message.scopeId ?? "",
+    message.visibility,
+    message.body
+  ].join("\u0000");
 }
 
 type DialogAction = "primary" | "secondary";
@@ -504,4 +639,8 @@ function shadowActiveElement(root: ShadowRoot): Element | null {
   } catch {
     return null;
   }
+}
+
+function prefersReducedMotion(): boolean {
+  return typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 }
