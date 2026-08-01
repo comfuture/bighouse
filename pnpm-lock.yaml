@@ -121,6 +121,16 @@ importers:
         specifier: ^5.9.3
         version: 5.9.3
 
+  packages/indian-poker:
+    dependencies:
+      '@bighouse/game-sdk':
+        specifier: workspace:*
+        version: link:../game-sdk
+    devDependencies:
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+
   packages/onecard:
     dependencies:
       '@bighouse/game-sdk':
