@@ -17,6 +17,9 @@ importers:
       '@bighouse/gomoku':
         specifier: workspace:*
         version: link:packages/gomoku
+      '@bighouse/indian-poker':
+        specifier: workspace:*
+        version: link:packages/indian-poker
       '@bighouse/onecard':
         specifier: workspace:*
         version: link:packages/onecard
@@ -67,6 +70,9 @@ importers:
       '@bighouse/gomoku':
         specifier: workspace:*
         version: link:../gomoku
+      '@bighouse/indian-poker':
+        specifier: workspace:*
+        version: link:../indian-poker
       '@bighouse/onecard':
         specifier: workspace:*
         version: link:../onecard
