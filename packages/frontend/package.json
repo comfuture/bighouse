@@ -12,6 +12,7 @@
     "@bighouse/chess": "workspace:*",
     "@bighouse/game-sdk": "workspace:*",
     "@bighouse/gomoku": "workspace:*",
+    "@bighouse/indian-poker": "workspace:*",
     "@bighouse/onecard": "workspace:*",
     "@bighouse/tank-battle": "workspace:*",
     "@iconify-json/lucide": "^1.2.108",
