@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 500" width="800" height="500" role="img">
+  <title>Indian Poker</title>
+  <defs>
+    <radialGradient id="ip-felt" cx="50%" cy="18%" r="95%">
+      <stop offset="0%" stop-color="#25604a" />
+      <stop offset="45%" stop-color="#14352a" />
+      <stop offset="100%" stop-color="#08160f" />
+    </radialGradient>
+    <linearGradient id="ip-card-face" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#ffffff" />
+      <stop offset="100%" stop-color="#e9e6dc" />
+    </linearGradient>
+    <linearGradient id="ip-chip-gold" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#f2d788" />
+      <stop offset="100%" stop-color="#c69b34" />
+    </linearGradient>
+    <filter id="ip-soft" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="14" />
+    </filter>
+  </defs>
+
+  <rect width="800" height="500" fill="url(#ip-felt)" />
+  <ellipse cx="400" cy="250" rx="330" ry="150" fill="#2c7357" opacity="0.22" filter="url(#ip-soft)" />
+  <ellipse cx="400" cy="250" rx="286" ry="122" fill="none" stroke="#e7c66b" stroke-opacity="0.28" stroke-width="3" />
+
+  <!-- Left player: a shadow with a readable card taped to the forehead -->
+  <g transform="translate(150 250)">
+    <circle cx="0" cy="-34" r="52" fill="#04100b" opacity="0.9" />
+    <path d="M-96 128c0-52 44-76 96-76s96 24 96 76z" fill="#04100b" opacity="0.9" />
+    <g transform="rotate(-7)">
+      <rect x="-33" y="-104" width="66" height="92" rx="8" fill="url(#ip-card-face)" />
+      <text x="-19" y="-64" font-family="Georgia, 'Times New Roman', serif" font-size="34" font-weight="bold" fill="#111827">A</text>
+      <text x="-19" y="-30" font-family="Georgia, 'Times New Roman', serif" font-size="30" fill="#111827">&#9824;</text>
+    </g>
+  </g>
+
+  <!-- Right player -->
+  <g transform="translate(650 250)">
+    <circle cx="0" cy="-34" r="52" fill="#04100b" opacity="0.9" />
+    <path d="M-96 128c0-52 44-76 96-76s96 24 96 76z" fill="#04100b" opacity="0.9" />
+    <g transform="rotate(7)">
+      <rect x="-33" y="-104" width="66" height="92" rx="8" fill="url(#ip-card-face)" />
+      <text x="-19" y="-64" font-family="Georgia, 'Times New Roman', serif" font-size="34" font-weight="bold" fill="#dc2626">K</text>
+      <text x="-19" y="-30" font-family="Georgia, 'Times New Roman', serif" font-size="30" fill="#dc2626">&#9829;</text>
+    </g>
+  </g>
+
+  <!-- The pot both players are reading each other for -->
+  <g transform="translate(400 320)">
+    <ellipse cx="0" cy="34" rx="86" ry="22" fill="#04100b" opacity="0.45" />
+    <g>
+      <ellipse cx="-34" cy="18" rx="34" ry="12" fill="url(#ip-chip-gold)" />
+      <ellipse cx="-34" cy="6" rx="34" ry="12" fill="url(#ip-chip-gold)" />
+      <ellipse cx="-34" cy="-6" rx="34" ry="12" fill="url(#ip-chip-gold)" />
+      <ellipse cx="34" cy="18" rx="34" ry="12" fill="#d6d3cc" />
+      <ellipse cx="34" cy="6" rx="34" ry="12" fill="#d6d3cc" />
+    </g>
+  </g>
+
+  <!-- The face-down card is the one you never get to read: your own -->
+  <g transform="translate(400 176) rotate(-4)">
+    <rect x="-38" y="-52" width="76" height="104" rx="9" fill="#172554" />
+    <rect x="-30" y="-44" width="60" height="88" rx="6" fill="none" stroke="#ffffff" stroke-opacity="0.35" stroke-width="2" />
+    <text x="0" y="8" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" font-size="26" font-weight="bold" fill="#ffffff" fill-opacity="0.6">?</text>
+  </g>
+</svg>
