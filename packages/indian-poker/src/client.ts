@@ -1,6 +1,7 @@
 import "./style.css";
-import type { GameClientContext, MountedGameClient } from "@bighouse/game-sdk/client";
+import type { GameClientContext, GameClientSnapshot, MountedGameClient } from "@bighouse/game-sdk/client";
 import { triggerCardSubmitFeedback, triggerSelectionFeedback } from "@bighouse/game-sdk/feedback";
+import { createGameUi, type GameResultDialogState } from "@bighouse/ui";
 export { gameMetadata } from "./client-metadata";
 
 // ─── View Types ──────────────────────────────────────────────────────────────
@@ -42,7 +43,6 @@ export type IndianPokerPublicView = {
   roundResult?: IndianPokerRoundResultView;
   cards?: Record<string, string>;
   winnerPlayerId?: string;
-  rematchRequests?: string[];
 };
 
 export type IndianPokerPrivateView = {
@@ -62,12 +62,10 @@ export type IndianPokerClient = {
   privateView: IndianPokerPrivateView;
   version: number;
   sendAction(action: { type: string; payload: Record<string, unknown> }): void;
-  requestPlayAgain(): void;
-  leaveFinishedGame(): void;
 };
 
 export type IndianPokerGameInstance = {
-  update(input: Omit<IndianPokerClient, "sendAction" | "requestPlayAgain" | "leaveFinishedGame">): void;
+  update(input: Omit<IndianPokerClient, "sendAction">): void;
   destroy(): void;
 };
 
@@ -123,11 +121,18 @@ function silhouetteSvg(): string {
 
 export function mountGame(container: HTMLElement, context: GameClientContext): MountedGameClient {
   const instance = createIndianPokerGame(container, toIndianPokerClient(context));
+  // The shared room UI owns seats, ready/start, bots, chat, share, leave, and
+  // the match result dialog. This client only renders the table itself.
+  const gameUi = createGameUi(container, context, context);
+  gameUi.setResult(indianPokerResultDialogState(context));
   return {
     update(nextContext) {
       instance.update(toIndianPokerClient({ ...context, ...nextContext }));
+      gameUi.update(nextContext);
+      gameUi.setResult(indianPokerResultDialogState(nextContext));
     },
     destroy() {
+      gameUi.destroy();
       instance.destroy();
     }
   };
@@ -139,13 +144,36 @@ function toIndianPokerClient(context: GameClientContext): IndianPokerClient {
     version: context.version,
     publicView: {
       ...(context.publicView as IndianPokerPublicView),
-      roomPhase: context.phase,
-      rematchRequests: context.rematchRequests
+      roomPhase: context.phase
     },
     privateView: context.privateView as IndianPokerPrivateView,
-    sendAction: context.sendAction,
-    requestPlayAgain: context.requestPlayAgain,
-    leaveFinishedGame: context.leaveFinishedGame
+    sendAction: context.sendAction
+  };
+}
+
+/** Match-over copy handed to the shared result dialog. */
+function indianPokerResultDialogState(context: GameClientSnapshot): GameResultDialogState {
+  const publicView = context.publicView as IndianPokerPublicView;
+  if (context.phase !== "finished" || !publicView.winnerPlayerId) {
+    return { open: false, title: "", message: "" };
+  }
+
+  const iWon = publicView.winnerPlayerId === context.playerId;
+  const iRequested = context.rematchRequests.includes(context.playerId);
+  const opponentRequested = context.rematchRequests.some((playerId) => playerId !== context.playerId);
+  const rounds = publicView.round ?? 0;
+  return {
+    open: true,
+    kicker: rounds === 1 ? "1 round played" : `${rounds} rounds played`,
+    title: iWon ? "You Win!" : "You Lose",
+    message: iRequested
+      ? "Waiting for your opponent to accept the rematch."
+      : opponentRequested
+        ? `Your opponent wants a rematch. Chips reset to ${publicView.startingChips}.`
+        : `A rematch resets both stacks to ${publicView.startingChips}.`,
+    primaryLabel: iRequested ? "Waiting..." : "Play again",
+    secondaryLabel: "Leave",
+    primaryDisabled: iRequested
   };
 }
 
@@ -157,8 +185,10 @@ export function createIndianPokerGame(container: HTMLElement, client: IndianPoke
   let toast: string | null = null;
   let toastTimer: number | undefined;
 
-  container.classList.add("indian-poker-game");
-  container.innerHTML = `
+  const surface = document.createElement("div");
+  surface.className = "game-contained-surface indian-poker-game";
+  container.replaceChildren(surface);
+  surface.innerHTML = `
     <div class="ip-table">
       <section class="ip-seat is-opponent" data-role="opponent-seat">
         <div class="ip-seat-figure">
@@ -252,21 +282,11 @@ export function createIndianPokerGame(container: HTMLElement, client: IndianPoke
         </div>
       </div>
 
-      <div class="ip-result is-hidden" data-role="result" role="dialog" aria-modal="true" aria-label="Match result">
-        <div class="ip-result-panel">
-          <p class="ip-result-title" data-role="result-title"></p>
-          <p class="ip-result-message" data-role="result-message"></p>
-          <div class="ip-result-actions">
-            <button type="button" class="ip-action is-primary" data-role="play-again">Play Again</button>
-            <button type="button" class="ip-action" data-role="leave-game">Leave</button>
-          </div>
-        </div>
-      </div>
     </div>
   `;
 
   function pick<T extends HTMLElement = HTMLElement>(selector: string): T {
-    const element = container.querySelector<T>(selector);
+    const element = surface.querySelector<T>(selector);
     if (!element) throw new Error(`Failed to mount Indian Poker: missing ${selector}`);
     return element;
   }
@@ -307,12 +327,7 @@ export function createIndianPokerGame(container: HTMLElement, client: IndianPoke
     revealMyCard: pick("[data-role='reveal-my-card']"),
     revealMyDelta: pick("[data-role='reveal-my-delta']"),
     revealMessage: pick("[data-role='reveal-message']"),
-    nextRound: pick<HTMLButtonElement>("[data-role='action-next-round']"),
-    result: pick("[data-role='result']"),
-    resultTitle: pick("[data-role='result-title']"),
-    resultMessage: pick("[data-role='result-message']"),
-    playAgain: pick<HTMLButtonElement>("[data-role='play-again']"),
-    leave: pick<HTMLButtonElement>("[data-role='leave-game']")
+    nextRound: pick<HTMLButtonElement>("[data-role='action-next-round']")
   };
 
   // ─── Derived Reads ─────────────────────────────────────────────────────────
@@ -398,16 +413,6 @@ export function createIndianPokerGame(container: HTMLElement, client: IndianPoke
     send("nextRound");
   });
 
-  dom.playAgain.addEventListener("click", () => {
-    if (state.publicView.rematchRequests?.includes(state.playerId)) return;
-    triggerSelectionFeedback();
-    client.requestPlayAgain();
-  });
-  dom.leave.addEventListener("click", () => {
-    triggerSelectionFeedback();
-    client.leaveFinishedGame();
-  });
-
   /** One ante is a natural nudge for the stake stepper. */
   function stepSize(): number {
     return Math.max(1, state.publicView.ante ?? 1);
@@ -431,7 +436,6 @@ export function createIndianPokerGame(container: HTMLElement, client: IndianPoke
     renderSizer();
     renderActionRow();
     renderRevealPanel(opponent);
-    renderResultModal();
     renderToast();
   }
 
@@ -619,32 +623,6 @@ export function createIndianPokerGame(container: HTMLElement, client: IndianPoke
     dom.reveal.classList.remove("is-hidden");
   }
 
-  function renderResultModal(): void {
-    const view = state.publicView;
-    if (!view.winnerPlayerId || view.roomPhase !== "finished") {
-      dom.result.classList.add("is-hidden");
-      dom.playAgain.disabled = false;
-      dom.playAgain.textContent = "Play Again";
-      return;
-    }
-
-    const iWon = view.winnerPlayerId === state.playerId;
-    dom.resultTitle.textContent = iWon ? "You Win!" : "You Lose";
-    dom.resultTitle.className = `ip-result-title ${iWon ? "is-win" : "is-loss"}`;
-
-    const requested = view.rematchRequests ?? [];
-    const iRequested = requested.includes(state.playerId);
-    const opponentRequested = requested.some((playerId) => playerId !== state.playerId);
-    dom.resultMessage.textContent = iRequested
-      ? "Waiting for your opponent…"
-      : opponentRequested
-        ? `Your opponent wants a rematch. Chips reset to ${view.startingChips}.`
-        : `${view.round} rounds played. A rematch resets both stacks to ${view.startingChips}.`;
-    dom.playAgain.disabled = iRequested;
-    dom.playAgain.textContent = iRequested ? "Waiting…" : "Play Again";
-    dom.result.classList.remove("is-hidden");
-  }
-
   function formatDelta(delta: number): string {
     if (delta === 0) return "±0";
     return delta > 0 ? `+${delta}` : String(delta);
@@ -715,8 +693,7 @@ export function createIndianPokerGame(container: HTMLElement, client: IndianPoke
     },
     destroy() {
       if (toastTimer) window.clearTimeout(toastTimer);
-      container.classList.remove("indian-poker-game");
-      container.innerHTML = "";
+      surface.remove();
     }
   };
 }

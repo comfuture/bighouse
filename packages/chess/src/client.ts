@@ -1,6 +1,7 @@
 import "./style.css";
-import type { GameClientContext, MountedGameClient } from "@bighouse/game-sdk/client";
+import type { GameClientContext, GameClientSnapshot, MountedGameClient } from "@bighouse/game-sdk/client";
 import { triggerPlacementFeedback, triggerSelectionFeedback } from "@bighouse/game-sdk/feedback";
+import { createGameUi, type GameResultDialogState } from "@bighouse/ui";
 import { moveDestinationHints, type ChessSquare } from "./move-hints";
 import bB from "./assets/pieces/bB.svg?url";
 import bK from "./assets/pieces/bK.svg?url";
@@ -75,11 +76,16 @@ const pieceUrls: Record<string, string> = {
 
 export function mountGame(container: HTMLElement, context: GameClientContext): MountedGameClient {
   const instance = createChessGame(container, toChessClient(context));
+  const gameUi = createGameUi(container, context, context);
+  gameUi.setResult(chessResultDialogState(context));
   return {
     update(nextContext) {
       instance.update(toChessClient({ ...context, ...nextContext }));
+      gameUi.update(nextContext);
+      gameUi.setResult(chessResultDialogState(nextContext));
     },
     destroy() {
+      gameUi.destroy();
       instance.destroy();
     }
   };
@@ -93,8 +99,10 @@ export function createChessGame(container: HTMLElement, client: ChessClient) {
   let pendingMoveAnimationKey: string | undefined;
   let checkWasActive = false;
   let checkOverlayTimer: ReturnType<typeof setTimeout> | undefined;
-  container.classList.add("chess-game");
-  container.innerHTML = `
+  const surface = document.createElement("div");
+  surface.className = "game-contained-surface chess-game";
+  container.replaceChildren(surface);
+  surface.innerHTML = `
     <div class="chess-header">
       <div class="chess-status" data-role="status"></div>
       <div class="chess-turn-notice is-hidden" data-role="turn-notice" aria-live="polite">
@@ -123,52 +131,30 @@ export function createChessGame(container: HTMLElement, client: ChessClient) {
         <div class="chess-side-title">Moves</div>
         <ol class="chess-history" data-role="history"></ol>
       </aside>
-      <div class="chess-result-modal is-hidden" data-role="result-modal" role="dialog" aria-modal="true">
-        <div class="chess-result-panel">
-          <div class="chess-result-title" data-role="result-title"></div>
-          <div class="chess-result-message" data-role="result-message"></div>
-          <div class="chess-result-actions">
-            <button type="button" class="chess-result-button is-primary" data-role="play-again">Play Again</button>
-            <button type="button" class="chess-result-button" data-role="leave-game">Leave</button>
-          </div>
-        </div>
-      </div>
       <div class="chess-promotion-modal is-hidden" data-role="promotion-modal" role="dialog" aria-modal="true">
         <div class="chess-promotion-panel" data-role="promotion-panel"></div>
       </div>
     </div>
   `;
 
-  const status = requireElement<HTMLElement>(container, "[data-role='status']");
-  const turnNotice = requireElement<HTMLElement>(container, "[data-role='turn-notice']");
-  const turnColor = requireElement<HTMLElement>(container, "[data-role='turn-color']");
-  const boardFrame = requireElement<HTMLElement>(container, "[data-role='board-frame']");
-  const checkOverlay = requireElement<HTMLElement>(container, "[data-role='check-overlay']");
-  const board = requireElement<HTMLElement>(container, "[data-role='board']");
-  const moveGhostLayer = requireElement<HTMLElement>(container, "[data-role='move-ghost-layer']");
-  const history = requireElement<HTMLOListElement>(container, "[data-role='history']");
-  const whiteClock = requireElement<HTMLElement>(container, "[data-role='clock-white']");
-  const blackClock = requireElement<HTMLElement>(container, "[data-role='clock-black']");
-  const whiteClockTime = requireElement<HTMLElement>(container, "[data-role='clock-white-time']");
-  const blackClockTime = requireElement<HTMLElement>(container, "[data-role='clock-black-time']");
-  const modal = requireElement<HTMLElement>(container, "[data-role='result-modal']");
-  const resultTitle = requireElement<HTMLElement>(container, "[data-role='result-title']");
-  const resultMessage = requireElement<HTMLElement>(container, "[data-role='result-message']");
-  const playAgainButton = requireElement<HTMLButtonElement>(container, "[data-role='play-again']");
-  const leaveButton = requireElement<HTMLButtonElement>(container, "[data-role='leave-game']");
-  const promotionModal = requireElement<HTMLElement>(container, "[data-role='promotion-modal']");
-  const promotionPanel = requireElement<HTMLElement>(container, "[data-role='promotion-panel']");
+  const status = requireElement<HTMLElement>(surface, "[data-role='status']");
+  const turnNotice = requireElement<HTMLElement>(surface, "[data-role='turn-notice']");
+  const turnColor = requireElement<HTMLElement>(surface, "[data-role='turn-color']");
+  const boardFrame = requireElement<HTMLElement>(surface, "[data-role='board-frame']");
+  const checkOverlay = requireElement<HTMLElement>(surface, "[data-role='check-overlay']");
+  const board = requireElement<HTMLElement>(surface, "[data-role='board']");
+  const moveGhostLayer = requireElement<HTMLElement>(surface, "[data-role='move-ghost-layer']");
+  const history = requireElement<HTMLOListElement>(surface, "[data-role='history']");
+  const whiteClock = requireElement<HTMLElement>(surface, "[data-role='clock-white']");
+  const blackClock = requireElement<HTMLElement>(surface, "[data-role='clock-black']");
+  const whiteClockTime = requireElement<HTMLElement>(surface, "[data-role='clock-white-time']");
+  const blackClockTime = requireElement<HTMLElement>(surface, "[data-role='clock-black-time']");
+  const promotionModal = requireElement<HTMLElement>(surface, "[data-role='promotion-modal']");
+  const promotionPanel = requireElement<HTMLElement>(surface, "[data-role='promotion-panel']");
   let moveGhostCleanupTimer: ReturnType<typeof setTimeout> | undefined;
   const clockTimer = setInterval(() => {
     renderClocks();
   }, 1_000);
-
-  playAgainButton.addEventListener("click", () => {
-    client.requestPlayAgain();
-  });
-  leaveButton.addEventListener("click", () => {
-    client.leaveFinishedGame();
-  });
 
   function render(): void {
     const { publicView, privateView, playerId } = state;
@@ -208,11 +194,12 @@ export function createChessGame(container: HTMLElement, client: ChessClient) {
       cell.dataset.gameElastic = "off";
       cell.disabled = !active || Boolean(publicView.result);
       cell.ariaLabel = `${piece ? `${pieceName(piece)} on ${square}` : `empty ${square}`}${legalDestination ? ", legal move" : ""}${unsafeDestination ? ", unsafe move would leave king in check" : ""}`;
-      cell.addEventListener("mousedown", preventButtonFocus);
+      cell.addEventListener("mousedown", (event) => event.preventDefault());
       cell.addEventListener("click", (event) => {
         event.preventDefault();
-        cell.blur();
+        const keyboardActivated = event.detail === 0;
         handleSquareClick(square, piece);
+        if (keyboardActivated) board.querySelector<HTMLButtonElement>(`[data-square="${square}"]`)?.focus();
       });
       if (piece) {
         const img = document.createElement("img");
@@ -234,7 +221,6 @@ export function createChessGame(container: HTMLElement, client: ChessClient) {
       history.append(item);
     }
     renderMoveGhost(publicView);
-    renderResult();
     renderPromotion();
     restoreScrollSnapshot(history, scrollSnapshot);
   }
@@ -307,32 +293,6 @@ export function createChessGame(container: HTMLElement, client: ChessClient) {
       promotionPanel.append(button);
     }
     promotionModal.classList.remove("is-hidden");
-  }
-
-  function renderResult(): void {
-    const { publicView, privateView, playerId } = state;
-    if (!publicView.result || publicView.roomPhase !== "finished") {
-      modal.classList.add("is-hidden");
-      playAgainButton.style.display = "";
-      return;
-    }
-    const isSpectator = !privateView.color;
-    if (publicView.winnerPlayerId) {
-      if (isSpectator) {
-        resultTitle.textContent = "Game Over";
-        resultMessage.textContent = resultMessageFor(publicView.result);
-      } else {
-        resultTitle.textContent = publicView.winnerPlayerId === playerId ? resultTitleFor(publicView.result) : "Game Over";
-        resultMessage.textContent = publicView.winnerPlayerId === playerId
-          ? winningMessageFor(publicView.result)
-          : losingMessageFor(publicView.result);
-      }
-    } else {
-      resultTitle.textContent = "Draw";
-      resultMessage.textContent = publicView.drawReason ? `Draw by ${publicView.drawReason.replaceAll("_", " ")}.` : "The game ended in a draw.";
-    }
-    playAgainButton.style.display = isSpectator ? "none" : "";
-    modal.classList.remove("is-hidden");
   }
 
   function updateCheckOverlay(check: boolean): void {
@@ -452,8 +412,7 @@ export function createChessGame(container: HTMLElement, client: ChessClient) {
         clearTimeout(checkOverlayTimer);
       }
       clearMoveGhost();
-      container.classList.remove("chess-game");
-      container.innerHTML = "";
+      surface.remove();
     }
   };
 }
@@ -471,6 +430,44 @@ function toChessClient(context: GameClientContext): ChessClient {
     sendAction: context.sendAction,
     requestPlayAgain: context.requestPlayAgain,
     leaveFinishedGame: context.leaveFinishedGame
+  };
+}
+
+function chessResultDialogState(context: GameClientSnapshot): GameResultDialogState {
+  const publicView = context.publicView as ChessPublicView;
+  if (context.phase !== "finished" || !publicView.result) {
+    return { open: false, title: "", message: "" };
+  }
+  const privateView = context.privateView as ChessPrivateView;
+  const isSpectator = !privateView.color;
+  const iRequested = context.rematchRequests.includes(context.playerId);
+  let title: string;
+  let message: string;
+  if (publicView.winnerPlayerId) {
+    title = isSpectator
+      ? "Game Over"
+      : publicView.winnerPlayerId === context.playerId
+        ? resultTitleFor(publicView.result)
+        : "Game Over";
+    message = isSpectator
+      ? resultMessageFor(publicView.result)
+      : publicView.winnerPlayerId === context.playerId
+        ? winningMessageFor(publicView.result)
+        : losingMessageFor(publicView.result);
+  } else {
+    title = "Draw";
+    message = publicView.drawReason
+      ? `Draw by ${publicView.drawReason.replaceAll("_", " ")}.`
+      : "The game ended in a draw.";
+  }
+  return {
+    open: true,
+    kicker: "Match complete",
+    title,
+    message: iRequested ? `${message} Waiting for your opponent to accept the rematch.` : message,
+    primaryLabel: isSpectator ? "Spectating" : iRequested ? "Waiting..." : "Play again",
+    secondaryLabel: "Leave",
+    primaryDisabled: isSpectator || iRequested
   };
 }
 
@@ -501,10 +498,6 @@ function restoreScrollSnapshot(history: HTMLElement, snapshot: ScrollSnapshot): 
     history.scrollTop = snapshot.historyTop;
     window.scrollTo(snapshot.windowX, snapshot.windowY);
   });
-}
-
-function preventButtonFocus(event: MouseEvent): void {
-  event.preventDefault();
 }
 
 function orderedSquares(blackPerspective: boolean): ChessSquare[] {

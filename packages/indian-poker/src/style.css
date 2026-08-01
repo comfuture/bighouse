@@ -6,22 +6,40 @@
   --ip-muted: #9fb8ac;
   --ip-danger: #ef4444;
   --ip-accent: #22c55e;
-  display: block;
+  /* Room chrome floats a control rail on the trailing edge, so keep the table
+     clear of it. */
+  --ip-rail: calc(
+    var(--bh-game-ui-inline-end, max(10px, env(safe-area-inset-right))) + var(--bh-game-ui-control-size, 48px) +
+      var(--bh-game-ui-gap, 8px)
+  );
+  position: relative;
+  box-sizing: border-box;
+  inline-size: min(100%, 34rem);
   min-inline-size: 0;
+  block-size: 100svh;
+  max-block-size: 100svh;
+  overflow: hidden;
+  overflow-anchor: none;
+  border-radius: 20px;
+  background:
+    radial-gradient(120% 70% at 50% 0%, #1d4a3a 0%, var(--ip-felt) 45%, var(--ip-felt-edge) 100%);
+  color: var(--ip-ink);
+  font-variant-numeric: tabular-nums;
+  user-select: none;
   container-type: inline-size;
 }
 
 .ip-table {
   position: relative;
+  box-sizing: border-box;
   display: grid;
-  grid-template-rows: auto auto auto;
+  grid-template-rows: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-content: center;
   gap: 0.5rem;
-  min-block-size: 26rem;
+  block-size: 100%;
   padding: 0.875rem;
-  background:
-    radial-gradient(120% 80% at 50% 0%, #1d4a3a 0%, var(--ip-felt) 45%, var(--ip-felt-edge) 100%);
-  color: var(--ip-ink);
-  font-variant-numeric: tabular-nums;
+  padding-block-start: calc(0.875rem + var(--bh-game-ui-block-start, 10px));
+  padding-inline-end: max(0.875rem, var(--ip-rail));
 }
 
 /* ─── Seats ──────────────────────────────────────────────────────────────── */
@@ -369,18 +387,7 @@
   background: linear-gradient(to top, rgb(3 10 8 / 0.92) 0%, rgb(3 10 8 / 0.72) 70%, transparent 100%);
 }
 
-.ip-result {
-  position: absolute;
-  inset: 0;
-  z-index: 6;
-  display: grid;
-  place-items: center;
-  padding: 1rem;
-  background: rgb(3 10 8 / 0.78);
-}
-
-.ip-reveal-panel,
-.ip-result-panel {
+.ip-reveal-panel {
   display: grid;
   justify-items: center;
   gap: 0.5rem;
@@ -393,20 +400,17 @@
   text-align: center;
 }
 
-.ip-reveal-title,
-.ip-result-title {
+.ip-reveal-title {
   margin: 0;
   font-size: 1.25rem;
   font-weight: 800;
 }
 
-.ip-reveal-title.is-win,
-.ip-result-title.is-win {
+.ip-reveal-title.is-win {
   color: var(--ip-gold);
 }
 
-.ip-reveal-title.is-loss,
-.ip-result-title.is-loss {
+.ip-reveal-title.is-loss {
   color: #fca5a5;
 }
 
@@ -450,8 +454,7 @@
   font-weight: 700;
 }
 
-.ip-reveal-message,
-.ip-result-message {
+.ip-reveal-message {
   margin: 0;
   min-block-size: 1.125rem;
   color: var(--ip-muted);
@@ -463,21 +466,17 @@
   inline-size: 100%;
 }
 
-.ip-result-actions {
-  display: flex;
-  gap: 0.5rem;
-  inline-size: 100%;
-}
-
 .is-hidden {
   display: none;
 }
 
 /* ─── Wide Layout ────────────────────────────────────────────────────────── */
 
-@container (min-inline-size: 34rem) {
+@container (min-inline-size: 30rem) {
   .ip-table {
     padding: 1.25rem;
+    padding-block-start: calc(1.25rem + var(--bh-game-ui-block-start, 10px));
+    padding-inline-end: max(1.25rem, var(--ip-rail));
   }
 
   .ip-controls {
@@ -505,6 +504,72 @@
     grid-area: actions;
     flex-wrap: wrap;
     max-inline-size: 15rem;
+  }
+}
+
+/* ─── Short And Landscape Viewports ──────────────────────────────────────── */
+
+/*
+ * The surface is clipped to 100svh, so a short viewport has to shrink the
+ * figures and cards instead of letting the bottom controls scroll away.
+ */
+@media (max-height: 620px) {
+  .ip-seat-figure {
+    inline-size: clamp(5rem, 22cqw, 7rem);
+  }
+
+  .ip-self-row .ip-seat-figure {
+    inline-size: clamp(3.75rem, 16cqw, 5.25rem);
+  }
+
+  .ip-card {
+    inline-size: clamp(2rem, 8cqw, 2.75rem);
+  }
+
+  .ip-pot-amount {
+    font-size: 1.125rem;
+  }
+}
+
+@media (orientation: landscape) and (max-height: 520px) {
+  .indian-poker-game {
+    inline-size: min(100%, 46rem);
+  }
+
+  .ip-table {
+    grid-template-rows: minmax(0, 1fr) auto;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr);
+    grid-template-areas:
+      "opponent controls"
+      "pot controls";
+    align-content: stretch;
+    gap: 0.375rem 0.75rem;
+  }
+
+  .ip-seat.is-opponent {
+    grid-area: opponent;
+    align-content: center;
+    border-block-end: 0;
+    padding-block-end: 0;
+  }
+
+  .ip-pot-zone {
+    grid-area: pot;
+  }
+
+  .ip-seat.is-self {
+    grid-area: controls;
+    align-content: center;
+    gap: 0.375rem;
+  }
+
+  .ip-reveal {
+    padding: 0.5rem;
+  }
+
+  .ip-reveal-panel {
+    gap: 0.375rem;
+    padding: 0.625rem;
   }
 }
 

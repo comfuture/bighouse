@@ -1,49 +1,106 @@
 <template>
-  <div class="space-y-6">
+  <div class="portal-page">
+    <nav class="portal-topbar" aria-label="Bighouse navigation">
+      <RouterLink class="portal-brand" to="/" aria-label="Bighouse home">
+        <span class="portal-brand-mark" aria-hidden="true">BH</span>
+        <span>Bighouse</span>
+      </RouterLink>
+      <button class="portal-player-chip" type="button" aria-label="Change nickname" title="Change nickname" @click="openNicknameEditor">
+        <UIcon name="i-lucide-user-round" aria-hidden="true" />
+        <span>{{ identity.displayName || identity.playerId || "New player" }}</span>
+        <UIcon class="portal-player-edit-icon" name="i-lucide-pencil" aria-hidden="true" />
+      </button>
+    </nav>
+
     <section class="game-home-hero" aria-labelledby="game-home-title">
       <img class="game-home-hero-image" :src="heroImageUrl" alt="" aria-hidden="true" />
       <div class="game-home-hero-overlay" />
       <div class="game-home-hero-content">
-        <h1 id="game-home-title" class="game-home-hero-title">Bighouse</h1>
-        <p class="game-home-hero-copy">Pick a table, jump into a lobby, and keep the room moving.</p>
+        <div class="portal-eyebrow">
+          <span class="portal-live-dot" aria-hidden="true" />
+          Multiplayer tables are open
+        </div>
+        <h1 id="game-home-title" class="game-home-hero-title">Your next table is waiting.</h1>
+        <p class="game-home-hero-copy">
+          Pick a game, meet at the table, and start playing in seconds.
+        </p>
+        <a class="portal-primary-action" href="#game-select">
+          Choose a game
+          <UIcon name="i-lucide-arrow-down" aria-hidden="true" />
+        </a>
+      </div>
+      <div class="game-home-hero-status" aria-hidden="true">
+        <strong>{{ displayGames.length }}</strong>
+        <span>games ready</span>
       </div>
     </section>
 
-    <UPageGrid>
-      <RouterLink
-        v-for="game in displayGames"
-        :key="game.gameId"
-        class="group block h-full rounded-3xl focus:outline-none focus-visible:ring-4 focus-visible:ring-primary/40"
-        :aria-label="`Enter ${game.displayName} lobby`"
-        :to="lobbyPath(game.gameId)"
-      >
-        <UCard class="game-plastic-card h-full" :ui="{ body: '!p-0 sm:!p-0' }">
-          <img
-            v-if="game.thumbnail"
-            class="aspect-[16/10] w-full rounded-t-3xl object-cover"
-            :src="game.thumbnail.src"
-            :alt="game.thumbnail.alt"
-          />
-          <div class="space-y-4 p-4 sm:p-5">
-            <div class="space-y-2">
-              <div class="flex items-start justify-between gap-3">
-                <h2 class="text-lg font-black text-highlighted">{{ game.displayName }}</h2>
-                <UBadge
-                  color="secondary"
-                  variant="subtle"
-                  icon="i-lucide-users"
-                  :label="playerRangeLabel(game)"
-                  class="shrink-0"
-                />
-              </div>
-              <p class="text-sm font-medium text-toned">{{ game.description }}</p>
+    <section id="game-select" class="portal-game-section" aria-labelledby="game-select-title">
+      <header class="portal-section-heading">
+        <div>
+          <div class="portal-kicker">Game room directory</div>
+          <h2 id="game-select-title">Choose your table</h2>
+        </div>
+        <div class="portal-section-count">{{ displayGames.length }} available</div>
+      </header>
+
+      <div v-if="loading" class="portal-game-grid" aria-label="Loading games" aria-busy="true">
+        <div v-for="index in 4" :key="index" class="portal-game-card portal-game-card-skeleton">
+          <div class="portal-skeleton-image" />
+          <div class="portal-skeleton-line" />
+          <div class="portal-skeleton-line is-short" />
+        </div>
+      </div>
+
+      <div v-else-if="displayGames.length > 0" class="portal-game-grid">
+        <RouterLink
+          v-for="game in displayGames"
+          :key="game.gameId"
+          class="portal-game-card"
+          data-game-elastic="off"
+          :aria-label="`Enter ${game.displayName} lobby`"
+          :to="lobbyPath(game.gameId)"
+        >
+          <div class="portal-game-art">
+            <img
+              v-if="game.thumbnail"
+              class="portal-game-thumbnail"
+              :src="game.thumbnail.src"
+              :alt="game.thumbnail.alt"
+            />
+            <div class="portal-game-player-count">
+              <UIcon name="i-lucide-users" aria-hidden="true" />
+              {{ playerRangeLabel(game) }}
             </div>
           </div>
-        </UCard>
-      </RouterLink>
-    </UPageGrid>
+          <div class="portal-game-card-body">
+            <div>
+              <h3>{{ game.displayName }}</h3>
+              <p>{{ game.description }}</p>
+            </div>
+            <span class="portal-game-enter" aria-hidden="true">
+              <UIcon name="i-lucide-arrow-up-right" />
+            </span>
+          </div>
+        </RouterLink>
+      </div>
 
-    <UAlert v-if="error" color="error" icon="i-lucide-circle-alert" :title="error" />
+      <div v-else class="portal-directory-empty">
+        <UIcon name="i-lucide-gamepad-2" aria-hidden="true" />
+        <div>
+          <h3>No games are available yet</h3>
+          <p>New tables will appear here as soon as they are registered.</p>
+        </div>
+      </div>
+    </section>
+
+    <div v-if="error" class="portal-alert is-error" role="alert">
+      <UIcon name="i-lucide-circle-alert" aria-hidden="true" />
+      <div>
+        <strong>Games could not be loaded</strong>
+        <span>{{ error }}</span>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -51,12 +108,13 @@
 import { computed, onMounted, ref } from "vue";
 import { listGames } from "../api";
 import { getClientGameMetadata } from "../game-plugins";
-import { identity } from "../identity";
+import { identity, openNicknameEditor } from "../identity";
 import type { Game } from "../types";
 import heroImageUrl from "../assets/generated/game-portal-hero.png";
 
 const games = ref<Game[]>([]);
 const error = ref("");
+const loading = ref(true);
 const displayGames = computed<Game[]>(() =>
   games.value.map((game) => {
     const clientMetadata = getClientGameMetadata(game.gameId);
@@ -74,6 +132,8 @@ onMounted(async () => {
     games.value = await listGames();
   } catch (cause) {
     error.value = cause instanceof Error ? cause.message : "Failed to load games";
+  } finally {
+    loading.value = false;
   }
 });
 

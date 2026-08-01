@@ -37,15 +37,15 @@ For frontend-only iteration, run the Vite dev server:
 pnpm dev:frontend
 ```
 
-The frontend package lives in `packages/frontend`. It is a Vue SPA built with Nuxt UI and uses separate routes for game listing, lobby, and room play:
+The frontend package lives in `packages/frontend`. It is a Vue SPA built with Nuxt UI and uses separate routes for the portal, game lobbies, and immersive room play:
 
 - `/`: game list
 - `/game/:gameId/:mode`: game lobby with waiting room cards and lobby chat
-- `/game/:gameId/:roomId`: room waiting/play screen with non-host ready controls, host start/delegation controls, chat, and the lazy-loaded game module. Room ids currently use the `room_` prefix, which keeps the room route distinct from lobby modes such as `default`.
+- `/game/:gameId/:roomId`: immersive room host that owns networking, identity, QR sharing, reconnect, and guarded navigation while a lazy-loaded game package renders its own waiting and play experience. Room ids currently use the `room_` prefix, which keeps the room route distinct from lobby modes such as `default`.
 
 The frontend opens a player information modal when no saved `playerId` exists. Direct room URLs do not open the room WebSocket or send `joinRoom` until the player submits that modal, which keeps shared room links from joining anonymous empty identities.
 
-Per-game browser code lives in packages such as `packages/gomoku` and is loaded dynamically after entering a room, so the lobby does not download every game's bundle up front.
+Per-game browser code lives in packages such as `packages/gomoku` and is loaded dynamically after entering a room, so the lobby does not download every game's bundle up front. Game packages consume the framework-free `@bighouse/ui` Web Components for player readiness, bot controls, chat, and lifecycle dialogs while keeping their board, table, or canvas layout independent.
 
 The Worker has a cron trigger that runs every five minutes. It scans D1 room index rows for stale non-closed rooms, asks the authoritative `RoomDO` to verify that no live WebSocket clients remain, and closes abandoned rooms so they disappear from lobby lists and reject direct joins.
 

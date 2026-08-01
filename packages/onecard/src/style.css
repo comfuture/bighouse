@@ -5,6 +5,7 @@
   max-width: 100%;
   min-width: 0;
   min-height: 680px;
+  max-block-size: 100svh;
   position: relative;
   box-sizing: border-box;
   background: radial-gradient(circle, #144f28 0%, #082613 100%);
@@ -927,9 +928,10 @@
   to { transform: translate(-50%, -50%) rotate(0deg); }
 }
 
-@media (max-width: 700px) {
+@media (max-width: 700px), (max-height: 680px) {
   .onecard-game {
-    min-height: 560px;
+    height: 100svh;
+    min-height: 0;
     border-radius: 0;
   }
 
@@ -1077,7 +1079,7 @@
 
 @media (max-width: 380px) {
   .onecard-game {
-    min-height: 540px;
+    min-height: 0;
   }
 
   .onecard-table {
@@ -1098,4 +1100,189 @@
   .player-hand .onecard-card + .onecard-card {
     margin-left: calc(var(--hand-card-overlap, -24px) - 1px);
   }
+}
+
+@media (orientation: portrait) and (max-width: 480px) {
+  .onecard-center-stage { gap: 8px; }
+  .onecard-deck,
+  .onecard-discard { width: 56px; height: 78px; }
+  .direction-indicator { width: min(28vw, 100px); height: min(28vw, 100px); }
+}
+
+@media (max-height: 460px) {
+  .onecard-table { grid-template-rows:auto auto minmax(92px,1fr) auto; gap:4px; padding:4px 6px; }
+  .opponent-profile { padding:4px 6px; }
+  .opponent-avatar, .opponent-hand-preview { display:none; }
+  .onecard-center-stage { gap:12px; }
+  .onecard-deck, .onecard-discard { width:52px; height:74px; }
+  .direction-indicator { width:110px; height:110px; }
+  .onecard-status-bar { min-height:24px; padding:3px 8px; font-size:11px; }
+  .turn-pill { min-height:18px; font-size:9px; }
+  .player-hand-container { gap:2px; padding:2px; }
+  .hand-header { min-height:26px; }
+  .player-hand { min-height:92px; padding:22px 14px 8px; }
+  .onecard-card { width:52px; height:74px; }
+}
+
+@media (orientation: landscape) and (max-height: 520px) {
+  .onecard-game {
+    height: 100svh;
+    min-height: 0;
+    border-radius: 0;
+  }
+
+  .onecard-table {
+    height: 100%;
+    min-height: 0;
+    grid-template-areas:
+      "seats center"
+      "status center"
+      "tracker center"
+      "hand hand";
+    grid-template-columns: clamp(144px, 26vw, 190px) minmax(0, 1fr);
+    grid-template-rows: auto auto auto minmax(106px, 1fr);
+    gap: 4px 8px;
+    padding: 4px 8px;
+  }
+
+  .opponent-seats {
+    grid-area: seats;
+    display: grid;
+    grid-template-columns: 1fr;
+    justify-content: stretch;
+    align-items: start;
+    gap: 3px;
+    width: 100%;
+    overflow: hidden;
+    padding: 0;
+  }
+
+  .seat-top,
+  .seat-left,
+  .seat-right {
+    position: static;
+    transform: none;
+    width: 100%;
+    min-width: 0;
+  }
+
+  .opponent-profile {
+    box-sizing: border-box;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    width: 100%;
+    min-width: 0;
+    gap: 2px 5px;
+    border-radius: 7px;
+    padding: 3px 6px;
+    transform: none;
+  }
+
+  .opponent-profile.is-active-turn {
+    transform: none;
+  }
+
+  .opponent-avatar,
+  .card-back-icon {
+    display: none;
+  }
+
+  .opponent-name {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 10px;
+  }
+
+  .opponent-hand-preview {
+    display: flex;
+    padding: 1px 4px;
+  }
+
+  .bankrupt-badge,
+  .onecard-badge {
+    grid-column: 1 / -1;
+    justify-self: start;
+    padding: 1px 4px;
+    font-size: 7px;
+  }
+
+  .onecard-status-bar {
+    grid-area: status;
+    justify-self: stretch;
+    width: 100%;
+    min-height: 0;
+    margin: 0;
+    padding: 4px 6px;
+    font-size: 10px;
+    line-height: 1.25;
+  }
+
+  .turn-tracker {
+    grid-area: tracker;
+    justify-content: flex-start;
+    align-content: start;
+    min-width: 0;
+    min-height: 0;
+    gap: 3px;
+    overflow: hidden;
+  }
+
+  .turn-pill {
+    min-height: 18px;
+    padding: 0 5px;
+    font-size: 8px;
+  }
+
+  .onecard-center-stage {
+    grid-area: center;
+    align-self: center;
+    justify-self: center;
+    min-width: 0;
+    gap: clamp(8px, 2.5vw, 18px);
+  }
+
+  .onecard-deck,
+  .onecard-discard {
+    width: clamp(52px, 15svh, 70px);
+    height: clamp(74px, 22svh, 98px);
+  }
+
+  .direction-indicator {
+    width: clamp(96px, 30svh, 124px);
+    height: clamp(96px, 30svh, 124px);
+  }
+
+  .table-action-toast {
+    top: -22px;
+    max-width: min(220px, 52vw);
+  }
+
+  .player-hand-container {
+    grid-area: hand;
+    min-height: 0;
+    gap: 2px;
+    padding: 2px;
+  }
+
+  .hand-header {
+    min-height: 24px;
+    padding: 0 4px;
+  }
+
+  .player-hand {
+    min-height: 86px;
+    padding: 20px 14px 6px;
+  }
+
+  .onecard-card {
+    width: 54px;
+    height: 78px;
+  }
+}
+
+.player-hand {
+  padding-inline-end: calc(var(--bh-game-ui-inline-end, max(10px, env(safe-area-inset-right))) + var(--bh-game-ui-control-size, 48px) + 10px);
+  scroll-padding-inline-end: calc(var(--bh-game-ui-inline-end, max(10px, env(safe-area-inset-right))) + var(--bh-game-ui-control-size, 48px) + 10px);
 }

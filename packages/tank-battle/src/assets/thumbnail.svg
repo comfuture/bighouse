@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 360" role="img" aria-labelledby="title desc">
+  <title id="title">Tank Battle</title>
+  <desc id="desc">Blue and coral tanks exchange a glowing shell over destructible terrain.</desc>
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#101c3f"/>
+      <stop offset="1" stop-color="#315181"/>
+    </linearGradient>
+    <linearGradient id="ground" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#8ea85b"/>
+      <stop offset="1" stop-color="#334d35"/>
+    </linearGradient>
+    <filter id="glow"><feGaussianBlur stdDeviation="7" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+  </defs>
+  <rect width="640" height="360" rx="26" fill="url(#sky)"/>
+  <circle cx="514" cy="74" r="36" fill="#f7e8b1" opacity=".92"/>
+  <g fill="#cce6ff" opacity=".78"><circle cx="72" cy="54" r="2"/><circle cx="145" cy="88" r="3"/><circle cx="303" cy="47" r="2"/><circle cx="416" cy="96" r="2"/></g>
+  <path d="M0 238C74 197 118 221 176 241c48 17 93 16 139-12 55-34 101-22 148 2 62 32 112 15 177-18v147H0z" fill="url(#ground)"/>
+  <path d="M0 278c86-30 153-8 222 8 67 16 121-7 178-24 82-25 148 7 240 28v70H0z" fill="#253a2c" opacity=".8"/>
+  <path d="M190 234c18 28 37 43 63 50 26-3 47-17 68-46-16 11-35 16-60 17-27-1-49-8-71-21z" fill="#1c2b28" opacity=".8"/>
+  <path d="M166 202q84-112 197-12" fill="none" stroke="#ffe66d" stroke-width="4" stroke-dasharray="10 10" opacity=".88"/>
+  <circle cx="318" cy="153" r="9" fill="#fff3a6" filter="url(#glow)"/>
+  <g transform="translate(92 194)">
+    <rect x="0" y="24" width="96" height="34" rx="12" fill="#2998dc"/>
+    <rect x="22" y="5" width="54" height="34" rx="14" fill="#49b6ff"/>
+    <rect x="60" y="12" width="70" height="9" rx="5" fill="#bcecff" transform="rotate(-20 60 12)"/>
+    <g fill="#13253a"><circle cx="18" cy="57" r="13"/><circle cx="48" cy="57" r="13"/><circle cx="78" cy="57" r="13"/></g>
+  </g>
+  <g transform="translate(460 210)">
+    <rect x="0" y="24" width="96" height="34" rx="12" fill="#db514a"/>
+    <rect x="22" y="5" width="54" height="34" rx="14" fill="#ff6b5f"/>
+    <rect x="-34" y="12" width="70" height="9" rx="5" fill="#ffd0ca" transform="rotate(19 36 12)"/>
+    <g fill="#321d26"><circle cx="18" cy="57" r="13"/><circle cx="48" cy="57" r="13"/><circle cx="78" cy="57" r="13"/></g>
+  </g>
+  <text x="320" y="328" text-anchor="middle" fill="#f8fbff" font-family="system-ui,sans-serif" font-size="38" font-weight="900" letter-spacing="4">TANK BATTLE</text>
+</svg>

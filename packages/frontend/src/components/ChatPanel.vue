@@ -1,51 +1,54 @@
 <template>
-  <UCard>
-    <template #header>
-      <div class="flex items-center justify-between">
-        <h2 class="font-semibold">{{ title }}</h2>
-        <UBadge color="neutral" variant="subtle">{{ messages.length }}</UBadge>
+  <section class="portal-chat" :aria-label="title">
+    <header class="portal-chat-header">
+      <div>
+        <span class="portal-kicker">Live channel</span>
+        <h2>{{ title }}</h2>
       </div>
-    </template>
+      <span class="portal-chat-count">{{ messages.length }}</span>
+    </header>
 
-    <div class="space-y-3">
-      <div class="game-stage h-56 overflow-auto rounded-3xl p-3">
-        <div v-if="messages.length === 0" class="text-sm text-muted">No messages.</div>
-        <div v-for="message in messages.slice(-80)" :key="`${message.createdAt}-${message.playerId}-${message.body}`" class="mb-3">
-          <div class="flex items-center gap-2 text-xs text-muted">
-            <span>{{ message.displayName || message.playerId }}</span>
-            <UBadge v-if="message.visibility === 'private'" size="xs" color="warning" variant="subtle">private</UBadge>
-            <span v-if="message.targetPlayerId">to {{ message.targetPlayerId }}</span>
-          </div>
-          <p class="text-sm text-highlighted">{{ message.body }}</p>
+    <div ref="logElement" class="portal-chat-log" role="log" aria-live="polite" aria-relevant="additions">
+      <div v-if="messages.length === 0" class="portal-chat-empty">
+        <UIcon name="i-lucide-message-circle-more" aria-hidden="true" />
+        <span>No messages yet. Say hello.</span>
+      </div>
+      <div v-for="message in messages.slice(-80)" :key="`${message.createdAt}-${message.playerId}-${message.body}`" class="portal-chat-message">
+        <div class="portal-chat-message-meta">
+          <strong>{{ message.displayName || message.playerId }}</strong>
+          <span v-if="message.visibility === 'private'" class="portal-chat-private">private</span>
+          <span v-if="message.targetPlayerId">to {{ message.targetPlayerId }}</span>
         </div>
-      </div>
-
-      <div class="flex items-center gap-2">
-        <UInput
-          v-model="body"
-          class="min-w-0 flex-1"
-          :placeholder="`${title} message`"
-          @compositionstart="handleCompositionStart"
-          @compositionend="handleCompositionEnd"
-          @keydown.enter="handleEnter"
-        />
-        <UButton
-          type="button"
-          icon="i-lucide-send"
-          color="primary"
-          variant="solid"
-          class="shrink-0"
-          aria-label="Send message"
-          :disabled="body.trim().length === 0"
-          @click="submit"
-        />
+        <p>{{ message.body }}</p>
       </div>
     </div>
-  </UCard>
+
+    <div class="portal-chat-composer">
+      <UInput
+        v-model="body"
+        class="min-w-0 flex-1"
+        :placeholder="`Message ${title.toLowerCase()}`"
+        aria-label="Chat message"
+        @compositionstart="handleCompositionStart"
+        @compositionend="handleCompositionEnd"
+        @keydown.enter="handleEnter"
+      />
+      <UButton
+        type="button"
+        icon="i-lucide-send"
+        color="primary"
+        variant="solid"
+        class="shrink-0"
+        aria-label="Send message"
+        :disabled="body.trim().length === 0"
+        @click="submit"
+      />
+    </div>
+  </section>
 </template>
 
 <script setup lang="ts">
-import { ref } from "vue";
+import { nextTick, ref, watch } from "vue";
 import {
   createChatImeState,
   markCompositionEnd,
@@ -54,7 +57,7 @@ import {
 } from "../chat-ime";
 import type { ChatMessage } from "../types";
 
-defineProps<{
+const props = defineProps<{
   title: string;
   messages: ChatMessage[];
 }>();
@@ -64,7 +67,16 @@ const emit = defineEmits<{
 }>();
 
 const body = ref("");
+const logElement = ref<HTMLElement>();
 const imeState = createChatImeState();
+
+watch(
+  () => props.messages.length,
+  async () => {
+    await nextTick();
+    if (logElement.value) logElement.value.scrollTop = logElement.value.scrollHeight;
+  }
+);
 
 function handleCompositionStart(): void {
   markCompositionStart(imeState);

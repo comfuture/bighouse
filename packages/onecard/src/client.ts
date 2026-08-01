@@ -1,6 +1,13 @@
 import "./style.css";
 import type { GameClientContext, MountedGameClient } from "@bighouse/game-sdk/client";
 import { triggerCardSubmitFeedback, triggerSelectionFeedback } from "@bighouse/game-sdk/feedback";
+import { createGameUi, type MountedGameUi } from "@bighouse/ui";
+import {
+  clampFlightCenter,
+  clampFlightPosition,
+  fitFlightCardSize,
+  type FlightCardBounds
+} from "./flight";
 export { gameMetadata } from "./client-metadata";
 
 export type OneCardPublicView = {
@@ -35,6 +42,7 @@ export type OneCardClient = {
 
 export type OneCardGameInstance = {
   update(input: Omit<OneCardClient, "sendAction" | "requestPlayAgain" | "leaveFinishedGame">): void;
+  attachGameUi(ui: MountedGameUi): void;
   destroy(): void;
 };
 
@@ -75,11 +83,15 @@ const drawRevealHoldMs = 1_200;
 
 export function mountGame(container: HTMLElement, context: GameClientContext): MountedGameClient {
   const instance = createOneCardGame(container, toOneCardClient(context));
+  const gameUi = createGameUi(container, context, context);
+  instance.attachGameUi(gameUi);
   return {
     update(nextContext) {
+      gameUi.update(nextContext);
       instance.update(toOneCardClient({ ...context, ...nextContext }));
     },
     destroy() {
+      gameUi.destroy();
       instance.destroy();
     }
   };
@@ -104,8 +116,10 @@ function toOneCardClient(context: GameClientContext): OneCardClient {
 export function createOneCardGame(container: HTMLElement, client: OneCardClient): OneCardGameInstance {
   const state = { ...client };
 
-  container.classList.add("onecard-game");
-  container.innerHTML = `
+  const surface = document.createElement("div");
+  surface.className = "game-contained-surface onecard-game";
+  container.replaceChildren(surface);
+  surface.innerHTML = `
     <div class="onecard-table">
       <!-- Opponent Seats -->
       <div class="opponent-seats">
@@ -174,44 +188,29 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
         </div>
       </div>
 
-      <!-- Result / Match Closed Modal -->
-      <div class="onecard-result-modal is-hidden" data-role="result-modal">
-        <div class="onecard-result-panel">
-          <h2 data-role="result-title">Victory!</h2>
-          <p data-role="result-message"></p>
-          <div class="result-actions">
-            <button type="button" class="result-btn is-primary" data-role="play-again">Play Again</button>
-            <button type="button" class="result-btn" data-role="leave-game">Leave</button>
-          </div>
-        </div>
-      </div>
     </div>
   `;
 
   // Query DOM selectors
-  const seatTop = container.querySelector<HTMLElement>("[data-role='seat-top']");
-  const seatLeft = container.querySelector<HTMLElement>("[data-role='seat-left']");
-  const seatRight = container.querySelector<HTMLElement>("[data-role='seat-right']");
-  const deckEl = container.querySelector<HTMLElement>("[data-role='deck']");
-  const deckCountEl = container.querySelector<HTMLElement>("[data-role='deck-count']");
-  const directionEl = container.querySelector<HTMLElement>("[data-role='direction-indicator']");
-  const discardHolder = container.querySelector<HTMLElement>("[data-role='discard-card-holder']");
-  const discardEl = container.querySelector<HTMLElement>("[data-role='discard']");
-  const wildSuitBanner = container.querySelector<HTMLElement>("[data-role='wild-suit-banner']");
-  const actionToast = container.querySelector<HTMLElement>("[data-role='action-toast']");
-  const statusBar = container.querySelector<HTMLElement>("[data-role='status-bar']");
-  const turnTracker = container.querySelector<HTMLElement>("[data-role='turn-tracker']");
-  const playerHandContainer = container.querySelector<HTMLElement>("[data-role='player-hand-container']");
-  const playerName = container.querySelector<HTMLElement>("[data-role='player-name']");
-  const playerHandEl = container.querySelector<HTMLElement>("[data-role='player-hand']");
-  const drawButton = container.querySelector<HTMLButtonElement>("[data-role='draw-button']");
-  const passButton = container.querySelector<HTMLButtonElement>("[data-role='pass-button']");
-  const suitPicker = container.querySelector<HTMLElement>("[data-role='suit-picker']");
-  const resultModal = container.querySelector<HTMLElement>("[data-role='result-modal']");
-  const resultTitle = container.querySelector<HTMLElement>("[data-role='result-title']");
-  const resultMessage = container.querySelector<HTMLElement>("[data-role='result-message']");
-  const playAgainBtn = container.querySelector<HTMLButtonElement>("[data-role='play-again']");
-  const leaveBtn = container.querySelector<HTMLButtonElement>("[data-role='leave-game']");
+  const seatTop = surface.querySelector<HTMLElement>("[data-role='seat-top']");
+  const seatLeft = surface.querySelector<HTMLElement>("[data-role='seat-left']");
+  const seatRight = surface.querySelector<HTMLElement>("[data-role='seat-right']");
+  const deckEl = surface.querySelector<HTMLElement>("[data-role='deck']");
+  const deckCountEl = surface.querySelector<HTMLElement>("[data-role='deck-count']");
+  const directionEl = surface.querySelector<HTMLElement>("[data-role='direction-indicator']");
+  const discardHolder = surface.querySelector<HTMLElement>("[data-role='discard-card-holder']");
+  const discardEl = surface.querySelector<HTMLElement>("[data-role='discard']");
+  const wildSuitBanner = surface.querySelector<HTMLElement>("[data-role='wild-suit-banner']");
+  const actionToast = surface.querySelector<HTMLElement>("[data-role='action-toast']");
+  const statusBar = surface.querySelector<HTMLElement>("[data-role='status-bar']");
+  const turnTracker = surface.querySelector<HTMLElement>("[data-role='turn-tracker']");
+  const playerHandContainer = surface.querySelector<HTMLElement>("[data-role='player-hand-container']");
+  const playerName = surface.querySelector<HTMLElement>("[data-role='player-name']");
+  const playerHandEl = surface.querySelector<HTMLElement>("[data-role='player-hand']");
+  const drawButton = surface.querySelector<HTMLButtonElement>("[data-role='draw-button']");
+  const passButton = surface.querySelector<HTMLButtonElement>("[data-role='pass-button']");
+  const suitPicker = surface.querySelector<HTMLElement>("[data-role='suit-picker']");
+  let gameUi: MountedGameUi | undefined;
 
   // State variable for pending suit choice
   let pendingJokerCard: string | null = null;
@@ -225,7 +224,15 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
   let localDrawRevealClearTimer: number | undefined;
   let directionFlashTimer: number | undefined;
   let flightTimers: number[] = [];
+  let flightAnimationFrames: number[] = [];
   let flightElements: HTMLElement[] = [];
+  const handleViewportChange = (): void => {
+    clearFlightAnimations();
+    clearLocalDrawReveal(true);
+  };
+
+  window.addEventListener("resize", handleViewportChange);
+  window.visualViewport?.addEventListener("resize", handleViewportChange);
 
   // Set event listeners
   deckEl?.addEventListener("click", () => {
@@ -261,16 +268,6 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
       pendingJokerCard = null;
       pendingJokerSourceEl = null;
     }
-  });
-
-  playAgainBtn?.addEventListener("click", () => {
-    if (!state.publicView.rematchRequests?.includes(state.playerId)) {
-      client.requestPlayAgain();
-    }
-  });
-
-  leaveBtn?.addEventListener("click", () => {
-    client.leaveFinishedGame();
   });
 
   function renderCard(cardStr: string): HTMLElement {
@@ -377,12 +374,15 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
     const count = Math.max(1, options.count ?? 1);
     const flyerCount = Math.min(count, maxBundleFlyers);
     const duration = count > 1 ? bundleFlightMs : singleFlightMs;
-    const cardWidth = Math.min(Math.max(startRect.width || 76, 58), 92);
-    const cardHeight = cardWidth * 1.38;
-    const startCenterX = clampViewportX(startRect.left + startRect.width / 2, cardWidth / 2);
-    const startCenterY = startRect.top + startRect.height / 2;
-    const endCenterX = clampViewportX(endRect.left + endRect.width / 2, cardWidth / 2);
-    const endCenterY = endRect.top + endRect.height / 2;
+    const viewport = getFlightViewport();
+    const { width: cardWidth, height: cardHeight } = fitFlightCardSize(
+      getRenderedFlightCardBounds(fromEl, targetEl),
+      viewport.width
+    );
+    const startCenterX = clampFlightCenter(startRect.left + startRect.width / 2, cardWidth / 2, viewport.left, viewport.width);
+    const startCenterY = clampFlightCenter(startRect.top + startRect.height / 2, cardHeight / 2, viewport.top, viewport.height);
+    const endCenterX = clampFlightCenter(endRect.left + endRect.width / 2, cardWidth / 2, viewport.left, viewport.width);
+    const endCenterY = clampFlightCenter(endRect.top + endRect.height / 2, cardHeight / 2, viewport.top, viewport.height);
 
     for (let index = 0; index < flyerCount; index += 1) {
       const offset = (index - (flyerCount - 1) / 2) * 8;
@@ -392,8 +392,8 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
         flyer.classList.add("is-bundle-flight");
       }
       flyer.style.position = "fixed";
-      flyer.style.left = `${clampViewportLeft(startCenterX - cardWidth / 2 + offset, cardWidth)}px`;
-      flyer.style.top = `${startCenterY - cardHeight / 2 - Math.abs(offset) * 0.4}px`;
+      flyer.style.left = `${clampFlightPosition(startCenterX - cardWidth / 2 + offset, cardWidth, viewport.left, viewport.width)}px`;
+      flyer.style.top = `${clampFlightPosition(startCenterY - cardHeight / 2 - Math.abs(offset) * 0.4, cardHeight, viewport.top, viewport.height)}px`;
       flyer.style.width = `${cardWidth}px`;
       flyer.style.height = `${cardHeight}px`;
       flyer.style.margin = "0";
@@ -410,10 +410,10 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
 
       const delay = index * bundleStaggerMs;
       setFlightTimeout(() => {
-        requestAnimationFrame(() => {
+        requestFlightAnimationFrame(() => {
           const landingOffset = count > 1 ? (index - (flyerCount - 1) / 2) * 5 : 0;
-          flyer.style.left = `${clampViewportLeft(endCenterX - cardWidth / 2 + landingOffset, cardWidth)}px`;
-          flyer.style.top = `${endCenterY - cardHeight / 2 - Math.abs(landingOffset) * 0.35}px`;
+          flyer.style.left = `${clampFlightPosition(endCenterX - cardWidth / 2 + landingOffset, cardWidth, viewport.left, viewport.width)}px`;
+          flyer.style.top = `${clampFlightPosition(endCenterY - cardHeight / 2 - Math.abs(landingOffset) * 0.35, cardHeight, viewport.top, viewport.height)}px`;
           flyer.style.transform = `rotate(${landingOffset * -1.4 + (Math.random() * 8 - 4)}deg) scale(${cardStr ? 0.98 : 0.88})`;
           flyer.style.opacity = "1";
         });
@@ -429,12 +429,12 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
       const badge = document.createElement("div");
       badge.className = "card-flight-badge";
       badge.textContent = `+${count}`;
-      badge.style.left = `${clampViewportX(startCenterX, 24)}px`;
-      badge.style.top = `${startCenterY}px`;
+      badge.style.left = `${clampFlightCenter(startCenterX, 24, viewport.left, viewport.width)}px`;
+      badge.style.top = `${clampFlightCenter(startCenterY, 18, viewport.top, viewport.height)}px`;
       appendFlightElement(badge);
-      requestAnimationFrame(() => {
-        badge.style.left = `${clampViewportX(endCenterX, 24)}px`;
-        badge.style.top = `${endCenterY - cardHeight * 0.45}px`;
+      requestFlightAnimationFrame(() => {
+        badge.style.left = `${clampFlightCenter(endCenterX, 24, viewport.left, viewport.width)}px`;
+        badge.style.top = `${clampFlightCenter(endCenterY - cardHeight * 0.45, 18, viewport.top, viewport.height)}px`;
       });
       setFlightTimeout(() => {
         badge.classList.add("is-fading");
@@ -446,12 +446,12 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
       const label = document.createElement("div");
       label.className = `card-flight-label is-${options.tone ?? "draw"}`;
       label.textContent = options.label;
-      label.style.left = `${clampViewportX(startCenterX, 110)}px`;
-      label.style.top = `${startCenterY - cardHeight * 0.7}px`;
+      label.style.left = `${clampFlightCenter(startCenterX, 110, viewport.left, viewport.width)}px`;
+      label.style.top = `${clampFlightCenter(startCenterY - cardHeight * 0.7, 20, viewport.top, viewport.height)}px`;
       appendFlightElement(label);
-      requestAnimationFrame(() => {
-        label.style.left = `${clampViewportX(endCenterX, 110)}px`;
-        label.style.top = `${endCenterY - cardHeight * 0.75}px`;
+      requestFlightAnimationFrame(() => {
+        label.style.left = `${clampFlightCenter(endCenterX, 110, viewport.left, viewport.width)}px`;
+        label.style.top = `${clampFlightCenter(endCenterY - cardHeight * 0.75, 20, viewport.top, viewport.height)}px`;
       });
       setFlightTimeout(() => {
         label.classList.add("is-fading");
@@ -462,18 +462,37 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
     return duration + (flyerCount - 1) * bundleStaggerMs;
   }
 
-  function clampViewportX(centerX: number, halfWidth: number): number {
-    const inset = Math.max(8, halfWidth);
-    const viewportWidth = window.innerWidth || document.documentElement.clientWidth || centerX;
-    if (viewportWidth <= inset * 2) return viewportWidth / 2;
-    return Math.min(Math.max(centerX, inset), viewportWidth - inset);
+  function getRenderedFlightCardBounds(fromEl: HTMLElement, targetEl: HTMLElement): FlightCardBounds | undefined {
+    const cardSelector = ".onecard-card, .onecard-deck, .onecard-discard, .deck-card-back";
+    const measuredElement = [fromEl, targetEl]
+      .flatMap((element) => element.matches(cardSelector)
+        ? [element]
+        : [...element.querySelectorAll<HTMLElement>(cardSelector)])
+      .find((element) => {
+        const rect = element.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0;
+      });
+    if (!measuredElement) return undefined;
+    const rect = measuredElement.getBoundingClientRect();
+    return { width: rect.width, height: rect.height };
   }
 
-  function clampViewportLeft(left: number, width: number): number {
-    const viewportWidth = window.innerWidth || document.documentElement.clientWidth || left + width;
-    const minLeft = 8;
-    const maxLeft = Math.max(minLeft, viewportWidth - width - 8);
-    return Math.min(Math.max(left, minLeft), maxLeft);
+  function getFlightViewport(): { left: number; top: number; width: number; height: number } {
+    const visualViewport = window.visualViewport;
+    if (visualViewport && visualViewport.width > 0 && visualViewport.height > 0) {
+      return {
+        left: visualViewport.offsetLeft,
+        top: visualViewport.offsetTop,
+        width: visualViewport.width,
+        height: visualViewport.height
+      };
+    }
+    return {
+      left: 0,
+      top: 0,
+      width: window.innerWidth || document.documentElement.clientWidth || 320,
+      height: window.innerHeight || document.documentElement.clientHeight || 480
+    };
   }
 
   function setDrawNotice(playerId: string, count: number, wasAttack: boolean, version: number): void {
@@ -514,12 +533,30 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
     }, Math.max(180, delayMs - 80));
   }
 
+  function clearLocalDrawReveal(renderAfterClear: boolean): void {
+    if (localDrawRevealTimer) window.clearTimeout(localDrawRevealTimer);
+    if (localDrawRevealClearTimer) window.clearTimeout(localDrawRevealClearTimer);
+    localDrawRevealTimer = undefined;
+    localDrawRevealClearTimer = undefined;
+    const hadLocalDrawReveal = localDrawReveal !== null;
+    localDrawReveal = null;
+    if (renderAfterClear && hadLocalDrawReveal) render();
+  }
+
   function setFlightTimeout(callback: () => void, delayMs: number): void {
     const timer = window.setTimeout(() => {
       flightTimers = flightTimers.filter((candidate) => candidate !== timer);
       callback();
     }, delayMs);
     flightTimers.push(timer);
+  }
+
+  function requestFlightAnimationFrame(callback: () => void): void {
+    const frame = window.requestAnimationFrame(() => {
+      flightAnimationFrames = flightAnimationFrames.filter((candidate) => candidate !== frame);
+      callback();
+    });
+    flightAnimationFrames.push(frame);
   }
 
   function appendFlightElement(element: HTMLElement): void {
@@ -537,6 +574,10 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
       window.clearTimeout(timer);
     }
     flightTimers = [];
+    for (const frame of flightAnimationFrames) {
+      window.cancelAnimationFrame(frame);
+    }
+    flightAnimationFrames = [];
     for (const element of flightElements) {
       element.remove();
     }
@@ -856,11 +897,7 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
   function renderResultModal(): void {
     const pub = state.publicView;
     if (!pub.winnerPlayerId || pub.roomPhase !== "finished") {
-      resultModal?.classList.add("is-hidden");
-      if (playAgainBtn) {
-        playAgainBtn.disabled = false;
-        playAgainBtn.textContent = "Play Again";
-      }
+      gameUi?.setResult({ open: false, title: "", message: "" });
       return;
     }
 
@@ -868,35 +905,30 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
     const iRequested = requested.includes(state.playerId);
     const oppRequested = requested.some((id) => id !== state.playerId);
 
-    if (resultTitle) {
-      resultTitle.textContent = pub.winnerPlayerId === state.playerId ? "🏆 Victory!" : "Defeat";
-    }
-
-    if (resultMessage) {
-      const winnerName = getPlayerName(pub.winnerPlayerId);
-      resultMessage.innerHTML = `
-        <strong>${winnerName}</strong> has won the match!<br/><br/>
-        ${
-          iRequested
-            ? "Waiting for opponent..."
-            : oppRequested
-              ? "Opponent wants to play again."
-              : "Choose whether to play another round."
-        }
-      `;
-    }
-
-    if (playAgainBtn) {
-      playAgainBtn.disabled = iRequested;
-      playAgainBtn.textContent = iRequested ? "Waiting..." : "Play Again";
-    }
-
-    resultModal?.classList.remove("is-hidden");
+    const winnerName = getPlayerName(pub.winnerPlayerId);
+    gameUi?.setResult({
+      open: true,
+      title: pub.winnerPlayerId === state.playerId ? "Victory" : "Defeat",
+      message: `${winnerName} won the match. ${
+        iRequested
+          ? "Waiting for opponent..."
+          : oppRequested
+            ? "Opponent wants to play again."
+            : "Choose whether to play another round."
+      }`,
+      primaryLabel: iRequested ? "Waiting..." : "Play again",
+      primaryDisabled: iRequested,
+      secondaryLabel: "Leave"
+    });
   }
 
   render();
 
   return {
+    attachGameUi(ui) {
+      gameUi = ui;
+      renderResultModal();
+    },
     update(input) {
       if (state.version === input.version) return;
       const oldPub = state.publicView;
@@ -961,12 +993,12 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
     destroy() {
       if (drawNoticeTimer) window.clearTimeout(drawNoticeTimer);
       if (actionNoticeTimer) window.clearTimeout(actionNoticeTimer);
-      if (localDrawRevealTimer) window.clearTimeout(localDrawRevealTimer);
-      if (localDrawRevealClearTimer) window.clearTimeout(localDrawRevealClearTimer);
+      clearLocalDrawReveal(false);
       if (directionFlashTimer) window.clearTimeout(directionFlashTimer);
+      window.removeEventListener("resize", handleViewportChange);
+      window.visualViewport?.removeEventListener("resize", handleViewportChange);
       clearFlightAnimations();
-      container.classList.remove("onecard-game");
-      container.innerHTML = "";
+      surface.remove();
     }
   };
 }
