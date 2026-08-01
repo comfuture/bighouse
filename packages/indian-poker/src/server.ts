@@ -66,14 +66,14 @@ export type IndianPokerStageState = {
   phase: BettingPhase;
   /** 1-based hand counter, 0 while the room is still idle. */
   round: number;
-  /** Deterministic shuffle seed, kept in state so reshuffles stay reproducible. */
-  seed: string;
   /** Undealt cards. Never published. */
   deck: string[];
   /** Dealt cards keyed by playerId. Never published before the reveal. */
   cards: Record<string, string>;
   /** Chip stacks, keyed by playerId. Survives every round in the same room. */
   chips: Record<string, number>;
+  /** Stacks as they stood before this round's ante, used for net round deltas. */
+  roundOpeningChips: Record<string, number>;
   /** Chips committed to the current pot this round, keyed by playerId. */
   bets: Record<string, number>;
   pot: number;
@@ -114,20 +114,6 @@ const SUITS = ["S", "H", "D", "C"] as const;
 
 // ─── Card Helpers ────────────────────────────────────────────────────────────
 
-/** Mulberry32 seeded PRNG so shuffles are reproducible from state alone. */
-function seedRandom(seed: string): () => number {
-  let hash = 2166136261 >>> 0;
-  for (let index = 0; index < seed.length; index += 1) {
-    hash = Math.imul(hash ^ seed.charCodeAt(index), 16777619);
-  }
-  return function next(): number {
-    hash += 0xe120fc15;
-    let tmp = Math.imul(hash ^ (hash >>> 15), 1 | hash);
-    tmp = (tmp + Math.imul(tmp ^ (tmp >>> 7), 61 | tmp)) ^ tmp;
-    return ((tmp ^ (tmp >>> 14)) >>> 0) / 4294967296;
-  };
-}
-
 function generateDeck(): string[] {
   const deck: string[] = [];
   for (const suit of SUITS) {
@@ -138,11 +124,36 @@ function generateDeck(): string[] {
   return deck;
 }
 
-function shuffledDeck(seed: string): string[] {
-  const random = seedRandom(seed);
+/**
+ * Unbiased index below `bound`, drawn from the runtime CSPRNG.
+ *
+ * Rejection sampling keeps the shuffle uniform; a plain modulo of a 32-bit
+ * value would skew the low indices.
+ */
+function randomBelow(bound: number): number {
+  const limit = Math.floor(0x100000000 / bound) * bound;
+  const buffer = new Uint32Array(1);
+  for (;;) {
+    crypto.getRandomValues(buffer);
+    const value = buffer[0]!;
+    if (value < limit) return value % bound;
+  }
+}
+
+/**
+ * Shuffles from unpredictable server entropy on purpose.
+ *
+ * A player legitimately sees the opponent's card every hand and both cards at
+ * every reveal. If the deck came from a guessable seed, those known cards would
+ * pin the seed down and let a player derive their own hidden card, which is the
+ * one thing this game must never leak. `room.config.seed` is therefore ignored
+ * here: it is client-supplied at room creation and would hand an attacker the
+ * whole deck. Tests inject cards or a deck into `stageState` instead.
+ */
+function shuffledDeck(): string[] {
   const deck = generateDeck();
   for (let index = deck.length - 1; index > 0; index -= 1) {
-    const swap = Math.floor(random() * (index + 1));
+    const swap = randomBelow(index + 1);
     const held = deck[index]!;
     deck[index] = deck[swap]!;
     deck[swap] = held;
@@ -231,7 +242,7 @@ function dealRound(stage: IndianPokerStageState, players: PlayerSeat[], now: num
 
   stage.round += 1;
   if (stage.deck.length < seats.length) {
-    stage.deck = shuffledDeck(`${stage.seed}:reshuffle:${stage.round}`);
+    stage.deck = shuffledDeck();
     events.push(event("indian-poker.deckReshuffled", { round: stage.round }, now));
   }
 
@@ -249,6 +260,10 @@ function dealRound(stage: IndianPokerStageState, players: PlayerSeat[], now: num
   for (const player of seats) {
     stage.cards[player.playerId] = stage.deck.pop()!;
   }
+
+  // Snapshot the stacks before the ante so the reveal can report each player's
+  // net result for the round rather than just the payout.
+  stage.roundOpeningChips = Object.fromEntries(seats.map((player) => [player.playerId, chipsOf(stage, player.playerId)]));
 
   for (const player of seats) {
     // A short stack antes whatever is left, which puts them all-in for the hand.
@@ -325,7 +340,6 @@ function resolveShowdown(stage: IndianPokerStageState, players: PlayerSeat[], no
   const seats = orderedPlayers(players);
   refundUncalledBets(stage, seats);
 
-  const chipsBefore = { ...stage.chips };
   const ranked = seats
     .map((player) => ({ playerId: player.playerId, value: cardValue(stage.cards[player.playerId] ?? "") }))
     .sort((left, right) => right.value - left.value);
@@ -342,18 +356,11 @@ function resolveShowdown(stage: IndianPokerStageState, players: PlayerSeat[], no
     }
   }
 
-  return finishRound(
-    stage,
-    seats,
-    chipsBefore,
-    { reason: "showdown", isTie, ...(winnerPlayerId ? { winnerPlayerId } : {}) },
-    now
-  );
+  return finishRound(stage, seats, { reason: "showdown", isTie, ...(winnerPlayerId ? { winnerPlayerId } : {}) }, now);
 }
 
 function resolveFold(stage: IndianPokerStageState, players: PlayerSeat[], foldedPlayerId: string, now: number): GameEvent[] {
   const seats = orderedPlayers(players);
-  const chipsBefore = { ...stage.chips };
   const winner = opponentOf(seats, foldedPlayerId);
   if (winner) {
     // The uncalled portion of the winner's own wager comes back inside the pot.
@@ -363,7 +370,6 @@ function resolveFold(stage: IndianPokerStageState, players: PlayerSeat[], folded
   return finishRound(
     stage,
     seats,
-    chipsBefore,
     { reason: "fold", isTie: false, foldedPlayerId, ...(winner ? { winnerPlayerId: winner.playerId } : {}) },
     now
   );
@@ -377,17 +383,14 @@ type RoundOutcome = {
 };
 
 /** Shared tail for both endings: publish the reveal and check for a match winner. */
-function finishRound(
-  stage: IndianPokerStageState,
-  seats: PlayerSeat[],
-  chipsBefore: Record<string, number>,
-  outcome: RoundOutcome,
-  now: number
-): GameEvent[] {
+function finishRound(stage: IndianPokerStageState, seats: PlayerSeat[], outcome: RoundOutcome, now: number): GameEvent[] {
   const events: GameEvent[] = [];
+  // Measured against the pre-ante stacks, so the reveal shows the net result of
+  // the round instead of only the payout. The winner of a 15-for-15 hand is
+  // +15, not +30, and the loser is -15 rather than unchanged.
   const chipDelta: Record<string, number> = {};
   for (const player of seats) {
-    chipDelta[player.playerId] = chipsOf(stage, player.playerId) - (chipsBefore[player.playerId] ?? 0);
+    chipDelta[player.playerId] = chipsOf(stage, player.playerId) - (stage.roundOpeningChips[player.playerId] ?? 0);
   }
 
   const result: IndianPokerRoundResult = {
@@ -490,7 +493,10 @@ export function availableActions(stage: IndianPokerStageState, playerId: string)
     if (chips > 0) actions.push("bet");
   } else {
     actions.push("call");
-    if (chips > 0 && stage.raiseCount < stage.maxRaises) {
+    // `chips > toCall` mirrors validateAction: a stack that can only match the
+    // call cannot raise, so advertising it would hand the client an action the
+    // rules reject.
+    if (chips > toCall && stage.raiseCount < stage.maxRaises) {
       actions.push("raise", "double");
     }
   }
@@ -508,17 +514,14 @@ export const indianPokerDefinition = defineGameDefinition(gameMetadata, {
       readConfigNumber(config, "ante", DEFAULT_ANTE, 1),
       Math.max(1, Math.floor(startingChips / 2))
     );
-    // `now` is folded into the seed so a rematch in the same room does not
-    // replay the exact same deck.
-    const seed = `${String(config?.seed ?? context.room.roomId)}:${context.now}`;
 
     const stage: IndianPokerStageState = {
       phase: "idle",
       round: 0,
-      seed,
-      deck: shuffledDeck(seed),
+      deck: shuffledDeck(),
       cards: {},
       chips: Object.fromEntries(context.players.map((player) => [player.playerId, startingChips])),
+      roundOpeningChips: {},
       bets: {},
       pot: 0,
       currentBet: 0,
@@ -838,12 +841,15 @@ function commit(stage: IndianPokerStageState, playerId: string, amount: number):
   stage.currentBet = Math.max(stage.currentBet, betOf(stage, playerId));
 }
 
+/**
+ * Chips are whole units, so a fractional amount is rejected rather than
+ * rounded. Silently flooring would apply a different wager than a direct API
+ * client submitted.
+ */
 function readAmount(payload: JsonObject): number | undefined {
   const raw = payload.amount;
-  const amount = typeof raw === "number" ? raw : Number.NaN;
-  if (!Number.isFinite(amount)) return undefined;
-  const whole = Math.floor(amount);
-  return whole > 0 ? whole : undefined;
+  if (typeof raw !== "number" || !Number.isInteger(raw) || raw <= 0) return undefined;
+  return raw;
 }
 
 // ─── Bot AI ──────────────────────────────────────────────────────────────────

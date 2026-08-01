@@ -117,6 +117,26 @@ describe("indian-poker initial state", () => {
     expect(stage.cards).toEqual({});
     expect(stage.currentPlayerId).toBeUndefined();
     expect(stage.deck).toHaveLength(52);
+    expect(new Set(stage.deck).size).toBe(52);
+  });
+
+  it("does not derive the deck from the room config seed", () => {
+    // config.seed is client-supplied at room creation. If it drove the shuffle,
+    // a player could create a room with a known seed and read their own card.
+    const decks = new Set<string>();
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      const state = baseState();
+      state.room.config = { seed: "attacker-chosen-seed" };
+      state.stageState = indianPokerDefinition.initialStageState({
+        room: state.room,
+        players: state.players,
+        now: NOW
+      });
+      const stage = stageOf(state);
+      decks.add(JSON.stringify([stage.cards.p1, stage.cards.p2, ...stage.deck]));
+    }
+    // A seeded shuffle with a fixed seed and a fixed `now` would collapse to one.
+    expect(decks.size).toBeGreaterThan(1);
   });
 
   it("antes both players and deals one card each", () => {
@@ -327,8 +347,39 @@ describe("indian-poker validateAction", () => {
     stage.chips.p1 = 40;
 
     expect(validate(state, "p1", "raise", { amount: 5 })).toMatchObject({ ok: false, code: "invalid_action" });
+    expect(validate(state, "p1", "double")).toMatchObject({ ok: false, code: "invalid_action" });
     // An underfunded call is still allowed, it simply puts the player all-in.
     expect(validate(state, "p1", "call")).toEqual({ ok: true });
+    // The projection must not advertise what validation rejects, or the client
+    // renders an enabled button that always errors.
+    expect(availableActions(stage, "p1")).toEqual(["call", "die"]);
+  });
+
+  it("still offers a raise to a stack that can cover exactly one more chip", () => {
+    const state = initState();
+    const stage = stageOf(state);
+    stage.currentBet = 100;
+    stage.bets = { p1: 5, p2: 100 };
+    stage.chips.p1 = 96;
+
+    expect(availableActions(stage, "p1")).toEqual(["call", "raise", "double", "die"]);
+    expect(validate(state, "p1", "raise", { amount: 1 })).toEqual({ ok: true });
+  });
+
+  it("rejects fractional wager amounts instead of rounding them", () => {
+    const state = initState();
+    // Flooring 1.9 to 1 would apply a different wager than the client sent.
+    expect(validate(state, "p1", "bet", { amount: 1.9 })).toMatchObject({ ok: false, code: "invalid_action" });
+    expect(validate(state, "p1", "bet", { amount: 0.5 })).toMatchObject({ ok: false, code: "invalid_action" });
+    expect(validate(state, "p1", "bet", { amount: Number.NaN })).toMatchObject({ ok: false, code: "invalid_action" });
+    expect(validate(state, "p1", "bet", { amount: Number.POSITIVE_INFINITY })).toMatchObject({
+      ok: false,
+      code: "invalid_action"
+    });
+    expect(validate(state, "p1", "bet", { amount: 2 })).toEqual({ ok: true });
+
+    const afterBet = act(state, "p1", "bet", { amount: 10 }).state;
+    expect(validate(afterBet, "p2", "raise", { amount: 2.5 })).toMatchObject({ ok: false, code: "invalid_action" });
   });
 
   it("rejects nextRound while betting and repeat requests after the reveal", () => {
@@ -421,7 +472,8 @@ describe("indian-poker betting", () => {
       cards: { p1: "9H", p2: "QS" }
     });
     expect(stage.chips).toEqual({ p1: 85, p2: 115 });
-    expect(stage.roundResult?.chipDelta).toEqual({ p1: 0, p2: 30 });
+    // Net for the round, measured from the pre-ante stacks, not just the payout.
+    expect(stage.roundResult?.chipDelta).toEqual({ p1: -15, p2: 15 });
 
     const showdown = applied.events.find((candidate) => candidate.type === "indian-poker.showdown");
     expect(showdown?.visibility).toBe("public");
@@ -469,6 +521,7 @@ describe("indian-poker betting", () => {
     expect(stage.roundResult).toMatchObject({ isTie: true, pot: 50 });
     expect(stage.roundResult?.winnerPlayerId).toBeUndefined();
     expect(stage.chips).toEqual({ p1: 100, p2: 100 });
+    expect(stage.roundResult?.chipDelta).toEqual({ p1: 0, p2: 0 });
   });
 
   it("gives the whole pot to the survivor when the other player dies", () => {
@@ -488,6 +541,8 @@ describe("indian-poker betting", () => {
     // are still shown.
     expect(stage.roundResult?.cards).toEqual({ p1: "AS", p2: "2H" });
     expect(stage.chips).toEqual({ p1: 95, p2: 105 });
+    // The folding player loses their ante, so the delta must not read as zero.
+    expect(stage.roundResult?.chipDelta).toEqual({ p1: -5, p2: 5 });
     expect(applied.events.map((candidate) => candidate.type)).toEqual([
       "indian-poker.die",
       "indian-poker.fold"
@@ -498,7 +553,9 @@ describe("indian-poker betting", () => {
     const state = initState();
     setCards(state, { p1: "KH", p2: "4D" });
     const stage = stageOf(state);
+    // p2 came into the hand with 8 chips and is already all-in for the ante.
     stage.chips.p2 = 3;
+    stage.roundOpeningChips.p2 = 8;
     const contested = totalChips(state);
 
     const afterBet = act(state, "p1", "bet", { amount: 50 }).state;
@@ -509,6 +566,8 @@ describe("indian-poker betting", () => {
     expect(finalStage.roundResult?.pot).toBe(16);
     expect(finalStage.chips).toEqual({ p1: 108, p2: 0 });
     expect(finalStage.pot).toBe(0);
+    // p2 risked 8 and lost 8; p1 never lost the uncalled 47.
+    expect(finalStage.roundResult?.chipDelta).toEqual({ p1: 8, p2: -8 });
     expect(totalChips(applied.state)).toBe(contested);
   });
 });
