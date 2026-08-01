@@ -458,6 +458,24 @@ A draw-card action should use `privateEvent` for the actual card value:
 
 The client should render shared table UI from `publicView`, and update the player's hand UI only from `snapshot.payload.privateView` and `privateEvent`.
 
+### Inverted Visibility: Indian Poker
+
+`indian-poker` is the mirror image of `card-demo`. The secret is the player's *own* card, and every opponent card is public knowledge to everyone except its owner. Private view for player `p1`:
+
+```json
+{
+  "opponentPlayerId": "p2",
+  "opponentCard": "QH",
+  "myCard": "hidden",
+  "myCardRevealed": false
+}
+```
+
+Two platform constraints shape that adapter, and both apply to any game with a similar shape:
+
+- **Deal-time state cannot live in `playerStates`.** `RoomDO` builds `stageState` from `initialStageState()` before it builds `playerStates` from `initialPlayerState()`, so a deal that happens at stage-init time has nowhere private to write. `indian-poker` keeps the cards in `stageState.cards`, withholds them from `getPublicView()` until the round is revealed, and masks the requesting player's own entry in `getPrivateView()`. Storing secrets in `stageState` is only acceptable with that filtering in place.
+- **`getPublicView().currentPlayerId` drives bot scheduling.** `RoomDO` only schedules a `bot_turn` when that field names a bot, so any sub-phase that waits on player input has to advertise a pending player. `indian-poker` has a round-over handshake where both players must send `nextRound`, so its public `currentPlayerId` points at whoever still owes a request. Without that, a bot would never acknowledge a finished round and the table would stall. A bot's `selectBotAction()` must also return `null` once it has already acted in that sub-phase, or the timer reschedules forever.
+
 ## 9. Adding a New Game
 
 Add a game as a package-owned plugin. A game package should export server rules from a Worker-safe entrypoint, browser UI from a browser-only entrypoint, and fixed-name metadata as `gameMetadata`.

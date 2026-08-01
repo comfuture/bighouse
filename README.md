@@ -177,6 +177,16 @@ The application-level string message `ping` receives an automatic `pong` respons
 - Private state contains the player's hand.
 - Played cards are public events; drawn cards are private events.
 
+`indian-poker`
+
+- Two players. Each hand antes both stacks and deals one card per player, face out.
+- Public state includes the round, pot, ante, both chip stacks, both wagers, the amount to call, the raise count, and the turn.
+- Private state contains the opponent's card. A player's own card is masked as `"hidden"` until the round opens, which is the whole game: you read the other forehead instead of your own.
+- Betting actions are `check`, `bet`, `call`, `raise`, `double`, and `die`. `double` is server-computed as the outstanding call plus an equal raise.
+- Matching the wagers, by a call or by both players checking, opens the cards. The higher rank takes the pot and equal ranks refund each contribution. Uncalled chips are returned so an all-in short stack never loses more than it risked.
+- Chips persist across rounds in the same room. Both players must send `nextRound` before a new hand is dealt, and the match finishes once a player cannot ante again.
+- Room config accepts `startingChips` (default 100), `ante` (default 5), and `maxRaises` (default 4).
+
 ## Deployment Notes
 
 Before deploying to a real Cloudflare account:
