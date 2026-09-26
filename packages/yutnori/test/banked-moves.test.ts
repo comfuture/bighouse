@@ -269,6 +269,66 @@ describe("capture creates a mandatory new own turn", () => {
 });
 
 describe("private team plan previews", () => {
+  it("relays a teammate's multiple-choice proposal privately without mutating authoritative state", () => {
+    const { state, bank, context, payload } = fixture(); bank("mo", "yut", "mo");
+    const prefix = [choice("bank0")];
+    const proposal = [...prefix, choice("bank1", "A1", "diagonalA"), choice("bank2", "A2")];
+    const before = structuredClone(state);
+    const publicBefore = game.getPublicView(context);
+    const signal = { type: "suggestPlan", payload: { ...payload(prefix), expectedVersion: state.version, planRevision: 3, proposal } };
+    expect(game.handleSignal!(context, "p2", signal)).toEqual({ recipientPlayerIds: ["p0", "p2"], type: "yutnori.planSuggestion", payload: { ...signal.payload, playerId: "p2" } });
+    expect(state).toEqual(before);
+    expect(game.getPublicView(context)).toEqual(publicBefore);
+  });
+
+  it("rejects legal incomplete proposals and accepts a complete plan from an empty prefix", () => {
+    const { state, bank, context, payload } = fixture(); bank("mo", "yut", "mo");
+    const base = { expectedVersion: state.version, planRevision: 0 };
+    expect(game.handleSignal!(context, "p2", { type: "suggestPlan", payload: { ...payload([]), ...base, proposal: [choice("bank0")] } })).toBeUndefined();
+    const proposal = [choice("bank0"), choice("bank1", "A1", "diagonalA")];
+    expect(game.handleSignal!(context, "p2", { type: "suggestPlan", payload: { ...payload([choice("bank0")]), ...base, proposal } })).toBeUndefined();
+    proposal.push(choice("bank2", "A2"));
+    expect(game.handleSignal!(context, "p2", { type: "suggestPlan", payload: { ...payload([]), ...base, proposal } })).toMatchObject({ payload: { moves: [], proposal } });
+  });
+
+  it("rejects plan suggestions from other roles or with stale context, changed prefixes or illegal extensions", () => {
+    const { state, bank, context, payload } = fixture(); bank("mo", "yut", "mo");
+    const signal = { type: "suggestPlan", payload: { ...payload([choice("bank0")]), expectedVersion: state.version, planRevision: 3, proposal: [choice("bank0"), choice("bank1", "A1", "diagonalA")] } };
+    for (const playerId of ["p0", "p1", "p3", "outsider"]) expect(game.handleSignal!(context, playerId, signal)).toBeUndefined();
+    for (const patch of [
+      { expectedVersion: 0 }, { turnId: 99 }, { matchId: "old" }, { planRevision: -1 }, { planRevision: 1.5 },
+      { proposal: [] }, { proposal: [choice("bank0")] }, { proposal: null },
+      { proposal: [choice("bank1"), choice("bank0")] },
+      { proposal: [choice("bank0", "A2"), choice("bank1")] },
+      { proposal: [choice("bank0"), choice("bank0")] },
+      { proposal: [choice("bank0"), choice("bank1", "B1")] },
+      { proposal: [choice("bank0"), { rollId: "bank1", discard: true, pieceId: "A1" }] }
+    ]) expect(game.handleSignal!(context, "p2", { ...signal, payload: { ...signal.payload, ...patch } })).toBeUndefined();
+  });
+
+  it("allows capture as a proposal endpoint but rejects any continuation and presentation or throw locks", () => {
+    const { state, stage, bank, context, payload } = fixture(); bank("mo", "yut");
+    stage.pieces[4]!.nodeId = "o5";
+    const signal = { type: "suggestPlan", payload: { ...payload([]), expectedVersion: state.version, planRevision: 0, proposal: [choice("bank0")] } };
+    expect(game.handleSignal!(context, "p2", signal)).toMatchObject({ type: "yutnori.planSuggestion" });
+    expect(game.handleSignal!(context, "p2", { ...signal, payload: { ...signal.payload, proposal: [choice("bank0"), choice("bank1")] } })).toBeUndefined();
+    stage.turn.throwsRemaining = 1;
+    expect(game.handleSignal!(context, "p2", signal)).toBeUndefined();
+    stage.turn.throwsRemaining = 0; stage.turn.mandatoryThrows = 1;
+    expect(game.handleSignal!(context, "p2", signal)).toBeUndefined();
+    stage.turn.mandatoryThrows = 0;
+    stage.lastMoveSequence = { sequenceId: "playing", startedAt: context.now, durationMs: 500, moves: [] };
+    expect(game.handleSignal!(context, "p2", signal)).toBeUndefined();
+  });
+
+  it("preserves explicit discard prefixes and normalizes JSON key order in proposals", () => {
+    const { state, stage, bank, context, payload } = fixture(); bank("mo");
+    stage.turn.pending.push({ rollId: "back", outcome: "backDo", steps: -1 });
+    const signal = { type: "suggestPlan", payload: { ...payload([{ rollId: "back", discard: true }]), expectedVersion: state.version, planRevision: 1, proposal: [{ discard: true, rollId: "back" }, choice("bank0")] } };
+    expect(game.handleSignal!(context, "p2", signal)).toMatchObject({ payload: { moves: [{ rollId: "back", discard: true }], proposal: [{ rollId: "back", discard: true }, choice("bank0")] } });
+    expect(game.handleSignal!(context, "p2", { ...signal, payload: { ...signal.payload, proposal: [choice("bank0"), { rollId: "back", discard: true }] } })).toBeUndefined();
+  });
+
   it("relays a controller's valid prefix or clear without changing board, version or public view", () => {
     const { state, stage, bank, context, payload } = fixture(); bank("mo", "yut");
     const before = structuredClone(state);

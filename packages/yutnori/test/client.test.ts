@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { GameClientContext } from "@bighouse/game-sdk/client";
-import { mountGame, selectedLegalMove, validSuggestions } from "../src/client";
+import { mountGame, selectedLegalMove, validSuggestions, validPlanSuggestions } from "../src/client";
 import { getLegalMoves } from "../src/board";
 import type { YutnoriPublicView } from "../src/types";
 vi.mock("../src/scene", () => ({ createThrowScene: () => ({ show: vi.fn(), destroy: vi.fn() }) }));
@@ -64,7 +64,9 @@ describe("yutnori game client", () => {
     const context = fixture("c");
     const { click } = mount(context);
     click('[data-piece="A1"]'); click('[data-destination="o1"]');
-    expect(context.sendSignal).toHaveBeenCalledWith({ type: "suggestMove", payload: { matchId: "match-1", turnId: 1, expectedVersion: 1, planRevision: 0, moves: [], move: { rollId: "r1", pieceId: "A1", pathId: "outer" } } });
+    expect(context.sendSignal).not.toHaveBeenCalled();
+    click('[data-command="plan-propose"]');
+    expect(context.sendSignal).toHaveBeenCalledWith({ type: "suggestPlan", payload: { matchId: "match-1", turnId: 1, expectedVersion: 1, planRevision: 0, moves: [], proposal: [{ rollId: "r1", pieceId: "A1", pathId: "outer" }] } });
     expect(context.sendAction).not.toHaveBeenCalled();
   });
   it("accepting a teammate suggestion previews it and still requires explicit confirmation", () => {
@@ -318,9 +320,9 @@ describe("yutnori game client", () => {
     const partner = { ...context, playerId: "c", sendSignal: vi.fn(), events: [{ id: "preview1", type: "yutnori.preview", visibility: "private" as const, playerId: "c", createdAt: now + 550, payload: { ...signal.payload, playerId: "a" } }] };
     const peer = mount(partner);
     expect(peer.container.querySelector('[data-node="o5"] .has-piece')).not.toBeNull();
-    expect(peer.container.textContent).toContain("우리 팀에만 보여요");
-    peer.click('[data-piece="A1"]'); peer.click('[data-destination="a2"]');
-    expect(partner.sendSignal).toHaveBeenCalledWith({ type: "suggestMove", payload: { matchId: "match-1", turnId: 1, expectedVersion: 1, planRevision: signal.payload.revision, moves: signal.payload.moves, move: { rollId: "g", pieceId: "A1", pathId: "diagonalA" } } });
+    expect(peer.container.textContent).toContain("이어서");
+    peer.click('[data-piece="A1"]'); peer.click('[data-destination="a2"]'); peer.click('[data-command="plan-propose"]');
+    expect(partner.sendSignal).toHaveBeenCalledWith({ type: "suggestPlan", payload: { matchId: "match-1", turnId: 1, expectedVersion: 1, planRevision: signal.payload.revision, moves: signal.payload.moves, proposal: [{ rollId: "m", pieceId: "A1", pathId: "outer" }, { rollId: "g", pieceId: "A1", pathId: "diagonalA" }] } });
     expect(context.sendAction).not.toHaveBeenCalled();
   });
   it("rejects team suggestions with the wrong board version, revision, or draft prefix", () => {
@@ -433,6 +435,106 @@ describe("yutnori game client", () => {
     game.update({ ...fixture(), version: 2 });
     expect(releaseCapture).toHaveBeenCalledWith(2);
     expect(container.querySelector(".yut-drag-piece")).toBeNull();
+  });
+
+  it("lets a teammate compose and undo several moves before sending a completed proposal", () => {
+    const context = fixture("c");
+    const view = context.publicView as unknown as YutnoriPublicView;
+    view.turn.pending = [{ rollId: "m", outcome: "mo", steps: 5 }, { rollId: "g", outcome: "gae", steps: 2 }];
+    view.legalMoves = getLegalMoves(view);
+    const { container, click } = mount(context);
+    click('[data-piece="A1"]'); click('[data-destination="o5"]');
+    expect(container.querySelector<HTMLButtonElement>('[data-command="plan-propose"]')!.disabled).toBe(true);
+    expect(context.sendSignal).not.toHaveBeenCalled();
+    click('[data-destination="a2"]');
+    expect(container.querySelector<HTMLButtonElement>('[data-command="plan-propose"]')!.disabled).toBe(false);
+    expect(document.activeElement).toBe(container.querySelector('[data-command="plan-propose"]'));
+    click('[data-command="plan-undo"]');
+    expect(container.querySelector('[data-node="o5"] .has-piece')).not.toBeNull();
+    click('[data-destination="o7"]'); click('[data-command="plan-propose"]');
+    expect(context.sendSignal).toHaveBeenCalledWith({ type: "suggestPlan", payload: { matchId: "match-1", turnId: 1, expectedVersion: 1, planRevision: 0, moves: [], proposal: [{ rollId: "m", pieceId: "A1", pathId: "outer" }, { rollId: "g", pieceId: "A1", pathId: "outer" }] } });
+    click('[data-command="plan-propose"]');
+    expect(context.sendSignal).toHaveBeenCalledTimes(1);
+    expect(context.sendAction).not.toHaveBeenCalled();
+    expect(view.pieces[0]!.nodeId).toBe("reserve");
+  });
+  it("shows a teammate proposal as a separate ghost and applying commits it directly once", () => {
+    const context = fixture();
+    const proposal = [{ rollId: "r1", pieceId: "A1", pathId: "outer" }];
+    context.events = [{ id: "p1", type: "yutnori.planSuggestion", visibility: "private", createdAt: now, payload: { matchId: "match-1", turnId: 1, expectedVersion: 1, planRevision: 0, moves: [], proposal, playerId: "c" } }];
+    const { container, click } = mount(context);
+    expect(container.querySelectorAll('.yut-proposal-ghost[data-proposal-player="c"]')).toHaveLength(1);
+    expect(container.querySelector('[data-node="o1"] .has-piece')).toBeNull();
+    expect(container.querySelector('[data-piece="A1"]')).not.toBeNull();
+    expect(context.sendAction).not.toHaveBeenCalled();
+    expect(container.querySelector('.yut-proposals-panel')!.hasAttribute("hidden")).toBe(false);
+    expect(container.querySelector('.yut-plan-proposal')!.textContent).toContain("적용하면 바로 이동해요");
+    click('[data-apply-proposal="c"]');
+    expect(context.sendAction).toHaveBeenCalledWith({ type: "commitMoves", payload: { matchId: "match-1", turnId: 1, moves: proposal } });
+    click('[data-apply-proposal="c"]');
+    expect(context.sendAction).toHaveBeenCalledTimes(1);
+  });
+  it("invalidates proposal ghosts when the controller changes the draft", () => {
+    const context = fixture();
+    context.events = [{ id: "p1", type: "yutnori.planSuggestion", visibility: "private", createdAt: now, payload: { matchId: "match-1", turnId: 1, expectedVersion: 1, planRevision: 0, moves: [], proposal: [{ rollId: "r1", pieceId: "A1", pathId: "outer" }], playerId: "c" } }];
+    const { container, click } = mount(context);
+    click('[data-piece="A2"]'); click('[data-destination="o1"]');
+    expect(container.querySelector(".yut-proposal-ghost")).toBeNull();
+    expect(container.querySelector("[data-apply-proposal]")).toBeNull();
+    expect(context.sendAction).not.toHaveBeenCalled();
+  });
+  it("clears a teammate's local suffix when a new controller preview arrives", () => {
+    const context = fixture("c");
+    const view = context.publicView as unknown as YutnoriPublicView;
+    view.turn.pending = [{ rollId: "m", outcome: "mo", steps: 5 }, { rollId: "g", outcome: "gae", steps: 2 }];
+    view.legalMoves = getLegalMoves(view);
+    const { container, click, game } = mount(context);
+    click('[data-piece="A1"]'); click('[data-destination="o5"]');
+    game.update({ ...context, events: [{ id: "new", type: "yutnori.preview", visibility: "private", createdAt: now, payload: { matchId: "match-1", turnId: 1, expectedVersion: 1, revision: 8, playerId: "a", moves: [{ rollId: "m", pieceId: "A2", pathId: "outer" }] } }] });
+    expect(container.querySelector('[data-command="plan-undo"]')).toBeNull();
+    expect(container.querySelector('[data-node="o5"] .yut-piece-face')!.textContent).toBe("A2");
+    expect(container.querySelector('[data-piece="A1"]')).not.toBeNull();
+    expect(container.textContent).toContain("조작자의 선택이 바뀌었어요");
+    expect(context.sendSignal).not.toHaveBeenCalled();
+  });
+  it("rejects incomplete, stale, unauthorized and expired plan proposals", () => {
+    const context = fixture();
+    const view = context.publicView as unknown as YutnoriPublicView;
+    const event = { id: "p", type: "yutnori.planSuggestion", visibility: "private" as const, createdAt: now, payload: { matchId: "match-1", turnId: 1, expectedVersion: 1, planRevision: 0, playerId: "c", moves: [], proposal: [{ rollId: "r1", pieceId: "A1", pathId: "outer" }] } };
+    expect(validPlanSuggestions([event], view, now, 1, 0, [])).toHaveLength(1);
+    expect(validPlanSuggestions([event], view, now, 2, 0, [])).toHaveLength(0);
+    expect(validPlanSuggestions([event], view, now, 1, 1, [])).toHaveLength(0);
+    expect(validPlanSuggestions([event], view, now + 30_001, 1, 0, [])).toHaveLength(0);
+    expect(validPlanSuggestions([{ ...event, payload: { ...event.payload, playerId: "b" } }], view, now, 1, 0, [])).toHaveLength(0);
+    view.turn.pending.push({ rollId: "r2", outcome: "gae", steps: 2 });
+    expect(validPlanSuggestions([event], view, now, 1, 0, [])).toHaveLength(0);
+  });
+
+  it("opens new proposal events without stealing focus and respects a manually collapsed panel", () => {
+    const context = fixture();
+    const { container, click, game } = mount(context);
+    const piece = container.querySelector<HTMLButtonElement>('[data-piece="A1"]')!;
+    piece.focus();
+    const proposal = { id: "proposal1", type: "yutnori.planSuggestion", visibility: "private" as const, createdAt: now, payload: { matchId: "match-1", turnId: 1, expectedVersion: 1, planRevision: 0, moves: [], proposal: [{ rollId: "r1", pieceId: "A1", pathId: "outer" }], playerId: "c" } };
+    game.update({ ...context, events: [proposal] });
+    expect(container.querySelector('.yut-proposals-panel')!.hasAttribute("hidden")).toBe(false);
+    expect(document.activeElement).toBe(container.querySelector('[data-piece="A1"]'));
+    click('[data-command="toggle-proposals"]');
+    vi.advanceTimersByTime(1500);
+    game.update({ ...context, events: [proposal], uiRevision: 2 });
+    expect(container.querySelector('.yut-proposals-panel')!.hasAttribute("hidden")).toBe(true);
+    game.update({ ...context, events: [proposal, { ...proposal, id: "proposal2", createdAt: now + 1500 }] });
+    expect(container.querySelector('.yut-proposals-panel')!.hasAttribute("hidden")).toBe(false);
+  });
+
+  it("places reserve and finish team panels below the board and action area", () => {
+    const { container } = mount(fixture());
+    const teams = container.querySelector('[data-role="teams"]')!;
+    const layout = container.querySelector('.yut-layout')!;
+    const footer = container.querySelector('.yut-footer')!;
+    expect(layout.compareDocumentPosition(teams) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(teams.compareDocumentPosition(footer) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(teams.querySelector<HTMLButtonElement>('[data-piece="A1"]')!.disabled).toBe(false);
   });
 
 });

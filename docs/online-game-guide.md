@@ -821,3 +821,7 @@ Turn vibration is optional. The key includes match, turn, and player, is remembe
 - Send public and team chat from four connected players; check each socket's deliveries. Change team membership and verify old `expectedTeam` guards are rejected and old drafts/IME text are cleared.
 - Reconnect or replace a player: restore the board from snapshots without replaying old private suggestions or chat history.
 - Check all four server faces, low-motion/static fallback, repeat turn-notification suppression, explicit move confirmation, keyboard focus, and phone layouts.
+
+### 윷놀이 완성안 제안
+
+윷놀이 팀원은 조작자와 같은 말판 입력 UI에서 남은 이동 순서를 완성하고 `suggestPlan`으로 제안한다. 이 신호는 조작자 초안 `moves`와 전체 `proposal`, 버전·차례·초안 revision을 포함한다. 어댑터는 완결된 합법 계획만 같은 팀에 `yutnori.planSuggestion`으로 전달한다. 조작자 하단의 **팀 구성원의 제안 → 적용**은 현재 문맥을 재검증한 후 일반 `commitMoves`를 즉시 제출한다. 제안자의 로컬 조작과 신호 전달은 공개 말판·버전을 변경하지 않으며, 실제 이동 권한은 윷을 던진 현재 조작자에게 유지된다. 상세 계약은 `docs/yutnori.md`를 따른다.

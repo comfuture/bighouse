@@ -22,6 +22,7 @@ export function turnNotificationKey(view: YutnoriPublicView, playerId: string): 
   return view.currentPlayerId === playerId && !view.winnerTeamId ? `${view.matchId}:${view.turn.turnId}:${playerId}` : undefined;
 }
 type TeamPreview = { matchId: string; turnId: number; expectedVersion: number; revision: number; moves: PlanChoice[]; playerId: string };
+type PlanSuggestion = Omit<TeamPreview, "revision"> & { planRevision: number; proposal: PlanChoice[] };
 type ContextualSuggestion = YutSuggestion & { expectedVersion?: number; planRevision?: number; moves?: PlanChoice[]; move?: { rollId: string; pieceId: string; pathId: string } };
 export function validSuggestions(events: NonNullable<GameClientSnapshot["events"]>, view: YutnoriPublicView, now: number, version?: number, revision = 0, prefix: PlanChoice[] = []): ContextualSuggestion[] {
   const latest = new Map<string, ContextualSuggestion>();
@@ -42,6 +43,21 @@ export function validSuggestions(events: NonNullable<GameClientSnapshot["events"
   }
   return [...latest.values()];
 }
+/** Proposals belong to one exact controller draft; never reinterpret a stale proposal. */
+export function validPlanSuggestions(events: NonNullable<GameClientSnapshot["events"]>, view: YutnoriPublicView, now: number, version: number, revision: number, prefix: PlanChoice[]): PlanSuggestion[] {
+  const latest = new Map<string, PlanSuggestion>();
+  if (mandatoryThrows(view) > 0 || view.turn.throwsRemaining > 0) return [];
+  const teammates = view.teams.find((team) => team.teamId === view.turn.teamId)?.playerIds ?? [];
+  for (const event of events) {
+    if (event.type !== "yutnori.planSuggestion" || now - event.createdAt > 30_000) continue;
+    const proposal = event.payload as unknown as PlanSuggestion;
+    if (proposal.matchId !== view.matchId || proposal.turnId !== view.turn.turnId || proposal.expectedVersion !== version || proposal.planRevision !== revision) continue;
+    if (proposal.playerId === view.currentPlayerId || !teammates.includes(proposal.playerId)) continue;
+    if (!Array.isArray(proposal.moves) || !Array.isArray(proposal.proposal) || JSON.stringify(proposal.moves) !== JSON.stringify(prefix) || proposal.proposal.length <= prefix.length || JSON.stringify(proposal.proposal.slice(0, prefix.length)) !== JSON.stringify(prefix)) continue;
+    try { if (simulateMovePlan(view, proposal.proposal, now).complete) latest.set(proposal.playerId, proposal); } catch { /* An invalid or stale suggestion never changes the board. */ }
+  }
+  return [...latest.values()];
+}
 export function selectedLegalMove(view: YutnoriPublicView, rollId?: string, pieceId?: string, pathId?: string): LegalMove | undefined {
   return view.legalMoves.find((move) => move.rollId === rollId && move.pieceId === pieceId && move.pathId === pathId);
 }
@@ -51,6 +67,11 @@ export function mountGame(container: HTMLElement, context: GameClientContext): M
   let view = context.publicView as unknown as YutnoriPublicView;
   let displayView = view;
   let draftMoves: PlanChoice[] = [];
+  let teammateMoves: PlanChoice[] = [];
+  let teammateBaseKey = "";
+  let proposalsOpen = false;
+  const seenProposalEvents = new Set<string>();
+  let sentProposalKey = "";
   let previewMoves: LegalMove[] = [];
   let displayedChoices: PlanChoice[] = [];
   let planRevision = 0;
@@ -76,13 +97,13 @@ export function mountGame(container: HTMLElement, context: GameClientContext): M
   surface.innerHTML = `
     <header class="yut-header"><div><span class="yut-toy-logo" aria-hidden="true"><i></i><i></i><i></i></span><h1>윷놀이</h1><span class="yut-eyebrow">개인전 · 팀전</span></div></header>
     <div class="yut-turn" data-role="turn" aria-live="polite" aria-atomic="true"></div>
-    <div class="yut-teams" data-role="teams"></div>
     <div class="yut-options"><span>● 청팀 · ■ 홍팀 · 겹친 말은 함께 이동</span><label class="yut-vibration"><input type="checkbox" data-role="vibration" ${vibrationEnabled ? "checked" : ""}> 차례 진동</label><label class="yut-sound"><input type="checkbox" data-role="sound" ${soundMuted ? "" : "checked"}> 효과음</label></div>
-    <div class="yut-layout"><div class="yut-table-column"><div class="yut-board-wrap"><div class="yut-board" data-role="board" aria-label="29개 밭으로 이루어진 윷판"></div></div><div class="yut-board-caption"><span data-role="board-hint">말을 누르고 가고 싶은 곳을 골라요</span><span data-role="ghost-hint" hidden>빈 말은 원래 자리예요</span></div><section class="yut-action-card" data-role="actions"></section></div>
+    <div class="yut-layout"><div class="yut-table-column"><div class="yut-board-wrap"><div class="yut-board" data-role="board" aria-label="29개 밭으로 이루어진 윷판"></div></div><div class="yut-board-caption"><span data-role="board-hint">말을 누르고 가고 싶은 곳을 골라요</span><span data-role="ghost-hint" hidden>빈 말은 원래 자리예요</span></div><section class="yut-action-card" data-role="actions"></section><section class="yut-plan-suggestions" data-role="plan-suggestions" aria-label="팀 구성원의 제안"></section></div>
     <aside class="yut-console" aria-label="윷 던지기와 말 이동"><section class="yut-throw-card"><div class="yut-section-heading"><span>윷 던지기</span><span class="yut-live">모두에게 공유</span></div><div class="yut-scene-summary" data-role="scene-summary" aria-label="최근 윷 결과"></div><div class="yut-outcome" data-role="outcome" aria-live="polite"></div><div class="yut-throw-controls" data-role="throw-controls"></div><p class="yut-face-legend" data-role="face-legend"></p></section><section class="yut-suggestions" data-role="suggestions" aria-label="팀원 이동 제안"></section></aside></div>
     <div class="yut-throw-overlay" data-role="throw-overlay" role="status" aria-live="polite" aria-label="모두 함께 보는 윷 던지기" hidden>
       <div class="yut-throw-presentation"><div class="yut-overlay-header"><span>윷 던지기</span><span data-role="overlay-player"></span></div><div class="yut-scene" data-role="scene" role="img" aria-label="네 개의 윷가락"></div><div class="yut-overlay-result" data-role="overlay-result" aria-live="polite"></div><p class="yut-overlay-note">모두 같은 윷을 보고 있어요</p></div>
     </div>
+    <div class="yut-teams yut-teams-bottom" data-role="teams" aria-label="팀별 대기 말과 완주 현황"></div>
     <div class="yut-message" data-role="message" role="status"></div>
     <footer class="yut-footer"><details><summary>윷놀이 규칙</summary><div class="yut-rules"><p>각 팀의 네 말을 모두 완주시키면 승리합니다. 도 1칸 · 개 2칸 · 걸 3칸 · 윷 4칸 · 모 5칸입니다. <span data-role="backdo-rule"></span></p><p>대기 말도 결과 하나를 사용해 출발합니다. 같은 팀 말은 함께 업고, 상대 말이 있는 밭에 정확히 도착하면 모두 잡습니다. 윷·모는 이동권으로 보관하고 한 번 더 던집니다. 도·개·걸·윷·모·빽도는 원하는 순서로 사용합니다. 말을 누르고 목적지를 골라 본 뒤 마지막에 한 번만 확정하세요. 잡으면 같은 조작자의 새 차례가 시작되고, 보관한 이동권을 유지한 채 먼저 윷을 던집니다.</p><p>모서리나 중앙에 정확히 멈춘 말은 다음 이동에서 지름길을 고를 수 있습니다. 출발점을 지나야 완주하며, 남는 걸음은 상관없습니다. <span data-role="backdo-discard-rule"></span></p><p>2:2 팀전은 1·3번과 2·4번 자리가 한 팀입니다. 팀끼리 번갈아 진행하고, 같은 팀의 조작자도 번갈아 맡습니다. 팀원은 제안하고 현재 조작자가 최종 이동을 확정합니다.</p></div></details><details><summary>진행 기록</summary><ol data-role="history" class="yut-history"></ol></details></footer>`;
   container.replaceChildren(surface);
@@ -118,7 +139,15 @@ export function mountGame(container: HTMLElement, context: GameClientContext): M
     draftComplete = false;
     draftStopReason = "incomplete";
     receivedPreview = latestTeamPreview();
-    displayedChoices = controller() ? draftMoves : receivedPreview?.moves ?? [];
+    if (teammate()) {
+      const baseKey = JSON.stringify([view.matchId, view.turn.turnId, snapshot.version, receivedPreview?.revision ?? 0, receivedPreview?.moves ?? []]);
+      if (baseKey !== teammateBaseKey) {
+        if (teammateMoves.length) message = "조작자의 선택이 바뀌었어요. 새 말판에서 이어서 골라주세요.";
+        teammateMoves = []; sentProposalKey = ""; branchChoices = []; cancelDrag();
+        teammateBaseKey = baseKey;
+      }
+    }
+    displayedChoices = controller() ? draftMoves : teammate() ? [...(receivedPreview?.moves ?? []), ...teammateMoves] : [];
     if (!displayedChoices.length) return;
     try {
       const result = simulateMovePlan(view, displayedChoices, serverNow());
@@ -128,6 +157,7 @@ export function mountGame(container: HTMLElement, context: GameClientContext): M
       draftStopReason = result.stopReason;
     } catch {
       if (controller()) draftMoves = [];
+      else teammateMoves = [];
       displayedChoices = [];
       message = "말판이 바뀌었어요. 지금 자리에서 다시 골라주세요.";
     }
@@ -149,13 +179,8 @@ export function mountGame(container: HTMLElement, context: GameClientContext): M
     if (!canSelect() || draftComplete) return;
     const choice = { rollId: move.rollId, pieceId: move.pieceId, pathId: move.pathId };
     branchChoices = [];
-    if (teammate()) {
-      context.sendSignal?.({ type: "suggestMove", payload: { matchId: view.matchId, turnId: view.turn.turnId, expectedVersion: snapshot.version, planRevision: receivedPreview?.revision ?? 0, moves: displayedChoices.map((item) => ({ ...item })), move: choice } });
-      message = "이 자리로 가자고 제안했어요!";
-      render();
-      return;
-    }
-    draftMoves.push(choice);
+    (controller() ? draftMoves : teammateMoves).push(choice);
+    sentProposalKey = "";
     preparePreview();
     if (!displayView.legalMoves.some((entry) => entry.pieceId === pieceId)) pieceId = undefined;
     message = "";
@@ -165,7 +190,7 @@ export function mountGame(container: HTMLElement, context: GameClientContext): M
   }
   function focusNextChoice(): void {
     const candidates = [...surface.querySelectorAll<HTMLButtonElement>("[data-piece]:not(:disabled)")];
-    const target = draftComplete ? surface.querySelector<HTMLButtonElement>('[data-command="plan-commit"]') : candidates.find((element) => element.dataset.piece === pieceId) ?? candidates[0];
+    const target = draftComplete ? surface.querySelector<HTMLButtonElement>(teammate() ? '[data-command="plan-propose"]' : '[data-command="plan-commit"]') : candidates.find((element) => element.dataset.piece === pieceId) ?? candidates[0];
     target?.focus({ preventScroll: true });
   }
   function chooseDestination(destination: string): void {
@@ -238,7 +263,16 @@ export function mountGame(container: HTMLElement, context: GameClientContext): M
       if (!moves.length) return "";
       return `<button type="button" class="yut-offboard-target" data-destination="${destination}" ${canSelect() ? "" : "disabled"}>${label} <span>${escape(targetLabels(moves))}</span></button>`;
     }
-    el("board").innerHTML = `<svg class="yut-board-lines" viewBox="0 0 100 100" aria-hidden="true">${markers}<g>${lines}</g>${directions}${pathMarkup}</svg>${ghosts}${BOARD_NODES.map((node) => {
+    const proposalGhosts = currentPlanSuggestions().map((suggestion, proposalIndex) => {
+      const proposed = simulateMovePlan(view, suggestion.proposal, serverNow()).stage;
+      const pieces = proposed.pieces.filter((piece) => piece.teamId === view.turn.teamId && nodeMap.has(piece.nodeId) && displayView.pieces.find((entry) => entry.pieceId === piece.pieceId)?.nodeId !== piece.nodeId);
+      return pieces.filter((piece, index) => pieces.findIndex((entry) => entry.stackId === piece.stackId) === index).map((piece) => {
+        const node = nodeMap.get(piece.nodeId)!;
+        const ids = proposed.pieces.filter((entry) => entry.stackId === piece.stackId).map((entry) => entry.pieceId);
+        return `<span class="yut-proposal-ghost team-${piece.teamId}" data-proposal-player="${escape(suggestion.playerId)}" style="left:${node.x}%;top:${node.y}%;--proposal-index:${proposalIndex}" aria-label="${escape(`${name(suggestion.playerId)} 님의 제안: ${ids.join(", ")} ${locationName(piece.nodeId)}`)}">${createPieceMarkup(piece.teamId, ids)}<span class="yut-proposal-name">${escape(name(suggestion.playerId))}</span></span>`;
+      }).join("");
+    }).join("");
+    el("board").innerHTML = `<svg class="yut-board-lines" viewBox="0 0 100 100" aria-hidden="true">${markers}<g>${lines}</g>${directions}${pathMarkup}</svg>${ghosts}${proposalGhosts}${BOARD_NODES.map((node) => {
       const pieces = displayView.pieces.filter((piece) => piece.nodeId === node.nodeId);
       const first = pieces[0];
       const targets = candidates.filter((move) => move.destination === node.nodeId);
@@ -256,22 +290,43 @@ export function mountGame(container: HTMLElement, context: GameClientContext): M
   function currentSuggestions(): ContextualSuggestion[] {
     return validSuggestions(snapshot.events ?? [], view, serverNow(), snapshot.version, controller() ? planRevision : receivedPreview?.revision ?? 0, displayedChoices);
   }
+  function currentPlanSuggestions(): PlanSuggestion[] {
+    return controller() ? validPlanSuggestions(snapshot.events ?? [], view, serverNow(), snapshot.version, planRevision, draftMoves) : [];
+  }
+  function renderPlanSuggestions(): void {
+    const suggestions = currentPlanSuggestions();
+    for (const suggestion of suggestions) {
+      const event = [...(snapshot.events ?? [])].reverse().find((entry) => entry.type === "yutnori.planSuggestion" && entry.payload === (suggestion as unknown));
+      if (event && !seenProposalEvents.has(event.id)) {
+        seenProposalEvents.add(event.id);
+        proposalsOpen = true;
+      }
+    }
+    while (seenProposalEvents.size > 128) seenProposalEvents.delete(seenProposalEvents.values().next().value!);
+    const panel = el("plan-suggestions");
+    panel.hidden = !controller() || (view.teams.find((team) => team.teamId === myTeam())?.playerIds.length ?? 0) < 2;
+    panel.innerHTML = `<button type="button" class="yut-proposals-toggle" data-command="toggle-proposals" aria-expanded="${proposalsOpen}">팀 구성원의 제안 <span>${suggestions.length}</span><span aria-hidden="true">${proposalsOpen ? "⌃" : "⌄"}</span></button><div class="yut-proposals-panel" role="dialog" aria-label="팀 구성원의 제안" aria-modal="false" ${proposalsOpen ? "" : "hidden"}>${suggestions.length ? suggestions.map((suggestion) => {
+      const result = simulateMovePlan(view, suggestion.proposal, serverNow());
+      const description = suggestion.proposal.map((choice) => { const roll = view.turn.pending.find((item) => item.rollId === choice.rollId)!; if ("discard" in choice) return `${OUTCOME_LABELS[roll.outcome]} 넘기기`; const move = result.moves.find((item) => item.rollId === choice.rollId)!; return `${OUTCOME_LABELS[roll.outcome]} · ${choice.pieceId} ${locationName(move.destination)}`; }).join(" → ");
+      return `<article class="yut-plan-proposal"><div><strong>${escape(name(suggestion.playerId))} 님의 제안</strong><p>${escape(description)}</p><small>${result.complete ? "적용하면 바로 이동해요" : "모든 결과를 골라야 보낼 수 있어요"}</small></div><button type="button" data-apply-proposal="${escape(suggestion.playerId)}" ${canSelect() ? "" : "disabled"}>적용</button></article>`;
+    }).join("") : '<p class="yut-empty">팀원의 제안이 오면 반투명 말로 함께 보여요.</p>'}</div>`;
+  }
   function renderActions(): void {
     const hint = snapshot.phase === "waiting" ? "모두 모이면 한 판 시작해요!"
       : animating() ? "윷이 내려오고 있어요!" : movementAnimating() ? "말들이 길을 따라 가고 있어요!"
       : view.turn.throwsRemaining > 0 ? "먼저 윷을 한 번 더 던져요!"
       : !controller() && !teammate() ? `${name(view.currentPlayerId)} 님이 고르고 있어요`
       : draftComplete ? draftStopReason === "capture" ? "잡았다! 이대로 갈까요?" : "좋아요, 이대로 갈까요?"
-      : pieceId ? teammate() ? "가고 싶은 곳을 눌러 팀원에게 제안해요" : "가고 싶은 곳을 눌러요" : "움직일 말을 먼저 눌러요";
-    el("board-hint").textContent = displayedChoices.length ? (controller() ? "아직 미리보기예요 · 마지막에 한 번만 확정!" : `${name(view.currentPlayerId)} 님이 고르는 중 · 우리 팀에만 보여요`) : hint;
+      : pieceId ? "가고 싶은 곳을 눌러요" : "움직일 말을 먼저 눌러요";
+    el("board-hint").textContent = displayedChoices.length ? (controller() ? "아직 미리보기예요 · 마지막에 한 번만 확정!" : teammateMoves.length ? "내 제안 미리보기 · 다 고르면 제안 보내기" : `${name(view.currentPlayerId)} 님의 미리보기 · 이어서 골라보세요`) : hint;
     el("actions").innerHTML = `<div class="yut-hand" aria-label="사용할 결과 패">${view.turn.pending.map((roll) => {
       const order = displayedChoices.findIndex((choice) => choice.rollId === roll.rollId);
       const canDiscard = order < 0 && !draftComplete && !displayView.legalMoves.some((move) => move.rollId === roll.rollId);
-      return `<div class="yut-hand-tile ${order >= 0 ? "is-used" : ""}" data-roll="${escape(roll.rollId)}"><strong>${OUTCOME_LABELS[roll.outcome]}</strong><span>${roll.steps > 0 ? "+" : ""}${roll.steps}</span>${order >= 0 ? `<small>${order + 1}</small>` : canDiscard && controller() && canSelect() ? `<button type="button" data-discard="${escape(roll.rollId)}">쓸 말 없음 · 넘기기</button>` : ""}</div>`;
-    }).join("") || '<span class="yut-hand-empty">윷을 던지면 패가 생겨요</span>'}</div><div class="yut-board-actions"><p class="yut-hint">${escape(hint)}</p>${controller() && draftMoves.length ? `<button type="button" class="yut-undo" data-command="plan-undo" ${canSelect() ? "" : "disabled"} aria-label="마지막 선택 되돌리기">↶ 되돌리기</button><button type="button" class="yut-confirm" data-command="plan-commit" ${canSelect() && draftComplete ? "" : "disabled"}>${draftStopReason === "capture" ? "잡고 한 번 더!" : "이대로 가자!"}</button>` : ""}</div>`;
+      return `<div class="yut-hand-tile ${order >= 0 ? "is-used" : ""}" data-roll="${escape(roll.rollId)}"><strong>${OUTCOME_LABELS[roll.outcome]}</strong><span>${roll.steps > 0 ? "+" : ""}${roll.steps}</span>${order >= 0 ? `<small>${order + 1}</small>` : canDiscard && (controller() || teammate()) && canSelect() ? `<button type="button" data-discard="${escape(roll.rollId)}">쓸 말 없음 · 넘기기</button>` : ""}</div>`;
+    }).join("") || '<span class="yut-hand-empty">윷을 던지면 패가 생겨요</span>'}</div><div class="yut-board-actions"><p class="yut-hint">${escape(hint)}</p>${(controller() && draftMoves.length) || (teammate() && teammateMoves.length) ? `<button type="button" class="yut-undo" data-command="plan-undo" ${canSelect() ? "" : "disabled"} aria-label="마지막 선택 되돌리기">↶ 되돌리기</button><button type="button" class="yut-confirm" data-command="${teammate() ? "plan-propose" : "plan-commit"}" ${canSelect() && (teammate() ? draftComplete && sentProposalKey !== JSON.stringify(displayedChoices) : draftComplete) ? "" : "disabled"}>${teammate() ? sentProposalKey === JSON.stringify(displayedChoices) ? "제안 보냈어요" : "제안 보내기" : draftStopReason === "capture" ? "잡고 한 번 더!" : "이대로 가자!"}</button>` : ""}</div>`;
     const suggestions = currentSuggestions();
     el("suggestions").hidden = !active() || view.turn.teamId !== myTeam();
-    el("suggestions").innerHTML = `<div class="yut-section-heading"><span>우리 팀 생각</span><span>팀에만 보여요</span></div>${suggestions.length ? suggestions.map((suggestion) => { const move = displayView.legalMoves.find((entry) => moveKey(entry) === moveKey(suggestion))!; return `<button type="button" class="yut-suggestion" data-suggestion="${escape(moveKey(move))}" ${controller() && canSelect() && !draftComplete ? "" : "disabled"}><strong>${escape(name(suggestion.playerId))}: 여기로 가자!</strong><span>${escape(moveDescription(move))}</span><small>눌러서 미리보기에 더하기</small></button>`; }).join("") : `<p class="yut-empty">${teammate() ? "말과 목적지를 눌러 제안해 보세요." : "팀원과 같은 말판을 보며 골라요."}</p>`}`;
+    el("suggestions").innerHTML = `<div class="yut-section-heading"><span>우리 팀 생각</span><span>팀에만 보여요</span></div>${suggestions.length ? suggestions.map((suggestion) => { const move = displayView.legalMoves.find((entry) => moveKey(entry) === moveKey(suggestion))!; return `<button type="button" class="yut-suggestion" data-suggestion="${escape(moveKey(move))}" ${controller() && canSelect() && !draftComplete ? "" : "disabled"}><strong>${escape(name(suggestion.playerId))}: 여기로 가자!</strong><span>${escape(moveDescription(move))}</span><small>눌러서 미리보기에 더하기</small></button>`; }).join("") : `<p class="yut-empty">${teammate() ? "말과 목적지를 골라 보고 제안 보내기를 눌러요." : "팀원과 같은 말판을 보며 골라요."}</p>`}`;
   }
   function render(): void {
     if (!view.turn || !view.pieces || !view.teams) return;
@@ -279,7 +334,7 @@ export function mountGame(container: HTMLElement, context: GameClientContext): M
     el("board").classList.toggle("is-plan-preview", displayedChoices.length > 0);
     el("ghost-hint").hidden = displayedChoices.length === 0;
     const focused = surface.contains(document.activeElement) ? document.activeElement as HTMLElement : undefined;
-    const focusAttribute = ["data-piece", "data-destination", "data-move", "data-discard", "data-command", "data-suggestion"].find((attribute) => focused?.hasAttribute(attribute));
+    const focusAttribute = ["data-piece", "data-destination", "data-move", "data-discard", "data-command", "data-suggestion", "data-apply-proposal"].find((attribute) => focused?.hasAttribute(attribute));
     const focusValue = focusAttribute ? focused?.getAttribute(focusAttribute) : undefined;
     const title = snapshot.connected === false ? "다시 연결하고 있어요" : snapshot.room.activeInterruption ? "참가자가 나가서 게임을 잠시 멈췄어요" : view.winnerTeamId ? `${teamName(view.winnerTeamId)} 승리!` : snapshot.phase === "waiting" ? `${snapshot.room.mode === "team-2v2" ? "2:2 팀전 · 4명" : "개인전 · 2명"}이 함께 준비해요` : controller() ? "내 차례예요!" : `${name(view.currentPlayerId)} 님의 차례`;
     el("turn").classList.toggle("is-mine", controller());
@@ -301,8 +356,9 @@ export function mountGame(container: HTMLElement, context: GameClientContext): M
     el("outcome").innerHTML = view.lastThrow ? `<strong>${OUTCOME_LABELS[view.lastThrow.outcome]}</strong><span>${view.lastThrow.steps === -1 ? "한 칸 뒤로" : `${view.lastThrow.steps}칸 앞으로`}${view.lastThrow.steps >= 4 ? " · 한 번 더" : ""}</span>` : "<strong>준비</strong><span>윷을 던져 시작하세요</span>";
     el("throw-controls").innerHTML = `<button type="button" class="yut-throw-button" data-command="throw" ${controller() && view.turn.throwsRemaining > 0 && !draftMoves.length && !pending && !animating() && !movementAnimating() ? "" : "disabled"}>${pending ? "확인 중…" : animating() ? "윷이 내려오고 있어요" : mandatoryThrows(view) > 0 ? "새 차례 · 윷 던지기" : "윷 던지기"}</button>`;
     renderActions();
+    renderPlanSuggestions();
     el("message").textContent = message;
-    el("history").innerHTML = (snapshot.events ?? []).filter((event) => event.type.startsWith("yutnori.") && event.type !== "yutnori.suggestion" && event.type !== "yutnori.preview" && event.payload.matchId === view.matchId).slice(-12).reverse().map((event) => {
+    el("history").innerHTML = (snapshot.events ?? []).filter((event) => event.type.startsWith("yutnori.") && event.type !== "yutnori.suggestion" && event.type !== "yutnori.preview" && event.type !== "yutnori.planSuggestion" && event.payload.matchId === view.matchId).slice(-12).reverse().map((event) => {
       const data = event.payload;
       const description = event.type === "yutnori.thrown" ? `${name(String(data.playerId))}: ${OUTCOME_LABELS[data.outcome as keyof typeof OUTCOME_LABELS] ?? "윷 던지기"}` : event.type === "yutnori.moved" ? `${name(String(data.playerId))}: 말 이동` : event.type === "yutnori.captured" ? "상대 말을 잡아 추가 던지기!" : event.type === "yutnori.turnChanged" ? "다음 차례 시작" : event.type === "yutnori.finished" ? "네 말 완주 · 게임 종료" : event.type === "yutnori.rollDiscarded" ? "이동할 수 없는 결과 소진" : "윷판 업데이트";
       return `<li>${escape(description)}</li>`;
@@ -314,7 +370,7 @@ export function mountGame(container: HTMLElement, context: GameClientContext): M
     const remaining = rollEnd + THROW_RESULT_HOLD_MS - serverNow();
     if (remaining > 0) refreshTimer = setTimeout(render, Math.max(0, rollEnd > serverNow() ? rollEnd - serverNow() : remaining) + 30);
     else if (movementAnimating()) refreshTimer = setTimeout(render, view.lastMoveSequence!.startedAt + view.lastMoveSequence!.durationMs - serverNow() + 30);
-    else if (currentSuggestions().length || receivedPreview) refreshTimer = setTimeout(render, 1_000);
+    else if (currentSuggestions().length || currentPlanSuggestions().length || receivedPreview) refreshTimer = setTimeout(render, 1_000);
   }
   let suppressClick = false;
   function onClick(event: Event): void {
@@ -329,13 +385,22 @@ export function mountGame(container: HTMLElement, context: GameClientContext): M
       const move = displayView.legalMoves.find((entry) => moveKey(entry) === target.dataset.suggestion);
       if (valid && move) addDestination(move);
     }
-    if (target.dataset.discard && controller() && canSelect() && !draftComplete && !displayView.legalMoves.some((move) => move.rollId === target.dataset.discard)) {
-      draftMoves.push({ rollId: target.dataset.discard, discard: true });
+    if (target.dataset.discard && (controller() || teammate()) && canSelect() && !draftComplete && !displayView.legalMoves.some((move) => move.rollId === target.dataset.discard)) {
+      (controller() ? draftMoves : teammateMoves).push({ rollId: target.dataset.discard, discard: true }); sentProposalKey = "";
       branchChoices = []; preparePreview(); sharePreview(); render(); focusNextChoice();
     }
     if (target.dataset.command === "throw" && view.turn.throwsRemaining > 0) submit("throwYut");
     if (target.dataset.command === "close-routes") { branchChoices = []; render(); }
-    if (target.dataset.command === "plan-undo" && controller() && canSelect()) { const undone = draftMoves.pop(); if (undone && !("discard" in undone)) pieceId = undone.pieceId; branchChoices = []; preparePreview(); sharePreview(); message = ""; render(); focusNextChoice(); }
+    if (target.dataset.command === "plan-undo" && (controller() || teammate()) && canSelect()) { const undone = (controller() ? draftMoves : teammateMoves).pop(); sentProposalKey = ""; if (undone && !("discard" in undone)) pieceId = undone.pieceId; branchChoices = []; preparePreview(); sharePreview(); message = ""; render(); focusNextChoice(); }
+    if (target.dataset.command === "toggle-proposals") { proposalsOpen = !proposalsOpen; render(); }
+    if (target.dataset.applyProposal && controller() && canSelect()) {
+      const suggestion = currentPlanSuggestions().find((entry) => entry.playerId === target.dataset.applyProposal);
+      if (suggestion) submit("commitMoves", { matchId: view.matchId, turnId: view.turn.turnId, moves: suggestion.proposal.map((choice) => ({ ...choice })) });
+    }
+    if (target.dataset.command === "plan-propose" && teammate() && canSelect() && teammateMoves.length && draftComplete && sentProposalKey !== JSON.stringify(displayedChoices)) {
+      context.sendSignal?.({ type: "suggestPlan", payload: { matchId: view.matchId, turnId: view.turn.turnId, expectedVersion: snapshot.version, planRevision: receivedPreview?.revision ?? 0, moves: (receivedPreview?.moves ?? []).map((choice) => ({ ...choice })), proposal: displayedChoices.map((choice) => ({ ...choice })) } });
+      sentProposalKey = JSON.stringify(displayedChoices); message = "팀원에게 제안을 보냈어요! 조작자가 적용하면 바로 이동해요."; render();
+    }
     if (target.dataset.command === "plan-commit" && controller() && canSelect() && draftComplete) submit("commitMoves", { matchId: view.matchId, turnId: view.turn.turnId, moves: draftMoves.map((choice) => ({ ...choice })) });
   }
   let drag: { pointerId: number; pieceId: string; x: number; y: number; active: boolean; sprite?: HTMLElement } | undefined;
@@ -397,7 +462,8 @@ export function mountGame(container: HTMLElement, context: GameClientContext): M
   el("vibration").addEventListener("change", onVibrationChange);
   function update(next: GameClientSnapshot): void {
     const previous = view;
-    if (snapshot.version !== next.version || next.actionError?.revision !== snapshot.actionError?.revision || next.connected === false || next.room.activeInterruption || next.phase !== snapshot.phase || (next.publicView as unknown as YutnoriPublicView).turn.turnId !== view.turn.turnId) { cancelDrag(); draftMoves = []; branchChoices = []; clearTimeout(previewTimer); clearTimeout(previewRenewTimer); pending = false; message = next.actionError?.revision !== snapshot.actionError?.revision ? (next.actionError?.message ?? "") : ""; }
+    if (snapshot.version !== next.version) planRevision = 0;
+    if (snapshot.version !== next.version || next.actionError?.revision !== snapshot.actionError?.revision || next.connected === false || next.room.activeInterruption || next.phase !== snapshot.phase || (next.publicView as unknown as YutnoriPublicView).turn.turnId !== view.turn.turnId) { cancelDrag(); draftMoves = []; teammateMoves = []; sentProposalKey = ""; branchChoices = []; clearTimeout(previewTimer); clearTimeout(previewRenewTimer); pending = false; message = next.actionError?.revision !== snapshot.actionError?.revision ? (next.actionError?.message ?? "") : ""; }
     if (next.serverTime !== snapshot.serverTime) clockOffset = next.serverTime - Date.now();
     snapshot = next;
     view = next.publicView as unknown as YutnoriPublicView;

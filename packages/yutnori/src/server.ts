@@ -178,7 +178,18 @@ export const yutnoriDefinition = defineGameDefinition(gameMetadata, {
       try { simulateMovePlan(stage, choices, context.now); } catch { return; }
       return { recipientPlayerIds: [...team.playerIds], type: "yutnori.preview", payload: { matchId: stage.matchId, turnId: stage.turn.turnId, expectedVersion: context.state.version, revision: payload.revision, moves: choices, playerId } };
     }
-    if (signal.type !== "suggestMove" || playerId === stage.currentPlayerId) return;
+    if (playerId === stage.currentPlayerId) return;
+    if (signal.type === "suggestPlan") {
+      if (payload.expectedVersion !== context.state.version || !Number.isSafeInteger(payload.planRevision) || Number(payload.planRevision) < 0) return;
+      const prefix = moveChoices(payload, stage, true);
+      const proposal = moveChoices({ ...payload, moves: payload.proposal }, stage);
+      if (!prefix || !proposal || proposal.length <= prefix.length) return;
+      // Compare normalized choices so JSON key order cannot change prefix identity.
+      if (prefix.some((choice, index) => JSON.stringify(choice) !== JSON.stringify(proposal[index]))) return;
+      try { if (!simulateMovePlan(stage, proposal, context.now).complete) return; } catch { return; }
+      return { recipientPlayerIds: [...team.playerIds], type: "yutnori.planSuggestion", payload: { matchId: stage.matchId, turnId: stage.turn.turnId, expectedVersion: context.state.version, planRevision: payload.planRevision, moves: prefix, proposal, playerId } };
+    }
+    if (signal.type !== "suggestMove") return;
     if (payload.moves !== undefined || payload.move !== undefined || payload.planRevision !== undefined) {
       if (payload.expectedVersion !== context.state.version || !Number.isSafeInteger(payload.planRevision) || Number(payload.planRevision) < 0) return;
       const choices = moveChoices(payload, stage, true);

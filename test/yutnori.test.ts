@@ -149,7 +149,7 @@ describe("Yutnori room integration", () => {
     } finally { peers.forEach((peer) => peer.ws.close()); }
   });
 
-  it("shares placement previews and next-step suggestions only with the active team", async () => {
+  it("shares team plans privately and leaves all movement authority with the thrower", async () => {
     const { room } = await createRoom();
     await runInDurableObject(room as unknown as RoomStub, (_instance, ctx) => {
       const state = JSON.parse(ctx.storage.sql.exec<{ state_json: string }>("SELECT state_json FROM room_state WHERE id = 1").one().state_json) as RoomState;
@@ -173,9 +173,10 @@ describe("Yutnori room integration", () => {
       const preview = { type: "previewPlan", payload: { ...base, revision: 1 } };
       peers[0]!.ws.send(JSON.stringify({ type: "gameSignal", playerId: "p0", signal: preview }));
       await expect.poll(() => peers[2]!.messages.some((m) => m.type === "privateEvent" && m.payload.event.type === "yutnori.preview")).toBe(true);
-      const suggestion = { type: "suggestMove", payload: { ...base, planRevision: 1, move: { rollId: "gae", pieceId: "A1", pathId: "diagonalA" } } };
+      const proposal = [...prefix, { rollId: "gae", pieceId: "A1", pathId: "diagonalA" }];
+      const suggestion = { type: "suggestPlan", payload: { ...base, planRevision: 1, proposal } };
       peers[2]!.ws.send(JSON.stringify({ type: "gameSignal", playerId: "p2", signal: suggestion }));
-      await expect.poll(() => peers[0]!.messages.some((m) => m.type === "privateEvent" && m.payload.event.type === "yutnori.suggestion")).toBe(true);
+      await expect.poll(() => peers[0]!.messages.some((m) => m.type === "privateEvent" && m.payload.event.type === "yutnori.planSuggestion")).toBe(true);
       for (const peer of peers) peer.ws.send(JSON.stringify({ type: "ping", nonce: "preview-barrier" }));
       await expect.poll(() => peers.every((peer) => peer.messages.some((m) => m.type === "pong"))).toBe(true);
       expect(peers[1]!.messages.some((m) => m.type === "privateEvent")).toBe(false);
@@ -183,12 +184,18 @@ describe("Yutnori room integration", () => {
       const after = await room.getSnapshot("p0");
       expect(after.version).toBe(before.version);
       expect(after.publicView.pieces).toEqual(before.publicView.pieces);
+      const proposedAction = { playerId: "p2", clientActionId: "teammate-cannot-commit", expectedVersion: after.version, type: "commitMoves", payload: { matchId: view.matchId, turnId: view.turn.turnId, moves: proposal } };
+      expect((await room.trySubmitAction(proposedAction)).ok).toBe(false);
       expect(await runInDurableObject(room as unknown as RoomStub, (instance) => {
         try { instance.sendGameSignal("p1", preview); return false; } catch { return true; }
       })).toBe(true);
       expect(await runInDurableObject(room as unknown as RoomStub, (instance) => {
         try { instance.sendGameSignal("p0", { ...preview, payload: { ...preview.payload, expectedVersion: before.version - 1 } }); return false; } catch { return true; }
       })).toBe(true);
+      await room.submitAction({ ...proposedAction, playerId: "p0", clientActionId: "thrower-confirms-proposal" });
+      const confirmed = await room.getSnapshot("p0");
+      expect(confirmed.version).toBe(before.version + 1);
+      expect((confirmed.publicView as unknown as YutnoriPublicView).pieces.find((piece) => piece.pieceId === "A1")?.nodeId).toBe("a2");
     } finally { peers.forEach((peer) => peer.ws.close()); }
   });
 
