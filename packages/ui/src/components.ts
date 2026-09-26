@@ -103,7 +103,7 @@ export class BighouseRoomControlsElement extends HTMLElement {
     this.hidden = false;
     const isHost = room.hostPlayerId === playerId;
     const me = room.players.find((player) => player.playerId === playerId);
-    const canManageBots = isHost && (isWaiting || Boolean(interruption));
+    const canManageBots = isHost && room.supportsBots !== false && (isWaiting || Boolean(interruption));
     const remainingSlots = Math.max(0, room.maxPlayers - room.players.length);
     if (!canManageBots) this.#botPanelOpen = false;
     const canStart = isHost && isWaiting && room.players.length >= room.minPlayers && room.players
@@ -161,7 +161,7 @@ export class BighouseRoomControlsElement extends HTMLElement {
       panel.append(textElement(
         "p",
         "bh-room-copy",
-        isHost ? "Add players or bots, then launch the game." : "Mark yourself ready while the host prepares the table."
+        isHost ? (snapshot.room.supportsBots === false ? "Invite players, then launch the game." : "Add players or bots, then launch the game.") : "Mark yourself ready while the host prepares the table."
       ));
     }
 
@@ -459,6 +459,12 @@ export class BighouseGameChatElement extends HTMLElement {
   #enabled = true;
   #composing = false;
   #draft = "";
+  #publicDraft = "";
+  #teamDraft = "";
+  #channel: "public" | "team" = "public";
+  #teamId: string | undefined;
+  #teamKey = "";
+  #discardComposition = false;
   #visible = false;
   #logScrollTop = 0;
   #followLatest = true;
@@ -507,6 +513,23 @@ export class BighouseGameChatElement extends HTMLElement {
 
   get messages(): readonly GameClientChatMessage[] {
     return this.#messages;
+  }
+
+  set teamChannel(value: { teamId: string; playerIds: readonly string[]; scopeId?: string } | undefined) {
+    const key = value ? JSON.stringify([value.scopeId, value.teamId, [...value.playerIds].sort()]) : "";
+    if (key === this.#teamKey) return;
+    this.#teamKey = key;
+    this.#teamId = value?.teamId;
+    this.#teamDraft = "";
+    if (this.#channel === "team") {
+      this.#channel = "public";
+      this.#draft = this.#publicDraft;
+      // A composition belonging to the old team must never become public text.
+      this.#discardComposition = this.#composing;
+      const input = this.#root.querySelector<HTMLInputElement>("input");
+      if (input) input.value = this.#draft;
+    }
+    this.updateChatState();
   }
 
   set enabled(value: boolean) {
@@ -592,6 +615,26 @@ export class BighouseGameChatElement extends HTMLElement {
     chat.append(log);
 
     const composer = element("form", "bh-chat-composer") as HTMLFormElement;
+    const channel = document.createElement("select");
+    channel.className = "bh-chat-channel";
+    channel.setAttribute("aria-label", "채팅 대상");
+    for (const [value, label] of [["public", "전체"], ["team", "우리 팀"]]) {
+      const option = document.createElement("option");
+      option.value = value!;
+      option.textContent = label!;
+      channel.append(option);
+    }
+    channel.addEventListener("change", () => {
+      if (this.#composing) { channel.value = this.#channel; return; }
+      if (this.#channel === "public") this.#publicDraft = this.#draft;
+      else this.#teamDraft = this.#draft;
+      this.#channel = channel.value === "team" && this.#teamId ? "team" : "public";
+      this.#draft = this.#channel === "team" ? this.#teamDraft : this.#publicDraft;
+      input.value = this.#draft;
+      this.updateChatState();
+      this.noteActivity();
+      input.focus();
+    });
     const input = document.createElement("input");
     input.className = "bh-chat-input";
     input.type = "text";
@@ -601,23 +644,30 @@ export class BighouseGameChatElement extends HTMLElement {
     input.placeholder = "Message the room";
     input.setAttribute("aria-label", "Game chat message");
     input.addEventListener("input", () => {
+      if (this.#discardComposition) { input.value = this.#draft; return; }
       this.#draft = input.value;
       this.noteActivity();
     });
     input.addEventListener("compositionstart", () => {
+      this.#discardComposition = false;
       this.#composing = true;
       this.noteActivity();
     });
     input.addEventListener("compositionend", () => {
       this.#composing = false;
+      if (this.#discardComposition) {
+        input.value = this.#draft;
+      }
       this.noteActivity();
     });
     input.addEventListener("keydown", (event) => {
+      if (!this.#composing && !event.isComposing && event.key !== "Enter") this.#discardComposition = false;
       if (event.key === "Escape") {
         event.preventDefault();
         this.open = false;
       }
     });
+    input.addEventListener("paste", () => { if (!this.#composing) this.#discardComposition = false; });
     const send = commandButton("", "bh-button bh-chat-send", () => undefined);
     send.className = "bh-button bh-chat-send";
     send.type = "submit";
@@ -627,10 +677,17 @@ export class BighouseGameChatElement extends HTMLElement {
     send.append(sendIcon);
     composer.addEventListener("submit", (event) => {
       event.preventDefault();
-      if (this.#composing) return;
+      if (!this.#enabled || this.#composing || this.#discardComposition) return;
       const body = input.value.trim();
       if (!body) return;
-      emit(this, "bighouse-chat-send", { body });
+      if (this.#channel === "team") {
+        if (!this.#teamId) return;
+        emit(this, "bighouse-team-chat-send", { body, teamId: this.#teamId });
+        this.#teamDraft = "";
+      } else {
+        emit(this, "bighouse-chat-send", { body });
+        this.#publicDraft = "";
+      }
       this.noteActivity();
       this.#draft = "";
       input.value = "";
@@ -644,7 +701,7 @@ export class BighouseGameChatElement extends HTMLElement {
     close.append(closeIcon);
     close.addEventListener("click", () => { this.open = false; });
     composer.toggleAttribute("inert", !this.#open);
-    composer.append(input, send, close);
+    composer.append(channel, input, send, close);
     chat.append(composer);
 
     this.#root.append(chat);
@@ -657,9 +714,9 @@ export class BighouseGameChatElement extends HTMLElement {
     if (!log) return;
     log.replaceChildren();
     this.#messages.forEach((message) => {
-      const line = element("div", `bh-message${message.visibility === "private" ? " is-private" : ""}`);
+      const line = element("div", `bh-message${message.visibility === "private" ? " is-private" : message.visibility === "team" ? " is-team" : ""}`);
       const author = textElement("strong", "", message.displayName || message.playerId);
-      const separator = document.createTextNode(message.visibility === "private" ? " [private] · " : " · ");
+      const separator = document.createTextNode(message.visibility === "private" ? " [private] · " : message.visibility === "team" ? " [우리 팀] · " : " · ");
       line.append(author, separator, document.createTextNode(message.body));
       log.append(line);
     });
@@ -675,6 +732,14 @@ export class BighouseGameChatElement extends HTMLElement {
     chat.classList.toggle("is-visible", this.#visible);
     const composer = chat.querySelector<HTMLFormElement>(".bh-chat-composer");
     composer?.toggleAttribute("inert", !this.#open);
+    const channel = chat.querySelector<HTMLSelectElement>(".bh-chat-channel");
+    if (channel) {
+      channel.hidden = !this.#teamId;
+      channel.value = this.#channel;
+    }
+    chat.classList.toggle("has-team-channel", !!this.#teamId);
+    const input = chat.querySelector<HTMLInputElement>("input");
+    if (input) input.placeholder = this.#channel === "team" ? "우리 팀에게 메시지" : "Message the room";
   }
 
   private focusInput(): void {
@@ -909,7 +974,7 @@ function sameMessages(previous: readonly GameClientChatMessage[], next: readonly
 function messageIdentity(message: GameClientChatMessage): string {
   return message.id
     ? `id:${message.id}`
-    : [message.createdAt, message.playerId, message.targetPlayerId ?? "", message.visibility, message.body].join("\u0000");
+    : [message.createdAt, message.playerId, message.targetPlayerId ?? "", message.teamId ?? "", message.visibility, message.body].join("\u0000");
 }
 
 function messageRenderIdentity(message: GameClientChatMessage): string {
@@ -919,6 +984,7 @@ function messageRenderIdentity(message: GameClientChatMessage): string {
     message.scope,
     message.scopeId ?? "",
     message.visibility,
+    message.teamId ?? "",
     message.body
   ].join("\u0000");
 }

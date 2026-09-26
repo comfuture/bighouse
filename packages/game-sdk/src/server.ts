@@ -12,6 +12,8 @@ export type GameMetadata = {
   description: string;
   minPlayers: number;
   maxPlayers: number;
+  modes?: Array<{ id: string; displayName: string; minPlayers: number; maxPlayers: number }>;
+  supportsBots?: boolean;
   config?: JsonObject;
   thumbnail?: GameThumbnail;
 };
@@ -19,6 +21,12 @@ export type GameMetadata = {
 export type PlayerIdentity = {
   playerId: string;
   displayName?: string;
+};
+
+export type GameTeam = {
+  teamId: string;
+  displayName: string;
+  playerIds: string[];
 };
 
 export type BotDifficulty = "low" | "medium" | "high";
@@ -121,6 +129,14 @@ export type GameDefinition = GameMetadata & {
   initialPlayerState(player: PlayerSeat, context: { room: RoomConfig; now: number }): JsonObject;
   validateAction(context: GameContext, action: ClientGameAction): ValidationResult;
   applyAction(context: GameContext, action: ClientGameAction): ActionResult;
+  /** Server-owned membership used by the room's team chat and signal routing. */
+  getTeams?(context: GameContext): GameTeam[];
+  /** Validate a transient signal without mutating game state or advancing its version. */
+  handleSignal?(context: GameContext, playerId: string, signal: GameAction): {
+    recipientPlayerIds: string[];
+    type: string;
+    payload: JsonObject;
+  } | undefined;
   applyTimer?(context: GameContext, timer: TimerIntent): ActionResult;
   selectBotAction?(context: BotGameContext): GameAction | null | undefined;
   getPublicView(context: GameContext): JsonObject;

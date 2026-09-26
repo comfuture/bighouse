@@ -19,6 +19,32 @@ export const baseStyles = `
     color: var(--bh-ui-paper);
     font-family: var(--bh-ui-font);
   }
+  :host(:is([data-theme="minimal"],[data-theme="playful"])) { --bh-ui-font: Pretendard, system-ui, sans-serif; color: #263143; --bh-ui-shadow: 0 16px 50px #26314318; --bh-room-backdrop-image: linear-gradient(#f5f6f8e8,#f5f6f8e8); }
+  :host(:is([data-theme="minimal"],[data-theme="playful"])) :is(.bh-button,.bh-icon-command,.bh-chat-close,.bh-game-control) { border: 1px solid #dce2eb; border-radius: 10px; background: #fff; color: #35445a; box-shadow: 0 2px 8px #2631430a; font-weight: 600; text-shadow: none; }
+  :host(:is([data-theme="minimal"],[data-theme="playful"])) :is(.bh-button.is-primary,.bh-chat-send,.bh-chat-control) { background:#3864e8; border-color:#3864e8; color:#fff; }
+  :host(:is([data-theme="minimal"],[data-theme="playful"])) :is(.bh-button.is-danger,.bh-room-leave,.bh-leave-control) { color:#c44c48; background:#fff; }
+  :host(:is([data-theme="minimal"],[data-theme="playful"])) :is(.bh-room-panel,.bh-modal-panel) { border:1px solid #e1e6ee; border-radius:18px; background:#fff; color:#263143; box-shadow:var(--bh-ui-shadow); }
+  :host(:is([data-theme="minimal"],[data-theme="playful"])) .bh-room h2 { font-size:26px; line-height:1.2; text-shadow:none; }
+  :host(:is([data-theme="minimal"],[data-theme="playful"])) :is(.bh-room-copy,.bh-room-kicker) { color:#788496; font-weight:500; letter-spacing:0; }
+  :host(:is([data-theme="minimal"],[data-theme="playful"])) :is(.bh-player,.bh-capacity) { background:#f7f9fc; border:1px solid #e6eaf0; border-radius:12px; box-shadow:none; }
+  :host(:is([data-theme="minimal"],[data-theme="playful"])) .bh-seat { background:#edf2ff; color:#3864e8; font-weight:600; }
+  :host(:is([data-theme="minimal"],[data-theme="playful"])) :is(.bh-player-name,.bh-badge,.bh-player-meta) { font-weight:550; }
+  :host(:is([data-theme="minimal"],[data-theme="playful"])) .bh-badge { border:0; }
+  :host(:is([data-theme="minimal"],[data-theme="playful"])) :is(.bh-chat-composer,.bh-chat-log) { background:#fffffff5; border:1px solid #e1e6ee; border-radius:14px; box-shadow:0 8px 28px #26314312; }
+  :host(:is([data-theme="minimal"],[data-theme="playful"])) .bh-chat-log { mask-image:none; }
+  :host(:is([data-theme="minimal"],[data-theme="playful"])) .bh-message { color:#35445a; font-size:14px; font-weight:450; text-shadow:none; }
+  :host(:is([data-theme="minimal"],[data-theme="playful"])) .bh-message strong { color:#3864e8; }
+  :host(:is([data-theme="minimal"],[data-theme="playful"])) .bh-message.is-team strong { color:#168368; }
+  :host(:is([data-theme="minimal"],[data-theme="playful"])) :is(.bh-chat-input,.bh-chat-channel) { background:#f1f4f8; color:#35445a; border:1px solid #e1e6ee; font-weight:450; }
+  :host(:is([data-theme="minimal"],[data-theme="playful"])) .bh-chat-input::placeholder { color:#8390a2; }
+  :host(:is([data-theme="minimal"],[data-theme="playful"])) :is(button,input,select):focus-visible { outline:3px solid #3864e8; outline-offset:3px; }
+  :host([data-theme="playful"]) { --bh-ui-font: Pretendard, ui-rounded, system-ui, sans-serif; --bh-room-backdrop-image: linear-gradient(145deg,#e8edffec,#f3f9ffec); }
+  :host([data-theme="playful"]) :is(.bh-button,.bh-icon-command,.bh-chat-close,.bh-game-control) { border-radius:16px; border:2px solid #fff; background:#f5f7ff; box-shadow:0 4px 0 #d5dcef,0 7px 12px #4a618014,inset 0 1px 0 #fff; font-weight:700; opacity:1; }
+  :host([data-theme="playful"]) :is(.bh-button.is-primary,.bh-chat-send,.bh-chat-control) { background:#6283ef; color:#fff; box-shadow:0 4px 0 #4160c9,0 7px 12px #4964a522; }
+  :host([data-theme="playful"]) :is(.bh-room-panel,.bh-modal-panel,.bh-chat-composer) { border:3px solid #fff; border-radius:24px; background:#f8faff; box-shadow:0 8px 0 #dbe2f3,0 20px 55px #556b9b22; }
+  :host([data-theme="playful"]) .bh-room h2 { font-size:30px; font-weight:800; }
+  :host([data-theme="playful"]) .bh-player { background:#fff; border:0; box-shadow:0 3px 0 #e2e8f4; }
+  :host([data-theme="playful"]) .bh-seat { border-radius:14px; background:#e7dcff; color:#7456bd; }
   *, *::before, *::after { box-sizing: inherit; }
   button, input, select { font: inherit; }
   button { -webkit-tap-highlight-color: transparent; }
@@ -247,6 +273,9 @@ export const chatStyles = `
   .bh-message { margin:8px 0; color:#fff; font-size:clamp(14px,2vw,17px); line-height:1.32; font-weight:850; text-shadow:0 2px 1px #020617, 1px 0 1px #020617, -1px 0 1px #020617, 0 0 7px rgba(2,6,23,.9); overflow-wrap:anywhere; }
   .bh-message strong { color:#8fe5ff; }
   .bh-message.is-private strong { color:#ffd86d; }
+  .bh-message.is-team strong { color:#a7f3d0; }
+  .bh-chat-channel { grid-column:1 / -1; justify-self:start; min-height:32px; border:1px solid rgba(255,255,255,.6); border-radius:8px; padding:4px 10px; color:#fff; background:#122c48; font:inherit; font-weight:800; }
+  .bh-chat-channel[hidden] { display:none; }
   .bh-chat-composer {
     position:absolute;
     left:max(16px,env(safe-area-inset-left));
@@ -286,6 +315,7 @@ export const chatStyles = `
     .bh-chat-composer { left:max(8px,env(safe-area-inset-left)); bottom:max(8px,env(safe-area-inset-bottom)); width:min(560px,calc(100% - 104px)); padding:7px; }
     .bh-chat.is-open .bh-chat-log { left:max(8px,env(safe-area-inset-left)); bottom:76px; width:min(560px,calc(100% - 104px)); max-block-size:calc(100svh - 92px); }
   }
+  .bh-chat.has-team-channel.is-open .bh-chat-log { bottom:132px; max-height:calc(100svh - 150px); }
 `;
 
 export const modalStyles = `

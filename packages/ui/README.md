@@ -29,6 +29,16 @@ export function mountGame(container, context) {
 
 Call `setResult()` with the game-specific winner/result copy. The controller connects component events to the stable `GameClientActions` supplied at mount time.
 
+### Team chat
+
+Games exposing `room.teams` use the shared chat's **전체 / 우리 팀** selector. `createGameUi()` enables it when the current player belongs to a team with at least two members, the room is active or finished without an interruption, and `GameClientActions.sendTeamChat` is available. The server remains responsible for validating team membership and limiting delivery to teammates.
+
+Public messages continue through `sendChat(body, targetPlayerId)`; team messages use `sendTeamChat(body)` exclusively. Team messages carry `visibility: "team"` and `teamId`, and display `[우리 팀]` beside their author. Private messages retain their existing styling and label. Names and message bodies always use text nodes.
+
+Channel selection, focus and IME composition survive ordinary snapshots. Public and team drafts are separate. A changed or removed team clears the old team draft and resets to the public channel; an unfinished IME commit from that team is discarded until a new edit. Team sends never fall back to public chat.
+
+For direct element integration, assign `chat.teamChannel = { teamId, playerIds, scopeId }` (use the room ID for `scopeId`), or `undefined` to remove the channel. Listen for `bighouse-team-chat-send` with `{ body, teamId }` and revalidate the current capability before forwarding. The existing `bighouse-chat-send` event retains its `{ body }` payload.
+
 ## Direct Custom Element use
 
 Call `registerBighouseUi()` from `@bighouse/ui/register` before creating elements. Registration is idempotent and safe under dynamic imports and HMR.

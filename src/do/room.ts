@@ -1,3 +1,5 @@
+import { requirePlayerTeam, roomTeams } from "../core/teams";
+import { resolvePlayerLimits } from "../core/game-settings";
 import { DurableObject } from "cloudflare:workers";
 import { normalizeChatBody, type ChatInput, type ChatMessage } from "../core/chat";
 import { GameServerError } from "../core/errors";
@@ -5,6 +7,7 @@ import type {
   BotDifficulty,
   ClientGameAction,
   GameEvent,
+  GameAction,
   JsonObject,
   PlayerSeat,
   RoomInterruption,
@@ -121,6 +124,7 @@ export class RoomDO extends DurableObject<Env> {
 
   async initialize(input: InitializeRoomInput): Promise<RoomSummary> {
     const definition = getGameDefinition(input.gameId);
+    const limits = definition.modes ? resolvePlayerLimits(definition, input) : input;
     await new D1Repository(this.env.DB).upsertGame(definition.metadata);
     const existing = this.loadState();
     if (existing) {
@@ -139,8 +143,8 @@ export class RoomDO extends DurableObject<Env> {
       roomId: input.roomId,
       gameId: input.gameId,
       mode: input.mode,
-      minPlayers: input.minPlayers,
-      maxPlayers: input.maxPlayers,
+      minPlayers: limits.minPlayers,
+      maxPlayers: limits.maxPlayers,
       config,
       createdAt: now
     };
@@ -380,6 +384,9 @@ export class RoomDO extends DurableObject<Env> {
 
     const now = Date.now();
     const definition = getGameDefinition(state.room.gameId);
+    if (definition.supportsBots === false) {
+      throw new GameServerError("invalid_action", "This game does not support bots", 409);
+    }
     const difficulty = normalizeBotDifficulty(input.difficulty);
     const firstBotNumber = state.players.filter(isBotPlayer).length + 1;
     for (let index = 0; index < count; index += 1) {
@@ -696,6 +703,37 @@ export class RoomDO extends DurableObject<Env> {
     return ack;
   }
 
+  sendGameSignal(playerId: string, signal: GameAction): void {
+    const state = this.requireState();
+    if (state.phase !== "active" || state.activeInterruption || !state.players.some((player) => player.playerId === playerId)) {
+      throw new GameServerError("invalid_action", "Game suggestions are unavailable", 409);
+    }
+    if (!signal || typeof signal.type !== "string" || !signal.payload || typeof signal.payload !== "object" || Array.isArray(signal.payload) || JSON.stringify(signal).length > 2048) {
+      throw new GameServerError("bad_request", "Invalid game suggestion", 400);
+    }
+    const now = Date.now();
+    const definition = getGameDefinition(state.room.gameId);
+    const team = requirePlayerTeam(state, definition, playerId);
+    const result = definition.handleSignal?.({ state: cloneState(state), now }, playerId, signal);
+    if (!result || result.recipientPlayerIds.length === 0 || result.recipientPlayerIds.some((id) => !team.playerIds.includes(id))) {
+      throw new GameServerError("invalid_action", "This suggestion is no longer valid", 409);
+    }
+    const previous = this.ctx.storage.sql.exec<{ sent_at: number }>("SELECT sent_at FROM signal_limits WHERE player_id = ?", playerId).toArray()[0];
+    if (previous && now - previous.sent_at < 500) {
+      throw new GameServerError("invalid_action", "Please wait before sending another suggestion", 429);
+    }
+    this.ctx.storage.sql.exec("INSERT INTO signal_limits (player_id, sent_at) VALUES (?, ?) ON CONFLICT(player_id) DO UPDATE SET sent_at = excluded.sent_at", playerId, now);
+    // Transient advice is delivered only to adapter-approved recipients. It never
+    // enters the public event log, snapshots, or authoritative version sequence.
+    for (const recipient of new Set(result.recipientPlayerIds)) {
+      if (!state.players.some((player) => player.playerId === recipient)) continue;
+      this.broadcastToPlayer(recipient, this.message(state, "privateEvent", { event: {
+        id: createId("evt"), type: result.type, visibility: "private", playerId: recipient,
+        payload: result.payload, createdAt: now
+      } }));
+    }
+  }
+
   async sendChat(input: ChatInput): Promise<ChatMessage> {
     const state = this.requireState();
     const player = state.players.find((candidate) => candidate.playerId === input.playerId);
@@ -706,20 +744,33 @@ export class RoomDO extends DurableObject<Env> {
       throw new GameServerError("player_not_found", "Target player is not in this room", 404);
     }
 
+    if (input.channel !== undefined && input.channel !== "public" && input.channel !== "team") {
+      throw new GameServerError("bad_request", "Unsupported chat channel", 400);
+    }
+    if (input.channel === "team" && input.targetPlayerId) {
+      throw new GameServerError("bad_request", "Team chat cannot also target a player", 400);
+    }
+    const team = input.channel === "team" ? requirePlayerTeam(state, getGameDefinition(state.room.gameId), input.playerId) : undefined;
+    if (team && (!input.expectedTeam || input.expectedTeam.teamId !== team.teamId ||
+      !Array.isArray(input.expectedTeam.playerIds) ||
+      JSON.stringify([...input.expectedTeam.playerIds].sort()) !== JSON.stringify([...team.playerIds].sort()))) {
+      throw new GameServerError("invalid_action", "Your team has changed. Review the recipients and send again.", 409);
+    }
     const now = Date.now();
     const message: ChatMessage = {
       id: createId("chat"),
       scope: "room",
       scopeId: state.room.roomId,
-      visibility: input.targetPlayerId ? "private" : "public",
+      visibility: team ? "team" : input.targetPlayerId ? "private" : "public",
+      ...(team ? { teamId: team.teamId } : {}),
       playerId: input.playerId,
       ...(player.displayName ? { displayName: player.displayName } : {}),
       ...(input.targetPlayerId ? { targetPlayerId: input.targetPlayerId } : {}),
       body: normalizeChatBody(input.body),
       createdAt: now
     };
-    this.insertChat(message);
-    this.deliverChat(state, message);
+    this.insertChat(message, team?.playerIds);
+    this.deliverChat(state, message, team?.playerIds);
     return message;
   }
 
@@ -978,9 +1029,17 @@ export class RoomDO extends DurableObject<Env> {
       const chat = await this.sendChat({
         playerId,
         body: message.body,
+        ...(message.channel === undefined ? {} : { channel: message.channel }),
+        ...(message.expectedTeam === undefined ? {} : { expectedTeam: message.expectedTeam }),
         ...(message.targetPlayerId ? { targetPlayerId: message.targetPlayerId } : {})
       });
       this.sendToSocket(ws, this.message(this.requireState(), "ack", { command: "chat", result: { chatId: chat.id } }));
+      return;
+    }
+    if (message.type === "gameSignal") {
+      const playerId = this.requireSocketPlayer(ws, message.playerId);
+      this.sendGameSignal(playerId, message.signal);
+      this.sendToSocket(ws, this.message(this.requireState(), "ack", { command: "gameSignal" }));
       return;
     }
     if (message.type === "ready") {
@@ -1064,6 +1123,15 @@ export class RoomDO extends DurableObject<Env> {
 
   private migrate(): void {
     this.ctx.storage.sql.exec(`
+      CREATE TABLE IF NOT EXISTS team_chat_audiences (
+        chat_id TEXT PRIMARY KEY,
+        team_id TEXT NOT NULL,
+        recipient_player_ids_json TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS signal_limits (
+        player_id TEXT PRIMARY KEY,
+        sent_at INTEGER NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS room_state (
         id INTEGER PRIMARY KEY CHECK (id = 1),
         state_json TEXT NOT NULL
@@ -1124,6 +1192,8 @@ export class RoomDO extends DurableObject<Env> {
   }
 
   private resetGameState(state: RoomState, definition = getGameDefinition(state.room.gameId), now = Date.now()): void {
+    if (definition.modes) resolvePlayerLimits(definition, state.room);
+    this.ctx.storage.sql.exec("DELETE FROM signal_limits");
     for (const player of state.players) {
       player.ready = false;
     }
@@ -1152,7 +1222,7 @@ export class RoomDO extends DurableObject<Env> {
     );
   }
 
-  private insertChat(message: ChatMessage): void {
+  private insertChat(message: ChatMessage, teamRecipients?: string[]): void {
     this.ctx.storage.sql.exec(
       `INSERT INTO chat_log (
         id, scope, scope_id, visibility, player_id, display_name, target_player_id, body, created_at
@@ -1167,6 +1237,9 @@ export class RoomDO extends DurableObject<Env> {
       message.body,
       message.createdAt
     );
+    if (message.visibility === "team" && message.teamId && teamRecipients) {
+      this.ctx.storage.sql.exec("INSERT INTO team_chat_audiences (chat_id, team_id, recipient_player_ids_json) VALUES (?, ?, ?)", message.id, message.teamId, JSON.stringify(teamRecipients));
+    }
   }
 
   private async handleBotTurnTimer(state: RoomState, timer: TimerRow, now: number): Promise<void> {
@@ -1293,6 +1366,8 @@ export class RoomDO extends DurableObject<Env> {
       version: state.version,
       minPlayers: state.room.minPlayers,
       maxPlayers: state.room.maxPlayers,
+      ...(definition.supportsBots === undefined ? {} : { supportsBots: definition.supportsBots }),
+      ...(definition.getTeams ? { teams: roomTeams(state, definition) } : {}),
       ...(state.room.hostPlayerId ? { hostPlayerId: state.room.hostPlayerId } : {}),
       rematchRequests: Object.keys(state.rematchRequests ?? {}),
       ...(state.activeInterruption ? { activeInterruption: state.activeInterruption } : {}),
@@ -1343,8 +1418,12 @@ export class RoomDO extends DurableObject<Env> {
     }
   }
 
-  private deliverChat(state: RoomState, chat: ChatMessage): void {
+  private deliverChat(state: RoomState, chat: ChatMessage, teamRecipients?: string[]): void {
     const message = this.message(state, "chat", { message: chat });
+    if (chat.visibility === "team") {
+      for (const playerId of teamRecipients ?? []) this.broadcastToPlayer(playerId, message);
+      return;
+    }
     if (chat.visibility === "public") {
       this.broadcast(message);
       return;
@@ -1535,6 +1614,7 @@ export class RoomDO extends DurableObject<Env> {
     const repo = new D1Repository(this.env.DB);
     const finishedAt = new Date(state.updatedAt).toISOString();
     const winnerPlayerId = findWinnerPlayerId(events);
+    const teamResult = findTeamResult(state, events);
     await repo.insertMatchResult({
       roomId: state.room.roomId,
       gameId: state.room.gameId,
@@ -1544,6 +1624,7 @@ export class RoomDO extends DurableObject<Env> {
       result: {
         version: state.version,
         winnerPlayerId,
+        ...teamResult,
         finishedAt
       }
     });
@@ -1633,6 +1714,19 @@ function parseJsonRecord(raw: string): JsonObject {
   } catch {
     return {};
   }
+}
+
+function findTeamResult(state: RoomState, events: GameEvent[]): JsonObject {
+  const teams = roomTeams(state, getGameDefinition(state.room.gameId));
+  for (const event of events) {
+    const team = teams.find((candidate) => candidate.teamId === event.payload.winnerTeamId && candidate.playerIds.length > 1);
+    if (team) return {
+      winnerTeamId: team.teamId,
+      winnerPlayerIds: [...team.playerIds],
+      ...(typeof event.payload.matchId === "string" ? { matchId: event.payload.matchId } : {})
+    };
+  }
+  return {};
 }
 
 function findWinnerPlayerId(events: GameEvent[]): string | null {

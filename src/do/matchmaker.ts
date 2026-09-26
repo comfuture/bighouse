@@ -1,3 +1,4 @@
+import { resolvePlayerLimits } from "../core/game-settings";
 import { DurableObject } from "cloudflare:workers";
 import { createId, roomDoName } from "../core/ids";
 import { getGameDefinition } from "../games/registry";
@@ -43,20 +44,30 @@ export class MatchmakerDO extends DurableObject<Env> {
   }
 
   async enqueue(input: EnqueueTicketInput): Promise<MatchmakerResult> {
+    // Matching spans RPC awaits. Serialize it so concurrent retries cannot select
+    // the same pending players into two rooms.
+    return this.ctx.blockConcurrencyWhile(() => this.enqueueTicket(input));
+  }
+
+  private async enqueueTicket(input: EnqueueTicketInput): Promise<MatchmakerResult> {
     const definition = getGameDefinition(input.gameId);
+    const { minPlayers, maxPlayers } = resolvePlayerLimits(definition, input);
     const repo = new D1Repository(this.env.DB);
     await repo.upsertGame(definition.metadata);
+    const region = input.region ?? "global";
+    const skill = input.skill ?? "default";
+    const existing = this.pendingRows(input.gameId, input.mode, region, skill).find((row) => row.player_id === input.playerId);
     const ticket: MatchmakerTicket = {
-      ticketId: createId("ticket"),
+      ticketId: existing?.ticket_id ?? createId("ticket"),
       gameId: input.gameId,
       mode: input.mode,
       playerId: input.playerId,
       ...(input.displayName ? { displayName: input.displayName } : {}),
       status: "pending",
-      region: input.region ?? "global",
-      skill: input.skill ?? "default"
+      region,
+      skill
     };
-    this.ctx.storage.sql.exec(
+    if (!existing) this.ctx.storage.sql.exec(
       `INSERT INTO queue (
         ticket_id, game_id, mode, player_id, display_name, region, skill, status, created_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)`,
@@ -71,12 +82,18 @@ export class MatchmakerDO extends DurableObject<Env> {
     );
     await repo.upsertTicket(ticket);
 
-    const pending = this.pendingRows(input.gameId, input.mode, ticket.region, ticket.skill);
-    if (pending.length < definition.minPlayers) {
+    const allPending = this.pendingRows(input.gameId, input.mode, ticket.region, ticket.skill);
+    const seenPlayers = new Set<string>();
+    const pending = allPending.filter((row) => {
+      if (seenPlayers.has(row.player_id)) return false;
+      seenPlayers.add(row.player_id);
+      return true;
+    });
+    if (pending.length < minPlayers) {
       return { ticket };
     }
 
-    const selected = pending.slice(0, definition.minPlayers);
+    const selected = pending.slice(0, minPlayers);
     const roomId = createId("room");
     const doName = roomDoName(roomId);
     const room = this.env.ROOM_DO.getByName(doName);
@@ -84,8 +101,8 @@ export class MatchmakerDO extends DurableObject<Env> {
       roomId,
       gameId: input.gameId,
       mode: input.mode,
-      minPlayers: definition.minPlayers,
-      maxPlayers: definition.maxPlayers
+      minPlayers,
+      maxPlayers
     };
     await room.initialize(initializeInput);
     for (const row of selected) {
@@ -93,29 +110,26 @@ export class MatchmakerDO extends DurableObject<Env> {
         playerId: row.player_id,
         ...(row.display_name ? { displayName: row.display_name } : {})
       });
-      this.ctx.storage.sql.exec(
-        "UPDATE queue SET status = 'matched', matched_room_id = ? WHERE ticket_id = ?",
-        roomId,
-        row.ticket_id
-      );
-      await repo.upsertTicket({
-        ticketId: row.ticket_id,
-        gameId: row.game_id,
-        mode: row.mode,
-        playerId: row.player_id,
-        ...(row.display_name ? { displayName: row.display_name } : {}),
-        status: "matched",
-        matchedRoomId: roomId,
-        region: row.region,
-        skill: row.skill
-      });
     }
     const hostPlayerId = selected[0]!.player_id;
     for (const row of selected.filter((candidate) => candidate.player_id !== hostPlayerId)) {
       await room.setReady(row.player_id, true);
     }
-    await room.startGame(hostPlayerId);
-    const latestSummary = await room.getSummary();
+    const latestSummary = await room.startGame(hostPlayerId);
+    // Only a successfully started room can consume tickets. Also settle any old
+    // duplicate tickets for these players, so they cannot form another match.
+    const selectedPlayers = new Set(selected.map((row) => row.player_id));
+    const matchedTickets = allPending.filter((row) => selectedPlayers.has(row.player_id));
+    for (const row of matchedTickets) {
+      this.ctx.storage.sql.exec("UPDATE queue SET status = 'matched', matched_room_id = ? WHERE ticket_id = ?", roomId, row.ticket_id);
+    }
+    for (const row of matchedTickets) {
+      await repo.upsertTicket({
+        ticketId: row.ticket_id, gameId: row.game_id, mode: row.mode, playerId: row.player_id,
+        ...(row.display_name ? { displayName: row.display_name } : {}),
+        status: "matched", matchedRoomId: roomId, region: row.region, skill: row.skill
+      });
+    }
 
     const roomRecord: RoomIndexRecord = {
       roomId,
@@ -123,13 +137,13 @@ export class MatchmakerDO extends DurableObject<Env> {
       mode: input.mode,
       status: latestSummary.phase === "active" ? "active" : "matching",
       playerCount: latestSummary.playerCount,
-      minPlayers: definition.minPlayers,
-      maxPlayers: definition.maxPlayers,
+      minPlayers,
+      maxPlayers,
       doName
     };
     await repo.upsertRoom(roomRecord);
 
-    const selectedCurrentTicket = selected.some((row) => row.ticket_id === ticket.ticketId);
+    const selectedCurrentTicket = selectedPlayers.has(ticket.playerId);
     return {
       ticket: { ...ticket, status: selectedCurrentTicket ? "matched" : "pending" },
       ...(selectedCurrentTicket ? { matchedRoomId: roomId } : {})
@@ -148,7 +162,7 @@ export class MatchmakerDO extends DurableObject<Env> {
   }
 
   async pendingCount(gameId: string, mode: string, region = "global", skill = "default"): Promise<number> {
-    return this.pendingRows(gameId, mode, region, skill).length;
+    return new Set(this.pendingRows(gameId, mode, region, skill).map((row) => row.player_id)).size;
   }
 
   private pendingRows(gameId: string, mode: string, region: string, skill: string): QueueRow[] {
