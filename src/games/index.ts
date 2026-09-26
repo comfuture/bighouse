@@ -1,3 +1,4 @@
+import { yutnoriGamePlugin, yutnoriDefinition } from "@bighouse/yutnori/server";
 import { chessGamePlugin, chessDefinition } from "@bighouse/chess/server";
 import { gomokuGamePlugin, gomokuDefinition } from "@bighouse/gomoku/server";
 import { indianPokerGamePlugin, indianPokerDefinition } from "@bighouse/indian-poker/server";
@@ -7,6 +8,7 @@ import { registerGamePlugins } from "./registry";
 
 export function registerBuiltInGamePlugins(): void {
   registerGamePlugins([
+    yutnoriGamePlugin,
     gomokuGamePlugin,
     oneCardGamePlugin,
     chessGamePlugin,
@@ -17,3 +19,5 @@ export function registerBuiltInGamePlugins(): void {
 
 export { chessDefinition, gomokuDefinition, indianPokerDefinition, oneCardDefinition, tankBattleDefinition };
 export { cardDemoDefinition } from "./card-demo";
+
+export { yutnoriDefinition };

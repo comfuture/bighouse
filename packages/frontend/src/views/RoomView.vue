@@ -70,6 +70,7 @@ import { onBeforeRouteLeave, useRoute, useRouter } from "vue-router";
 import type {
   BotDifficulty,
   GameClientActions,
+  GameEvent,
   GameClientChatMessage,
   GameClientSnapshot,
   MountedGameClient
@@ -87,6 +88,9 @@ const displayGameId = computed(() => room.value?.gameId ?? String(route.params.g
 const room = ref<RoomSnapshot>();
 const chatMessages = ref<GameClientChatMessage[]>([]);
 const uiRevision = ref(0);
+const gameEvents = ref<GameEvent[]>([]);
+const connected = ref(false);
+const actionError = ref<{ revision: number; message: string }>();
 const error = ref("");
 const leaveConfirmOpen = ref(false);
 const qrModalOpen = ref(false);
@@ -137,7 +141,8 @@ const publicRoomUrl = computed(() => {
 
 const gameActions: GameClientActions = {
   sendAction(action) {
-    ws?.send(
+    if (!ws || ws.readyState !== WebSocket.OPEN) { reportActionError("연결을 복구하고 있습니다. 잠시 후 다시 시도해 주세요."); return; }
+    ws.send(
       JSON.stringify({
         type: "action",
         playerId: identity.playerId,
@@ -146,6 +151,10 @@ const gameActions: GameClientActions = {
         action
       })
     );
+  },
+  sendSignal(signal) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) { reportActionError("연결을 복구하고 있습니다."); return; }
+    ws.send(JSON.stringify({ type: "gameSignal", playerId: identity.playerId, signal }));
   },
   setReady(ready) {
     ws?.send(JSON.stringify({ type: "ready", playerId: identity.playerId, ready }));
@@ -170,6 +179,12 @@ const gameActions: GameClientActions = {
   },
   sendChat(body, targetPlayerId) {
     ws?.send(JSON.stringify({ type: "chat", playerId: identity.playerId, targetPlayerId, body }));
+  },
+  sendTeamChat(body) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) { reportActionError("연결을 복구하고 있습니다."); return; }
+    const team = room.value?.teams?.find((candidate) => candidate.playerIds.includes(identity.playerId));
+    if (!team) { reportActionError("현재 팀을 확인할 수 없습니다."); return; }
+    ws.send(JSON.stringify({ type: "chat", playerId: identity.playerId, channel: "team", expectedTeam: { teamId: team.teamId, playerIds: [...team.playerIds] }, body }));
   },
   shareRoom() {
     openQrModal();
@@ -337,6 +352,12 @@ async function releaseOwnedFullscreen(): Promise<void> {
   await document.exitFullscreen().catch(() => undefined);
 }
 
+function reportActionError(message: string): void {
+  actionError.value = { revision: (actionError.value?.revision ?? 0) + 1, message };
+  uiRevision.value += 1;
+  updateMountedGame();
+}
+
 function connectRoom(): void {
   clearReconnectTimer();
   closingRoom = false;
@@ -346,6 +367,7 @@ function connectRoom(): void {
   socket.addEventListener("open", () => {
     if (ws !== socket) return;
     reconnectAttempt = 0;
+    connected.value = true;
     error.value = "";
     socket.send(JSON.stringify({ type: "joinRoom", playerId: identity.playerId, displayName: identity.displayName || undefined }));
   });
@@ -359,7 +381,12 @@ function connectRoom(): void {
     error.value = "Room connection failed";
   });
   socket.addEventListener("close", () => {
-    if (!closingRoom && ws === socket) scheduleReconnect();
+    if (ws === socket) {
+      connected.value = false;
+      uiRevision.value += 1;
+      updateMountedGame();
+      if (!closingRoom) scheduleReconnect();
+    }
   });
 }
 
@@ -375,7 +402,16 @@ async function handleRoomMessage(message: ServerMessage): Promise<void> {
     applyPresence(message.payload as { playerId: string; connected: boolean });
     return;
   }
-  if (message.type === "event" || message.type === "privateEvent") return;
+  if (message.type === "event" || message.type === "privateEvent") {
+    const event = (message.payload as { event: GameEvent }).event;
+    if (!gameEvents.value.some((item) => item.id === event.id)) {
+      gameEvents.value.push(event);
+      if (gameEvents.value.length > 32) gameEvents.value.splice(0, gameEvents.value.length - 32);
+      uiRevision.value += 1;
+      updateMountedGame();
+    }
+    return;
+  }
   if (message.type === "ack") {
     const payload = message.payload as { command?: string };
     if (payload.command === "leaveRoom" && leavingRoom) {
@@ -397,6 +433,7 @@ async function handleRoomMessage(message: ServerMessage): Promise<void> {
   }
   if (message.type === "error") {
     error.value = (message.payload as { message?: string }).message ?? "Room error";
+    reportActionError(error.value);
   }
 }
 
@@ -413,6 +450,9 @@ function createGameSnapshot(): GameClientSnapshot | undefined {
   if (!snapshot) return undefined;
   return {
     playerId: identity.playerId,
+    events: [...gameEvents.value],
+    connected: connected.value,
+    ...(actionError.value ? { actionError: actionError.value } : {}),
     version: snapshot.version,
     uiRevision: uiRevision.value,
     serverTime: lastSnapshotServerTime.value,
@@ -423,6 +463,8 @@ function createGameSnapshot(): GameClientSnapshot | undefined {
       mode: snapshot.mode,
       minPlayers: snapshot.minPlayers,
       maxPlayers: snapshot.maxPlayers,
+      ...(snapshot.supportsBots === undefined ? {} : { supportsBots: snapshot.supportsBots }),
+      ...(snapshot.teams ? { teams: snapshot.teams } : {}),
       ...(snapshot.hostPlayerId ? { hostPlayerId: snapshot.hostPlayerId } : {}),
       players: snapshot.players,
       ...(snapshot.activeInterruption ? { activeInterruption: snapshot.activeInterruption } : {}),

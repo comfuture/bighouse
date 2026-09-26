@@ -1460,3 +1460,11 @@ input.game-plastic-input::placeholder {
     }
   }
 }
+
+.portal-game-option { display: flex; flex-direction: column; min-width: 0; gap: 10px; }
+.portal-game-option > .portal-game-card { flex: 1; }
+.portal-game-modes { display: flex; flex-wrap: wrap; gap: 8px; }
+.portal-game-modes a { flex: 1; text-align: center; padding: 12px 16px; min-height: 44px; border: 1px solid #8dd9f6; border-radius: 12px; background: #082a59; color: #fff; font-weight: 800; }
+.portal-game-modes a:hover, .portal-game-modes a[aria-current="page"] { background: #1268c4; border-color: #ffe9a7; }
+.lobby-rule-option { display: flex; align-items: center; gap: 9px; margin-top: 14px; color: #fff4d6; font-size: 14px; }
+.lobby-rule-option input { width: 20px; height: 20px; }

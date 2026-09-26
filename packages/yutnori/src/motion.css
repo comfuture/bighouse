@@ -1,0 +1,5 @@
+.yut-board-wrap { position: relative; }
+.yut-motion-layer { position: absolute; inset: 0; pointer-events: none; z-index: 12; }
+.yut-motion-sprite { position: absolute; top: 0; left: 0; display: block; color: #fff; font-size: 13px; font-weight: 700; will-change: transform, opacity; filter: drop-shadow(0 5px 6px #172c5a20); }
+.yut-motion-hidden { visibility: hidden !important; }
+@media (prefers-reduced-motion: reduce) { .yut-motion-layer { display: none; } }

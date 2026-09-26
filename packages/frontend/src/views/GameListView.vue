@@ -53,9 +53,8 @@
       </div>
 
       <div v-else-if="displayGames.length > 0" class="portal-game-grid">
+        <div v-for="game in displayGames" :key="game.gameId" class="portal-game-option">
         <RouterLink
-          v-for="game in displayGames"
-          :key="game.gameId"
           class="portal-game-card"
           data-game-elastic="off"
           :aria-label="`Enter ${game.displayName} lobby`"
@@ -83,6 +82,10 @@
             </span>
           </div>
         </RouterLink>
+        <nav v-if="game.modes" class="portal-game-modes" :aria-label="`${game.displayName} 게임 방식`">
+          <RouterLink v-for="option in game.modes" :key="option.id" :to="`/game/${game.gameId}/${option.id}`">{{ option.displayName }}</RouterLink>
+        </nav>
+        </div>
       </div>
 
       <div v-else class="portal-directory-empty">
@@ -138,7 +141,8 @@ onMounted(async () => {
 });
 
 function lobbyPath(gameId: string): string {
-  return `/game/${encodeURIComponent(gameId)}/${encodeURIComponent(identity.mode)}`;
+  const mode = getClientGameMetadata(gameId)?.modes?.[0]?.id ?? identity.mode;
+  return `/game/${encodeURIComponent(gameId)}/${encodeURIComponent(mode)}`;
 }
 
 function playerRangeLabel(game: Game): string {

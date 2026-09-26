@@ -13,7 +13,7 @@ The client flow is the same for every game.
 5. Create a room or join a waiting room.
 6. Connect to the room WebSocket and render the current `snapshot`.
 7. Non-host players send `ready`.
-8. When minimum players are present and every non-host player is ready, the host sends `startGame`.
+8. When the selected mode's player limits are satisfied and every non-host player is ready, the host sends `startGame`. Fixed-size modes require exactly their advertised player count.
 9. Send game input as `action` messages after the room becomes `active`.
 10. Apply `ack`, `event`, `privateEvent`, `chat`, `presence`, and `error` messages from the server.
 
@@ -180,9 +180,9 @@ Important fields:
 - `action.type`: the game-specific command interpreted by the adapter.
 - `action.payload`: the game-specific command data.
 - `ready`: only changes state while a room is waiting. The host does not need a Ready control; readiness is required from the non-host players.
-- `startGame`: only the current host can start, and only after minimum players are present and every non-host player is ready.
+- `startGame`: only the current host can start, and only after the selected mode's player limits are satisfied and every non-host player is ready.
 - `transferHost`: only the current host can delegate host authority to another room player.
-- `targetPlayerId`: used only for chat. If omitted, the chat is public. If present, the chat is private to that player and the sender.
+- `targetPlayerId`: used only for individual private chat. Without it, chat defaults to public unless `channel: "team"` is explicitly selected. Team chat additionally requires `expectedTeam` and cannot combine with an individual target; see section 13.
 
 Every server message includes `roomId`, `version`, and `serverTime`. Clients should replace their local room model on `snapshot`, then incrementally apply `event`, `privateEvent`, and `chat`.
 
@@ -615,7 +615,8 @@ type ClientRoomModel = {
   privateView: Record<string, unknown>;
   chat: Array<{
     scope: "lobby" | "room";
-    visibility: "public" | "private";
+    visibility: "public" | "private" | "team";
+    teamId?: string;
     playerId: string;
     displayName?: string;
     targetPlayerId?: string;
@@ -677,3 +678,140 @@ For chat:
 - Send lobby chat with a `playerId` that does not match the socket attachment and verify the server returns `forbidden`.
 - Send a raw string `ping` to lobby and room sockets and verify a `pong` is returned without requiring a JSON handler.
 - Room private chat targets must be players in the same room.
+
+
+## 13. Modes, Teams, and Transient Game Signals
+
+`packages/yutnori` demonstrates a public board game with team-only communication. Its exact Korean rules and UI behavior are documented in [Yutnori](yutnori.md). The reusable contracts live in `packages/game-sdk/src/server.ts` and `packages/game-sdk/src/client.ts`.
+
+### Fixed-size modes and bots
+
+Metadata may declare modes and bot support:
+
+```ts
+{
+  gameId: "yutnori",
+  minPlayers: 2,
+  maxPlayers: 4,
+  modes: [
+    { id: "solo", displayName: "2인 개인전", minPlayers: 2, maxPlayers: 2 },
+    { id: "team-2v2", displayName: "2:2 팀전", minPlayers: 4, maxPlayers: 4 }
+  ],
+  supportsBots: false
+}
+```
+
+The portal and lobby offer explicit mode links. `resolvePlayerLimits()` rejects unrecognized modes and forged limits that differ from the selected mode. Lobby creation, direct room initialization, and matchmaking use these limits; start/restart/rematch cannot start a partially populated fixed-size game. Games without `modes` retain their existing mode handling. `supportsBots: false` suppresses the shared bot controls and rejects bot creation on the server.
+
+### Server-owned team membership
+
+A team game supplies the optional adapter hook:
+
+```ts
+getTeams(context): Array<{
+  teamId: string;
+  displayName: string;
+  playerIds: string[];
+}>;
+```
+
+The server includes sanitized `teams` in room snapshots, mapped to `GameClientRoom.teams` in the browser. `roomTeams()` excludes departed players and fails closed on duplicate team ids or ambiguous membership. Clients use these teams for labels and channel availability; client payloads do not assign team membership. For Yutnori, waiting-room membership is derived from current seat order, and starting a new game fixes the active teams.
+
+### Structured move suggestions
+
+The optional `GameClientActions.sendSignal()` sends a `gameSignal` envelope:
+
+```json
+{
+  "type": "gameSignal",
+  "playerId": "p3",
+  "signal": {
+    "type": "suggestMove",
+    "payload": {
+      "matchId": "match-id",
+      "turnId": 1,
+      "rollId": "roll-id",
+      "pieceId": "A1",
+      "pathId": "outer"
+    }
+  }
+}
+```
+
+The adapter's optional `handleSignal(context, playerId, signal)` returns `{ recipientPlayerIds, type, payload }` only when the signal is valid. It receives a cloned state and must not mutate authoritative state. RoomDO independently checks that every recipient belongs to the sender's current server-owned team. It accepts suggestions only during uninterrupted active play, rejects malformed payloads over 2,048 serialized characters, and limits accepted signals to one per player per 500 ms.
+
+Yutnori additionally requires the sender to be the current controller's teammate, the match/turn to be current, the throw animation to have ended, and the roll/piece/path to remain legal. The result is delivered separately to each approved recipient as `privateEvent` with `event.type: "yutnori.suggestion"` and `event.visibility: "private"`. Signals do not advance `version`, alter the board, or enter persisted public event history or snapshots. Reconnection does not replay previous suggestions. The client discards suggestions after 30 seconds, on a turn/match change, or when the move is no longer legal. Choosing a suggestion previews it; the controller must still explicitly confirm an ordinary move or include a stored roll in a confirmed move plan. Suggestions are unavailable while a throw or movement sequence is pending, or while an immediate result takes priority over a banked result.
+
+### Stored rolls, immediate moves, and atomic plans
+
+Yutnori distinguishes `YutRoll.disposition: "banked" | "immediate"`. Yut/mo are banked and grant another throw; all remaining throws must be taken before movement. Do/gae/geol/back-do are immediate results: apply them with `movePiece`, or `discardRoll` when no legal move exists, before using banked results.
+
+Banked rolls are chosen in the desired order on a virtual board, then submitted as one ordinary versioned/idempotent game action:
+
+```json
+{
+  "type": "action",
+  "playerId": "p1",
+  "clientActionId": "plan-1",
+  "expectedVersion": 12,
+  "action": {
+    "type": "commitMoves",
+    "payload": {
+      "matchId": "match-id",
+      "turnId": 1,
+      "moves": [
+        { "rollId": "mo-id", "pieceId": "A1", "pathId": "outer" },
+        { "rollId": "yut-id", "pieceId": "A1", "pathId": "diagonalA" }
+      ]
+    }
+  }
+}
+```
+
+`simulateMovePlan()` in the shared pure `rules.ts` applies each choice to a clone, recalculating legal paths, stacks, captures, and exits after every move. The browser uses it for previews; the server repeats validation against authoritative state. Invalid plans do not partially mutate the room. A valid prefix may be previewed, but a plan can be committed only after all stored rolls are spent or it reaches a capture/victory. The original authoritative `turnId` belongs in the request even if a capture in the preview starts a new turn.
+
+A capture ends the sequence at that move and starts a **new turn for the same team and controller**. `turnId` increments; unused banked rolls remain. `mandatoryThrows` forces the capture's new throw before any further movement. A plan containing moves after the capture is rejected. Normal A/B and teammate alternation uses `normalTurnIndex`, so capture turns do not skip a teammate's next normal turn.
+
+Accepted moves expose `lastMoveSequence: { sequenceId, startedAt, durationMs, moves }`; each move records its own start time. The authoritative snapshot already contains the final board. Clients reconstruct intermediate poses and play the confirmed path, stacked-piece movement, and capture return in order. Actions/signals are blocked until the sequence ends. The winner dialog waits for the last animation rather than covering it. Reconnection uses the server timeline without replaying an expired sequence.
+
+### Public, individual, and team chat
+
+Room chat supports an explicit team channel using the same socket and shared chat UI:
+
+```json
+{
+  "type": "chat",
+  "playerId": "p1",
+  "channel": "team",
+  "expectedTeam": { "teamId": "A", "playerIds": ["p1", "p3"] },
+  "body": "A1을 중앙으로 옮겨요"
+}
+```
+
+`expectedTeam` is a concurrency guard containing the team and complete recipient membership shown to the sender. The server compares it with the current team, ignoring member order, then computes recipients from its own team state. A missing or stale guard is rejected. A client cannot choose an opposing team or add recipients by forging this field. `channel: "team"` plus `targetPlayerId` is rejected. Team chat is available in uninterrupted active/finished rooms with at least two current members in the sender's team; it is unavailable in lobbies, waiting rooms, and solo games.
+
+The delivered message has `visibility: "team"` and `teamId`, inside a normal `chat` envelope. The sender and current teammates receive it; opposing players do not. Chat does not change the game's version. RoomDO records the message's original recipients in `team_chat_audiences` for audience provenance, but provides no chat-history replay on reconnect, replacement joins, or a new team assignment. Never infer a historical message's audience from the current occupants of a team id.
+
+`GameClientActions.sendTeamChat?(body)` is separate from `sendChat(body, targetPlayerId?)`. The shared chat keeps public and team drafts separate and switches explicitly between the two channels. Changing room/team/membership discards the old team draft and pending IME composition, then returns to the public channel with its own draft. This prevents text composed for an old team from being sent to a new team or published accidentally. The server's `expectedTeam` check also blocks an in-flight message based on an old membership snapshot.
+
+### Events, reconnects, and presentation feedback
+
+`RoomView` retains up to 32 received game events, deduplicated by `event.id`, and forwards them as optional `GameClientSnapshot.events`. `uiRevision` changes on events/chat/presence even when the authoritative version stays constant. This buffer is local to the mounted room; it is not an event-history replay protocol. The board must always be recoverable from the current snapshot.
+
+Optional `connected` and `actionError: { revision, message }` let a package release a pending interaction after connection loss or a rejected command. Game code must not treat a chat-only update as a fresh server clock sample. Yutnori keeps the server/client time offset until `serverTime` changes so its throw lock expires even while chat is active.
+
+Yutnori presents each shared throw in a centered full-screen overlay, followed by an 800 ms result reveal. Optional synthesized wood-impact audio is unlocked by a user gesture and follows only upcoming impact times, with a persistent mute setting. Its pastel toy-like board frame and rounded tactile pieces use team-specific shapes, visible stacked layers, fork arrows, and server-confirmed movement/capture animations. Round stick faces carry three X marks; flat faces are blank except the first marked stick's small filled red circle. The server continues to define `faces[i] === true` as flat-side-up.
+
+The Yutnori scene uses `lastThrow` (`matchId`, `rollId`, `faces`, `startedAt`, `durationMs`, `visualSeed`) to restore a synchronized current or settled pose. The server supplies the result; Three.js is presentation only. WebGL failure/context loss retains a static four-face result; reduced motion, hidden tabs, and an offscreen scene skip to the settled pose. `destroy()` stops the animation loop and observers and disposes geometry, materials, shadows, and renderer resources.
+
+Turn vibration is optional. The key includes match, turn, and player, is remembered in session storage, and is independent of `uiRevision`. Unsupported vibration or denied browser activation does not affect play. A visual turn banner and live status text remain available.
+
+### Team-game verification
+
+- Check that solo/team rooms require 2/4 players at every entry and lifecycle path; reject forged counts and unknown modes.
+- Send the same action id twice and verify the throw/result is not regenerated. Reject stale versions, reused results, non-controller actions, and actions during the 1,800 ms throw plus 800 ms result reveal and during confirmed movement sequences.
+- Verify banked yut/mo require another throw, immediate results take priority, and a complete plan commits atomically. Captures must increment the same controller's turn, keep unused banked results, and require the next throw before movement.
+- Send a legal suggestion from a teammate: only that team receives private events and the board/version remain unchanged. Reject stale match/turn/path and opposing recipients.
+- Send public and team chat from four connected players; check each socket's deliveries. Change team membership and verify old `expectedTeam` guards are rejected and old drafts/IME text are cleared.
+- Reconnect or replace a player: restore the board from snapshots without replaying old private suggestions or chat history.
+- Check all four server faces, low-motion/static fallback, repeat turn-notification suppression, explicit move confirmation, keyboard focus, and phone layouts.
