@@ -325,3 +325,94 @@
 .yut-toy-logo i::after { content: "× × ×"; inset: 2px 0; font-size: 7px; writing-mode: vertical-rl; text-align: center; }
 .yut-toy-logo i:first-child { background: #f8e4c4; }
 .yut-toy-logo i:first-child::after { content: ""; inset: auto; width: 3px; height: 3px; top: 12px; left: 2px; border-radius: 50%; background: #c45346; }
+
+/* Board-led play: choose a piece, then its destination; keep the hand below it. */
+.yut-game { padding-top: 16px; }
+.yut-header { margin-bottom: 10px; }
+.yut-turn { padding: 9px 13px; margin-bottom: 10px; }
+.yut-teams { margin-bottom: 12px; gap: 10px; }
+.yut-team { padding: 10px 13px; }
+.yut-roster { margin: 5px 0; }
+.yut-reserve { margin-top: 6px; padding-top: 6px; }
+.yut-options { margin-bottom: 6px; }
+.yut-layout { grid-template-columns: minmax(0, 760px) minmax(205px, 250px); gap: 22px; justify-content: center; align-items: start; }
+.yut-board-wrap { max-width: 650px; margin-inline: auto; padding: 17px; }
+.yut-board-caption { max-width: 650px; margin: 14px auto 10px; line-height: 1.6; }
+.yut-board-caption > span + span { white-space: nowrap; }
+.yut-table-column > .yut-action-card { max-width: 650px; margin-inline: auto; padding: 12px 14px; overflow: visible; }
+.yut-console { align-content: start; }
+.yut-throw-card { padding: 13px; }
+.yut-node.is-target { z-index: 4; }
+.yut-node.is-target .yut-node-button { outline: 3px solid #b3cceb; outline-offset: 3px; }
+.yut-destination-label { position: absolute; top: calc(100% + 7px); left: 50%; transform: translateX(-50%); display: block; padding: 4px 8px; border: 1px solid #b9d2ec; border-radius: 9px; background: #fafdff; color: #3964a3; font-size: clamp(10px, 1vw, 12px); font-weight: 750; white-space: nowrap; line-height: 1.3; box-shadow: 0 2px 0 #c4d7e9, 0 3px 8px #416ba018; pointer-events: none; z-index: 5; }
+.yut-origin-ghost { position: absolute; width: 7.3%; aspect-ratio: 1; transform: translate(-50%, -50%); pointer-events: none; opacity: .3; }
+.yut-origin-ghost .yut-piece-face, .yut-origin-ghost .yut-piece-layer { background: transparent; border: 2px dashed #497abe; box-shadow: none; color: #497abe; }
+.yut-origin-ghost.team-B .yut-piece-face, .yut-origin-ghost.team-B .yut-piece-layer { border-color: #c9776d; color: #c9776d; }
+.yut-piece.is-origin-ghost { opacity: .35; border-style: dashed; background: transparent; box-shadow: none; }
+.yut-offboard-targets { position: absolute; bottom: 0; left: 18%; right: 18%; display: flex; justify-content: center; gap: 7px; z-index: 5; }
+.yut-offboard-target { min-height: 44px; border: 2px solid #b6d2f1; border-radius: 15px; background: #eef5ff; color: #4776ae; padding: 5px 12px; font-size: 11px !important; box-shadow: 0 3px #b8cbe2; }
+.yut-offboard-target span { font-weight: 750; padding-left: 6px; }
+.yut-route-picker { position: absolute; z-index: 9; left: 50%; top: 50%; transform: translate(-50%, -50%); width: min(260px, 85%); display: grid; gap: 7px; padding: 13px; border: 2px solid #c2d5de; background: #fbfdf8; box-shadow: 0 5px #b1c7c1, 0 12px 30px #36586132; border-radius: 19px; }
+.yut-route-picker > strong { font-size: 12px; padding: 2px 2px 4px; }
+.yut-route-picker button { min-height: 44px; padding: 7px 12px; border: 1px solid #c4d8ea; border-radius: 12px; background: #eaf3fd; color: #426b9e; font-weight: 700; font-size: 13px !important; text-align: left; }
+.yut-route-picker button span { float: right; font-size: 11px; font-weight: 450; padding-top: 2px; }
+.yut-route-picker .is-close { border: 0; background: transparent; color: #889991; text-align: center; font-size: 11px !important; }
+.yut-hand { display: flex; justify-content: center; align-items: stretch; gap: 9px; flex-wrap: wrap; min-height: 58px; }
+.yut-hand-tile { position: relative; min-width: 54px; display: flex; align-items: center; justify-content: center; gap: 5px; padding: 10px 11px; border: 2px solid #e5dfc1; border-radius: 13px; background: #fff8df; color: #7e785d; box-shadow: 0 4px #d4cbaa; transition: opacity .15s; }
+.yut-hand-tile > strong { font-size: 23px; }
+.yut-hand-tile > span { font-size: 11px; padding-top: 4px; }
+.yut-hand-tile.is-used { opacity: .48; background: #e9eee4; border-color: #ccd8c5; box-shadow: 0 2px #bfcebb; }
+.yut-hand-tile > small { position: absolute; top: -8px; right: -6px; width: 21px; height: 21px; display: grid; place-items: center; border-radius: 50%; background: #658bc0; color: #fff; border: 2px solid #fff; font-size: 10px; }
+.yut-hand-tile > button { min-height: 44px; max-width: 78px; margin-left: 4px; padding: 4px 7px; border: 1px solid #ded6b9; border-radius: 10px; background: #fffdf0; font-size: 10px !important; color: #8a8064; line-height: 1.4; }
+.yut-hand-empty { align-self: center; font-size: 11px; color: #8a9e90; }
+.yut-board-actions { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
+.yut-board-actions .yut-hint { flex: 1; margin: 0; }
+.yut-board-actions .yut-confirm { width: auto; min-width: 135px; margin: 0; justify-content: center; white-space: nowrap; }
+.yut-undo { flex-shrink: 0; min-height: 44px; border: 0; border-radius: 12px; background: #edf3e8; color: #809476; padding: 8px; font-size: 11px !important; }
+.yut-game [data-piece] { touch-action: none; }
+.yut-drag-piece { position: fixed; z-index: 100; width: 42px; height: 42px; transform: translate(-50%, -50%); pointer-events: none; filter: drop-shadow(0 9px 8px #44627040); }
+@media (max-width: 720px) {
+  .yut-game { padding: 10px 12px 75px; }
+  .yut-header { min-height: 30px; margin-bottom: 7px; }
+  .yut-header h1 { font-size: 22px; }
+  .yut-layout { display: flex; flex-direction: column; gap: 12px; }
+  .yut-table-column, .yut-console { width: 100%; }
+  .yut-team { padding: 8px 9px; }
+  .yut-team-top > strong { gap: 5px; font-size: 11px; }
+  .yut-team-top small, .yut-finished, .yut-roster-divider { display: none; }
+  .yut-roster { font-size: 9px; min-height: 14px; gap: 5px; margin: 3px 0; }
+  .yut-reserve { gap: 5px; padding-top: 4px; margin-top: 3px; }
+  .yut-reserve > span:first-child { display: none; }
+  .yut-reserve > div { gap: 5px; }
+  .yut-piece { width: 28px; height: 28px; min-width: 28px; font-size: 11px !important; }
+  .yut-teams { gap: 8px; margin-bottom: 9px; }
+  .yut-options { margin-bottom: 4px; }
+  .yut-options > span { display: none; }
+  .yut-turn { padding: 8px 10px; gap: 8px; margin-bottom: 8px; }
+  .yut-turn strong { font-size: 12px; }
+  .yut-turn > div > span { font-size: 9px; }
+  .yut-turn-count { padding: 5px 7px; font-size: 9px; }
+  .yut-board-wrap { width: 100%; padding: 10px; border-radius: 22px; }
+  .yut-board-caption { font-size: 9px; margin: 11px 2px 8px; }
+  .yut-board-caption > span + span { display: none; }
+  .yut-destination-label { padding: 3px 6px; font-size: 10px; top: calc(100% + 5px); }
+  .yut-table-column > .yut-action-card { padding: 10px; border-radius: 17px; }
+  .yut-hand { gap: 8px; min-height: 49px; }
+  .yut-hand-tile { min-width: 48px; padding: 7px 9px; }
+  .yut-hand-tile > strong { font-size: 21px; }
+  .yut-board-actions { flex-wrap: wrap; gap: 8px; }
+  .yut-board-actions .yut-hint { flex-basis: 100%; text-align: center; font-size: 10px; }
+  .yut-board-actions .yut-confirm { flex: 1; min-height: 44px; }
+  .yut-console { display: grid; grid-template-columns: 1fr; gap: 10px; }
+  .yut-throw-card { grid-template-columns: 60px 1fr; padding: 10px 12px; column-gap: 10px; }
+  .yut-scene-summary { height: 56px; }
+  .yut-summary-sticks { transform: scale(.72) rotate(-7deg); }
+  .yut-outcome { margin-bottom: 5px; }
+  .yut-throw-button { min-height: 44px; }
+  .yut-face-legend { display: none; }
+  .yut-suggestions { padding: 11px 13px; }
+}
+.yut-destination-label { pointer-events: auto; }
+.yut-piece { position: relative; }
+.yut-piece::after { content: ""; position: absolute; left: 50%; top: 50%; width: max(100%, 44px); height: max(100%, 44px); transform: translate(-50%, -50%); border-radius: inherit; }
+.yut-piece.is-origin-ghost { display: inline-grid; place-items: center; pointer-events: none; }

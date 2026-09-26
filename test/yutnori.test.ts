@@ -149,7 +149,83 @@ describe("Yutnori room integration", () => {
     } finally { peers.forEach((peer) => peer.ws.close()); }
   });
 
-  it("commits ordered banked moves once, starts a capture turn, and preserves unspent results", async () => {
+  it("shares placement previews and next-step suggestions only with the active team", async () => {
+    const { room } = await createRoom();
+    await runInDurableObject(room as unknown as RoomStub, (_instance, ctx) => {
+      const state = JSON.parse(ctx.storage.sql.exec<{ state_json: string }>("SELECT state_json FROM room_state WHERE id = 1").one().state_json) as RoomState;
+      const stage = state.stageState as unknown as YutnoriStage;
+      stage.turn.throwsRemaining = 0;
+      stage.turn.pending = [{ rollId: "mo", outcome: "mo", steps: 5 }, { rollId: "gae", outcome: "gae", steps: 2 }];
+      ctx.storage.sql.exec("UPDATE room_state SET state_json = ? WHERE id = 1", JSON.stringify(state));
+    });
+    const before = await room.getSnapshot("p0");
+    const view = before.publicView as unknown as YutnoriPublicView;
+    const peers = await Promise.all([0, 1, 2, 3].map(async (index) => {
+      const response = await room.fetch(new Request(`https://bighouse.test/ws?playerId=p${index}`, { headers: { Upgrade: "websocket" } }));
+      const ws = response.webSocket!; ws.accept();
+      const messages: Array<{ type: string; payload: Record<string, any> }> = [];
+      ws.addEventListener("message", (event) => { messages.push(JSON.parse(String(event.data))); });
+      return { ws, messages };
+    }));
+    try {
+      const prefix = [{ rollId: "mo", pieceId: "A1", pathId: "outer" }];
+      const base = { matchId: view.matchId, turnId: view.turn.turnId, expectedVersion: before.version, moves: prefix };
+      const preview = { type: "previewPlan", payload: { ...base, revision: 1 } };
+      peers[0]!.ws.send(JSON.stringify({ type: "gameSignal", playerId: "p0", signal: preview }));
+      await expect.poll(() => peers[2]!.messages.some((m) => m.type === "privateEvent" && m.payload.event.type === "yutnori.preview")).toBe(true);
+      const suggestion = { type: "suggestMove", payload: { ...base, planRevision: 1, move: { rollId: "gae", pieceId: "A1", pathId: "diagonalA" } } };
+      peers[2]!.ws.send(JSON.stringify({ type: "gameSignal", playerId: "p2", signal: suggestion }));
+      await expect.poll(() => peers[0]!.messages.some((m) => m.type === "privateEvent" && m.payload.event.type === "yutnori.suggestion")).toBe(true);
+      for (const peer of peers) peer.ws.send(JSON.stringify({ type: "ping", nonce: "preview-barrier" }));
+      await expect.poll(() => peers.every((peer) => peer.messages.some((m) => m.type === "pong"))).toBe(true);
+      expect(peers[1]!.messages.some((m) => m.type === "privateEvent")).toBe(false);
+      expect(peers[3]!.messages.some((m) => m.type === "privateEvent")).toBe(false);
+      const after = await room.getSnapshot("p0");
+      expect(after.version).toBe(before.version);
+      expect(after.publicView.pieces).toEqual(before.publicView.pieces);
+      expect(await runInDurableObject(room as unknown as RoomStub, (instance) => {
+        try { instance.sendGameSignal("p1", preview); return false; } catch { return true; }
+      })).toBe(true);
+      expect(await runInDurableObject(room as unknown as RoomStub, (instance) => {
+        try { instance.sendGameSignal("p0", { ...preview, payload: { ...preview.payload, expectedVersion: before.version - 1 } }); return false; } catch { return true; }
+      })).toBe(true);
+    } finally { peers.forEach((peer) => peer.ws.close()); }
+  });
+
+  it.each([
+    { order: ["mo", "gae"], paths: ["outer", "diagonalA"], destination: "a2" },
+    { order: ["gae", "mo"], paths: ["outer", "outer"], destination: "o7" }
+  ])("commits mixed results in player-chosen order: $order", async ({ order, paths, destination }) => {
+    const { room } = await createRoom("solo");
+    await runInDurableObject(room as unknown as RoomStub, (_instance, ctx) => {
+      const state = JSON.parse(ctx.storage.sql.exec<{ state_json: string }>("SELECT state_json FROM room_state WHERE id = 1").one().state_json) as RoomState;
+      const stage = state.stageState as unknown as YutnoriStage;
+      stage.turn.throwsRemaining = 0;
+      // Persisted pre-upgrade dispositions must no longer enforce an order.
+      stage.turn.pending = [
+        { rollId: "mo", outcome: "mo", steps: 5, disposition: "banked" },
+        { rollId: "gae", outcome: "gae", steps: 2, disposition: "immediate" }
+      ];
+      ctx.storage.sql.exec("UPDATE room_state SET state_json = ? WHERE id = 1", JSON.stringify(state));
+    });
+    const before = await room.getSnapshot("p0");
+    const view = before.publicView as unknown as YutnoriPublicView;
+    const action = {
+      playerId: "p0", clientActionId: "mixed-order", expectedVersion: before.version, type: "commitMoves",
+      payload: { matchId: view.matchId, turnId: view.turn.turnId, moves: order.map((rollId, i) => ({ rollId, pieceId: "A1", pathId: paths[i]! })) }
+    };
+    const first = await room.submitAction(action);
+    expect(await room.submitAction(action)).toEqual(first);
+    const after = await room.getSnapshot("p0");
+    const stage = after.publicView as unknown as YutnoriPublicView;
+    expect(after.version).toBe(before.version + 1);
+    expect(stage.pieces.find((piece) => piece.pieceId === "A1")?.nodeId).toBe(destination);
+    expect(stage.lastMoveSequence?.moves.map((move) => move.rollId)).toEqual(order);
+    expect(stage.turn.pending).toEqual([]);
+    expect(stage.currentPlayerId).toBe("p1");
+  });
+
+  it("commits ordered moves once, starts a capture turn, and preserves every kind of unspent result", async () => {
     const { room } = await createRoom();
     await runInDurableObject(room as unknown as RoomStub, (_instance, ctx) => {
       const state = JSON.parse(ctx.storage.sql.exec<{ state_json: string }>("SELECT state_json FROM room_state WHERE id = 1").one().state_json) as RoomState;
@@ -158,7 +234,8 @@ describe("Yutnori room integration", () => {
       stage.turn.pending = [
         { rollId: "stored-yut", outcome: "yut", steps: 4, disposition: "banked" },
         { rollId: "stored-mo", outcome: "mo", steps: 5, disposition: "banked" },
-        { rollId: "keep-yut", outcome: "yut", steps: 4, disposition: "banked" }
+        { rollId: "keep-yut", outcome: "yut", steps: 4, disposition: "banked" },
+        { rollId: "keep-gae", outcome: "gae", steps: 2, disposition: "immediate" }
       ];
       stage.pieces.find((piece) => piece.pieceId === "B1")!.nodeId = "o9";
       ctx.storage.sql.exec("UPDATE room_state SET state_json = ? WHERE id = 1", JSON.stringify(state));
@@ -177,7 +254,7 @@ describe("Yutnori room integration", () => {
     expect(after.version).toBe(before.version + 1);
     expect(committed.lastMoveSequence?.moves.map((move) => move.rollId)).toEqual(["stored-yut", "stored-mo"]);
     expect(committed.turn).toMatchObject({ turnId: 2, teamId: "A", controllerPlayerId: "p0", mandatoryThrows: 1, throwsRemaining: 1 });
-    expect(committed.turn.pending.map((roll) => roll.rollId)).toEqual(["keep-yut"]);
+    expect(committed.turn.pending.map((roll) => roll.rollId)).toEqual(["keep-yut", "keep-gae"]);
     expect(committed.pieces.find((piece) => piece.pieceId === "A1")?.nodeId).toBe("o9");
     expect(committed.pieces.find((piece) => piece.pieceId === "B1")?.nodeId).toBe("reserve");
     expect((await room.trySubmitAction({ ...action, clientActionId: "during-motion", expectedVersion: after.version, type: "throwYut", payload: {} })).ok).toBe(false);
@@ -192,6 +269,7 @@ describe("Yutnori room integration", () => {
     const resumed = (await room.getSnapshot("p0")).publicView as unknown as YutnoriPublicView;
     expect(resumed.turn.mandatoryThrows).toBe(0);
     expect(resumed.turn.pending.some((roll) => roll.rollId === "keep-yut")).toBe(true);
+    expect(resumed.turn.pending.some((roll) => roll.rollId === "keep-gae")).toBe(true);
     expect(resumed.currentPlayerId).toBe("p0");
   });
 

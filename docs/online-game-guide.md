@@ -740,13 +740,13 @@ The optional `GameClientActions.sendSignal()` sends a `gameSignal` envelope:
 
 The adapter's optional `handleSignal(context, playerId, signal)` returns `{ recipientPlayerIds, type, payload }` only when the signal is valid. It receives a cloned state and must not mutate authoritative state. RoomDO independently checks that every recipient belongs to the sender's current server-owned team. It accepts suggestions only during uninterrupted active play, rejects malformed payloads over 2,048 serialized characters, and limits accepted signals to one per player per 500 ms.
 
-Yutnori additionally requires the sender to be the current controller's teammate, the match/turn to be current, the throw animation to have ended, and the roll/piece/path to remain legal. The result is delivered separately to each approved recipient as `privateEvent` with `event.type: "yutnori.suggestion"` and `event.visibility: "private"`. Signals do not advance `version`, alter the board, or enter persisted public event history or snapshots. Reconnection does not replay previous suggestions. The client discards suggestions after 30 seconds, on a turn/match change, or when the move is no longer legal. Choosing a suggestion previews it; the controller must still explicitly confirm an ordinary move or include a stored roll in a confirmed move plan. Suggestions are unavailable while a throw or movement sequence is pending, or while an immediate result takes priority over a banked result.
+Yutnori additionally requires the sender to be the current controller's teammate, the match/turn to be current, the throw animation to have ended, and the roll/piece/path to remain legal. The result is delivered separately to each approved recipient as `privateEvent` with `event.type: "yutnori.suggestion"` and `event.visibility: "private"`. Signals do not advance `version`, alter the board, or enter persisted public event history or snapshots. Reconnection does not replay previous suggestions. The client discards suggestions after 30 seconds, on a turn/match change, or when the move is no longer legal. Choosing a suggestion previews it; the controller must still explicitly confirm the completed placement sequence. Suggestions are unavailable while an earned throw or movement sequence is pending. No result category takes priority over another.
 
-### Stored rolls, immediate moves, and atomic plans
+### Free result order and board placement
 
-Yutnori distinguishes `YutRoll.disposition: "banked" | "immediate"`. Yut/mo are banked and grant another throw; all remaining throws must be taken before movement. Do/gae/geol/back-do are immediate results: apply them with `movePiece`, or `discardRoll` when no legal move exists, before using banked results.
+Yut/mo grant another throw; all remaining throws must be taken before movement. Once throwing ends, every pending result can be used in any order. The optional persisted `YutRoll.disposition` field is retained for compatibility but no longer restricts play. A mo followed by gae can reach a corner and then enter a shortcut; reversing their order can produce a different route.
 
-Banked rolls are chosen in the desired order on a virtual board, then submitted as one ordinary versioned/idempotent game action:
+Players select a piece and tap a labeled destination directly on the board. Each placement automatically previews the next state, without an Add-to-plan button. Undo and a single final confirmation submit the chosen order as one versioned/idempotent action:
 
 ```json
 {
@@ -768,11 +768,17 @@ Banked rolls are chosen in the desired order on a virtual board, then submitted 
 }
 ```
 
-`simulateMovePlan()` in the shared pure `rules.ts` applies each choice to a clone, recalculating legal paths, stacks, captures, and exits after every move. The browser uses it for previews; the server repeats validation against authoritative state. Invalid plans do not partially mutate the room. A valid prefix may be previewed, but a plan can be committed only after all stored rolls are spent or it reaches a capture/victory. The original authoritative `turnId` belongs in the request even if a capture in the preview starts a new turn.
+`simulateMovePlan()` in the shared pure `rules.ts` applies each choice to a clone, recalculating legal paths, stacks, captures, and exits after every move. The browser uses it for previews; the server repeats validation against authoritative state. Invalid plans do not partially mutate the room. A valid prefix may be previewed, but a plan can be committed only after all results are spent or it reaches a capture/victory. A no-legal-move result may be represented as `{ "rollId": "back-do-id", "discard": true }` within the same sequence; it is legal only at that exact simulated board state. Do not automatically discard BackDo before another result can make it useful. The original authoritative `turnId` belongs in the request even if a capture in the preview starts a new turn.
 
-A capture ends the sequence at that move and starts a **new turn for the same team and controller**. `turnId` increments; unused banked rolls remain. `mandatoryThrows` forces the capture's new throw before any further movement. A plan containing moves after the capture is rejected. Normal A/B and teammate alternation uses `normalTurnIndex`, so capture turns do not skip a teammate's next normal turn.
+A capture ends the sequence at that move and starts a **new turn for the same team and controller**. `turnId` increments; all unused results remain, including ordinary results. `mandatoryThrows` forces the capture's new throw before any further movement. A plan containing moves after the capture is rejected. Normal A/B and teammate alternation uses `normalTurnIndex`, so capture turns do not skip a teammate's next normal turn.
 
 Accepted moves expose `lastMoveSequence: { sequenceId, startedAt, durationMs, moves }`; each move records its own start time. The authoritative snapshot already contains the final board. Clients reconstruct intermediate poses and play the confirmed path, stacked-piece movement, and capture return in order. Actions/signals are blocked until the sequence ends. The winner dialog waits for the last animation rather than covering it. Reconnection uses the server timeline without replaying an expired sequence.
+
+### Private placement previews
+
+The controller sends `previewPlan {matchId, turnId, expectedVersion, revision, moves}` through `gameSignal`. The adapter validates a legal prefix on a clone and emits `yutnori.preview` only to the active team. Empty `moves` clears the preview. Preview events never change the authoritative board/version or enter public history.
+
+A teammate can suggest the next step with `suggestMove {matchId, turnId, expectedVersion, planRevision, moves, move}`. The server validates the prefix and next move; the client additionally requires the same current prefix and revision before displaying or accepting it. Outdated versions, turns, actors, and illegal prefixes fail closed. Clients coalesce previews to honor the engine's 500 ms signal limit. Reconnection has no preview history; stale drafts and proposals are cleared.
 
 ### Public, individual, and team chat
 
@@ -810,7 +816,7 @@ Turn vibration is optional. The key includes match, turn, and player, is remembe
 
 - Check that solo/team rooms require 2/4 players at every entry and lifecycle path; reject forged counts and unknown modes.
 - Send the same action id twice and verify the throw/result is not regenerated. Reject stale versions, reused results, non-controller actions, and actions during the 1,800 ms throw plus 800 ms result reveal and during confirmed movement sequences.
-- Verify banked yut/mo require another throw, immediate results take priority, and a complete plan commits atomically. Captures must increment the same controller's turn, keep unused banked results, and require the next throw before movement.
+- Verify yut/mo require another throw, mo/gae can be used in either order, and a complete placement sequence commits atomically. Captures must increment the same controller's turn, keep all unused results, and require the next throw before movement.
 - Send a legal suggestion from a teammate: only that team receives private events and the board/version remain unchanged. Reject stale match/turn/path and opposing recipients.
 - Send public and team chat from four connected players; check each socket's deliveries. Change team membership and verify old `expectedTeam` guards are rejected and old drafts/IME text are cleared.
 - Reconnect or replace a player: restore the board from snapshots without replaying old private suggestions or chat history.

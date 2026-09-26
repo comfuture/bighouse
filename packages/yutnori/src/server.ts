@@ -2,8 +2,8 @@ import { createGameEventId, defineGameDefinition } from "@bighouse/game-sdk/serv
 import type { GameContext, GameEvent, JsonObject, ServerGamePlugin, ValidationResult } from "@bighouse/game-sdk/server";
 import { getLegalMoves } from "./board";
 import { baseGameMetadata } from "./metadata";
-import { applyMove, hasImmediateRoll, mandatoryThrows, moveDuration, rollDisposition, simulateMovePlan, THROW_RESULT_HOLD_MS } from "./rules";
-import type { LegalMove, MoveChoice, Outcome, TeamId, YutMove, YutnoriStage, YutRoll, YutThrow } from "./types";
+import { applyMove, mandatoryThrows, moveDuration, simulateMovePlan, THROW_RESULT_HOLD_MS, type MovePlanResult } from "./rules";
+import type { LegalMove, MoveChoice, Outcome, PlanChoice, TeamId, YutMove, YutnoriStage, YutRoll, YutThrow } from "./types";
 
 export const THROW_DURATION_MS = 1800;
 export const gameMetadata = baseGameMetadata;
@@ -28,12 +28,18 @@ function animationActive(stage: YutnoriStage, now: number): boolean {
 function selectedMove(stage: YutnoriStage, payload: JsonObject): LegalMove | undefined {
   return getLegalMoves(stage).find((move) => move.rollId === payload.rollId && move.pieceId === payload.pieceId && move.pathId === payload.pathId);
 }
-function moveChoices(payload: JsonObject, stage: YutnoriStage): MoveChoice[] | undefined {
-  if (payload.matchId !== stage.matchId || payload.turnId !== stage.turn.turnId || !Array.isArray(payload.moves) || payload.moves.length === 0 || payload.moves.length > stage.turn.pending.length) return;
-  const choices: MoveChoice[] = [];
+function moveChoices(payload: JsonObject, stage: YutnoriStage, allowEmpty = false): PlanChoice[] | undefined {
+  if (payload.matchId !== stage.matchId || payload.turnId !== stage.turn.turnId || !Array.isArray(payload.moves) || (!allowEmpty && payload.moves.length === 0) || payload.moves.length > stage.turn.pending.length) return;
+  const choices: PlanChoice[] = [];
   for (const item of payload.moves) {
-    if (!item || typeof item !== "object" || Array.isArray(item) || typeof item.rollId !== "string" || typeof item.pieceId !== "string" || typeof item.pathId !== "string") return;
-    choices.push({ rollId: item.rollId, pieceId: item.pieceId, pathId: item.pathId });
+    if (!item || typeof item !== "object" || Array.isArray(item) || typeof item.rollId !== "string") return;
+    if (item.discard === true) {
+      if (item.pieceId !== undefined || item.pathId !== undefined) return;
+      choices.push({ rollId: item.rollId, discard: true });
+    } else {
+      if (item.discard !== undefined || typeof item.pieceId !== "string" || typeof item.pathId !== "string") return;
+      choices.push({ rollId: item.rollId, pieceId: item.pieceId, pathId: item.pathId });
+    }
   }
   return choices;
 }
@@ -51,10 +57,15 @@ function nextTurn(context: GameContext, stage: YutnoriStage, events: GameEvent[]
   stage.currentPlayerId = controllerPlayerId;
   events.push(event(context, stage, "turnChanged", { currentPlayerId: controllerPlayerId, teamId, rollId, previousTurnId: turnId - 1 }));
 }
-function recordMoves(context: GameContext, stage: YutnoriStage, moves: YutMove[], events: GameEvent[]): void {
+function recordMoves(context: GameContext, stage: YutnoriStage, moves: YutMove[], events: GameEvent[], operations: MovePlanResult["operations"] = moves.map((move) => ({ kind: "move", move }))): void {
   const durationMs = moves.reduce((total, move) => total + moveDuration(move), 0);
   stage.lastMoveSequence = { sequenceId: crypto.randomUUID(), startedAt: context.now, durationMs, moves };
-  for (const move of moves) {
+  for (const operation of operations) {
+    if (operation.kind === "discard") {
+      events.push(event(context, stage, "rollDiscarded", { turnId: operation.turnId, rollId: operation.rollId }));
+      continue;
+    }
+    const move = operation.move;
     events.push(event(context, stage, "moved", { ...move }));
     if (move.capturedPieceIds.length) {
       events.push(event(context, stage, "captured", { turnId: move.turnId, rollId: move.rollId, pieceIds: move.capturedPieceIds }));
@@ -91,13 +102,11 @@ export const yutnoriDefinition = defineGameDefinition(gameMetadata, {
     if (animationActive(stage, context.now)) return failure("throw_in_progress", "공동 연출이 끝난 뒤 진행하세요.");
     if (action.type === "throwYut") {
       if (Object.keys(action.payload).length !== 0) return failure("invalid_action", "윷 결과는 서버에서 결정합니다.");
-      if (hasImmediateRoll(stage) && mandatoryThrows(stage) === 0) return failure("immediate_move_required", "즉시 이동 결과를 먼저 사용하세요.");
       return stage.turn.throwsRemaining > 0 ? { ok: true } : failure("invalid_action", "남은 던지기가 없습니다.");
     }
     if (mandatoryThrows(stage) > 0) return failure("capture_throw_required", "잡아서 얻은 추가 던지기를 먼저 하세요.");
+    if (stage.turn.throwsRemaining > 0) return failure("extra_throw_required", "남은 추가 던지기를 먼저 하세요.");
     if (action.type === "movePiece") {
-      const roll = stage.turn.pending.find((entry) => entry.rollId === action.payload.rollId);
-      if (!roll || rollDisposition(roll) !== "immediate") return failure("banked_plan_required", "보관한 이동권은 이동 계획을 한 번에 확정하세요.");
       return selectedMove(stage, action.payload) ? { ok: true } : failure("invalid_move", "이동할 수 없는 말 또는 경로입니다.");
     }
     if (action.type === "commitMoves") {
@@ -105,7 +114,7 @@ export const yutnoriDefinition = defineGameDefinition(gameMetadata, {
       if (!choices) return failure("invalid_move_plan", "현재 차례의 이동 계획이 아닙니다.");
       try {
         const plan = simulateMovePlan(stage, choices, context.now);
-        return plan.complete ? { ok: true } : failure("incomplete_move_plan", "모든 보관 이동권의 이동 순서를 정하세요.");
+        return plan.complete ? { ok: true } : failure("incomplete_move_plan", "남은 모든 결과의 사용 순서를 정하세요.");
       } catch (error) { return failure("invalid_move_plan", error instanceof Error ? error.message : "이동 계획을 확인하세요."); }
     }
     if (action.type === "discardRoll") {
@@ -124,7 +133,7 @@ export const yutnoriDefinition = defineGameDefinition(gameMetadata, {
       const bits = random[0]!;
       const faces: YutThrow["faces"] = [!!(bits & 1), !!(bits & 2), !!(bits & 4), !!(bits & 8)];
       const result = outcomeFromFaces(faces, stage.rules.backDo);
-      const roll: YutRoll = { rollId: crypto.randomUUID(), ...result, disposition: result.outcome === "yut" || result.outcome === "mo" ? "banked" : "immediate" };
+      const roll: YutRoll = { rollId: crypto.randomUUID(), ...result, disposition: "banked" };
       stage.turn.throwsRemaining -= 1;
       if (mandatoryThrows(stage) > 0) stage.turn.mandatoryThrows = mandatoryThrows(stage) - 1;
       if (result.outcome === "yut" || result.outcome === "mo") stage.turn.throwsRemaining += 1;
@@ -141,12 +150,12 @@ export const yutnoriDefinition = defineGameDefinition(gameMetadata, {
       const plan = simulateMovePlan(stage, choices, context.now);
       if (!plan.complete) throw new Error("Cannot commit an incomplete move plan");
       Object.assign(stage, plan.stage);
-      recordMoves(context, stage, plan.moves, events);
+      recordMoves(context, stage, plan.moves, events, plan.operations);
     } else if (action.type === "discardRoll") {
       stage.turn.pending = stage.turn.pending.filter((roll) => roll.rollId !== action.payload.rollId);
       events.push(event(context, stage, "rollDiscarded", { rollId: action.payload.rollId }));
     }
-    nextTurn(context, stage, events, action.type === "commitMoves" ? stage.lastMoveSequence?.moves.at(-1)?.rollId : action.payload.rollId);
+    nextTurn(context, stage, events, action.type === "commitMoves" && Array.isArray(action.payload.moves) ? action.payload.moves.at(-1)?.rollId : action.payload.rollId);
     return { state, events };
   },
   getPublicView(context): JsonObject {
@@ -158,12 +167,34 @@ export const yutnoriDefinition = defineGameDefinition(gameMetadata, {
   handleSignal(context, playerId, signal) {
     const stage = readStage(context.state.stageState);
     const payload = signal.payload;
-    if (signal.type !== "suggestMove" || context.state.phase !== "active" || context.state.activeInterruption || stage.winnerTeamId || animationActive(stage, context.now) || mandatoryThrows(stage) > 0) return;
-    if (payload.matchId !== stage.matchId || payload.turnId !== stage.turn.turnId || playerId === stage.currentPlayerId) return;
-    const roll = stage.turn.pending.find((entry) => entry.rollId === payload.rollId);
-    if (!roll || (rollDisposition(roll) === "banked" && (hasImmediateRoll(stage) || stage.turn.throwsRemaining > 0))) return;
+    if (context.state.phase !== "active" || context.state.activeInterruption || stage.winnerTeamId || animationActive(stage, context.now) || mandatoryThrows(stage) > 0 || stage.turn.throwsRemaining > 0) return;
+    if (payload.matchId !== stage.matchId || payload.turnId !== stage.turn.turnId) return;
     const team = stage.teams.find((entry) => entry.teamId === stage.turn.teamId);
-    if (!team?.playerIds.includes(playerId) || !context.state.players.some((player) => player.playerId === playerId) || !selectedMove(stage, payload)) return;
+    if (!team?.playerIds.includes(playerId) || !context.state.players.some((player) => player.playerId === playerId)) return;
+    if (signal.type === "previewPlan") {
+      if (playerId !== stage.currentPlayerId || payload.expectedVersion !== context.state.version || !Number.isSafeInteger(payload.revision) || Number(payload.revision) < 0) return;
+      const choices = moveChoices(payload, stage, true);
+      if (!choices) return;
+      try { simulateMovePlan(stage, choices, context.now); } catch { return; }
+      return { recipientPlayerIds: [...team.playerIds], type: "yutnori.preview", payload: { matchId: stage.matchId, turnId: stage.turn.turnId, expectedVersion: context.state.version, revision: payload.revision, moves: choices, playerId } };
+    }
+    if (signal.type !== "suggestMove" || playerId === stage.currentPlayerId) return;
+    if (payload.moves !== undefined || payload.move !== undefined || payload.planRevision !== undefined) {
+      if (payload.expectedVersion !== context.state.version || !Number.isSafeInteger(payload.planRevision) || Number(payload.planRevision) < 0) return;
+      const choices = moveChoices(payload, stage, true);
+      const requested = payload.move;
+      if (!choices || !requested || typeof requested !== "object" || Array.isArray(requested)) return;
+      try {
+        const plan = simulateMovePlan(stage, choices, context.now);
+        if (plan.complete) return;
+        const move = selectedMove(plan.stage, requested as JsonObject);
+        if (!move) return;
+        const choice: MoveChoice = { rollId: move.rollId, pieceId: move.pieceId, pathId: move.pathId };
+        return { recipientPlayerIds: [...team.playerIds], type: "yutnori.suggestion", payload: { matchId: stage.matchId, turnId: stage.turn.turnId, expectedVersion: context.state.version, planRevision: payload.planRevision, moves: choices, move: choice, ...choice, playerId } };
+      } catch { return; }
+    }
+    if (payload.expectedVersion !== undefined && payload.expectedVersion !== context.state.version) return;
+    if (!selectedMove(stage, payload)) return;
     return { recipientPlayerIds: [...team.playerIds], type: "yutnori.suggestion", payload: { matchId: stage.matchId, turnId: stage.turn.turnId, rollId: payload.rollId, pieceId: payload.pieceId, pathId: payload.pathId, playerId } };
   }
 });
