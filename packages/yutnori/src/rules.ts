@@ -1,12 +1,9 @@
 import { getLegalMoves, piecePaths } from "./board";
-import type { LegalMove, MoveChoice, YutMove, YutnoriStage, YutRoll } from "./types";
+import type { DiscardChoice, LegalMove, MoveChoice, PlanChoice, YutMove, YutnoriStage } from "./types";
 export const THROW_RESULT_HOLD_MS = 800;
 
-export function rollDisposition(roll: YutRoll): "immediate" | "banked" {
-  return roll.disposition ?? (roll.outcome === "yut" || roll.outcome === "mo" ? "banked" : "immediate");
-}
 export function mandatoryThrows(stage: YutnoriStage): number { return stage.turn.mandatoryThrows ?? 0; }
-export function hasImmediateRoll(stage: YutnoriStage): boolean { return stage.turn.pending.some((roll) => rollDisposition(roll) === "immediate"); }
+export function isDiscardChoice(choice: PlanChoice): choice is DiscardChoice { return "discard" in choice && choice.discard === true; }
 export function moveDuration(move: LegalMove): number {
   return Math.min(1250, Math.max(360, move.path.length * 180)) + (move.capturedPieceIds.length ? 650 : 100);
 }
@@ -52,29 +49,40 @@ export function applyMove(stage: YutnoriStage, choice: MoveChoice, startedAt: nu
 export type MovePlanResult = {
   stage: YutnoriStage;
   moves: YutMove[];
+  discardedRollIds: string[];
+  operations: Array<{ kind: "move"; move: YutMove } | { kind: "discard"; rollId: string; turnId: number }>;
   complete: boolean;
   stopReason: "all-spent" | "capture" | "victory" | "incomplete";
 };
 
 /** A valid prefix is previewable; only a complete plan is committable. */
-export function simulateMovePlan(initial: YutnoriStage, choices: readonly MoveChoice[], startedAt: number): MovePlanResult {
+export function simulateMovePlan(initial: YutnoriStage, choices: readonly PlanChoice[], startedAt: number): MovePlanResult {
   if (mandatoryThrows(initial) > 0) throw new Error("잡아서 얻은 추가 던지기를 먼저 하세요.");
-  if (hasImmediateRoll(initial)) throw new Error("즉시 이동 결과를 먼저 사용하세요.");
   if (initial.turn.throwsRemaining > 0) throw new Error("남은 추가 던지기를 먼저 하세요.");
   const stage = structuredClone(initial);
   const moves: YutMove[] = [];
+  const discardedRollIds: string[] = [];
+  const operations: MovePlanResult["operations"] = [];
   let at = startedAt;
   let stopReason: MovePlanResult["stopReason"] = "incomplete";
   for (const choice of choices) {
     if (stopReason === "capture" || stopReason === "victory") throw new Error("잡기 또는 승리 뒤에는 계획을 이어갈 수 없습니다.");
     const roll = stage.turn.pending.find((entry) => entry.rollId === choice.rollId);
-    if (!roll || rollDisposition(roll) !== "banked") throw new Error("사용할 수 없는 보관 이동권입니다.");
+    if (!roll) throw new Error("사용할 수 없는 이동권입니다.");
+    if (isDiscardChoice(choice)) {
+      if (getLegalMoves(stage).some((move) => move.rollId === roll.rollId)) throw new Error("이동할 수 없는 결과만 소진할 수 있습니다.");
+      stage.turn.pending = stage.turn.pending.filter((entry) => entry.rollId !== roll.rollId);
+      discardedRollIds.push(roll.rollId);
+      operations.push({ kind: "discard", rollId: roll.rollId, turnId: stage.turn.turnId });
+      continue;
+    }
     const move = applyMove(stage, choice, at);
     moves.push(move);
+    operations.push({ kind: "move", move });
     at += moveDuration(move);
     if (stage.winnerTeamId) stopReason = "victory";
     else if (move.capturedPieceIds.length) stopReason = "capture";
   }
-  if (stopReason === "incomplete" && !stage.turn.pending.some((roll) => rollDisposition(roll) === "banked")) stopReason = "all-spent";
-  return { stage, moves, complete: stopReason !== "incomplete", stopReason };
+  if (stopReason === "incomplete" && stage.turn.pending.length === 0) stopReason = "all-spent";
+  return { stage, moves, discardedRollIds, operations, complete: stopReason !== "incomplete", stopReason };
 }

@@ -1,9 +1,9 @@
 import type { ClientGameAction, JsonObject, RoomState } from "@bighouse/game-sdk/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { getLegalMoves } from "../src/board";
-import { hasImmediateRoll, mandatoryThrows, moveDuration, rollDisposition, simulateMovePlan, THROW_RESULT_HOLD_MS } from "../src/rules";
+import { mandatoryThrows, moveDuration, simulateMovePlan, THROW_RESULT_HOLD_MS } from "../src/rules";
 import { THROW_DURATION_MS, yutnoriDefinition as game } from "../src/server";
-import type { MoveChoice, YutnoriStage, YutRoll } from "../src/types";
+import type { MoveChoice, PlanChoice, YutnoriStage } from "../src/types";
 
 function fixture() {
   const state: RoomState = {
@@ -28,7 +28,7 @@ function fixture() {
     stage.turn.pending = outcomes.map((outcome, index) => ({ rollId: `bank${index}`, outcome, steps: outcome === "yut" ? 4 : 5, disposition: "banked" }));
     stage.turn.throwsRemaining = 0;
   };
-  const payload = (moves: MoveChoice[]): JsonObject => ({ matchId: stage.matchId, turnId: stage.turn.turnId, moves });
+  const payload = (moves: PlanChoice[]): JsonObject => ({ matchId: stage.matchId, turnId: stage.turn.turnId, moves });
   return { state, stage, context, action, apply, ready, bank, payload };
 }
 const choice = (rollId: string, pieceId = "A1", pathId = "outer"): MoveChoice => ({ rollId, pieceId, pathId });
@@ -38,7 +38,7 @@ function rigThrows(...bits: number[]) {
 afterEach(() => vi.restoreAllMocks());
 
 describe("banked result lifecycle", () => {
-  it("banks yut/mo, retains their extra throws, and requires the ordinary final result immediately", () => {
+  it("collects all results after taking yut/mo extra throws, then permits a mixed ordered plan", () => {
     rigThrows(15, 0, 2);
     const { stage, context, apply, ready, action, payload } = fixture();
     apply("throwYut");
@@ -52,32 +52,88 @@ describe("banked result lifecycle", () => {
     expect(stage.turn.pending.map((roll) => roll.outcome)).toEqual(["yut", "mo"]);
     expect(stage.turn.throwsRemaining).toBe(1);
     apply("throwYut"); ready();
-    expect(stage.turn.pending[2]).toMatchObject({ outcome: "do", disposition: "immediate" });
-    expect(hasImmediateRoll(stage)).toBe(true);
+    expect(stage.turn.pending[2]).toMatchObject({ outcome: "do", disposition: "banked" });
     expect(game.validateAction(context, action("commitMoves", payload(stage.turn.pending.slice(0, 2).map((roll) => choice(roll.rollId))))).ok).toBe(false);
-    apply("movePiece", choice(stage.turn.pending[2]!.rollId));
-    expect(stage.pieces[0]!.nodeId).toBe("o1");
-    expect(stage.turn.pending.map((roll) => roll.outcome)).toEqual(["yut", "mo"]);
-    expect(stage.currentPlayerId).toBe("p0");
+    const ordered = [stage.turn.pending[0]!, stage.turn.pending[2]!, stage.turn.pending[1]!];
+    apply("commitMoves", payload(ordered.map((roll) => choice(roll.rollId))));
+    expect(stage.lastMoveSequence!.moves.map((move) => move.rollId)).toEqual(ordered.map((roll) => roll.rollId));
+    expect(stage.turn.pending).toHaveLength(0);
+    expect(stage.currentPlayerId).toBe("p1");
   });
 
-  it("never permits individual confirmation of banked moves", () => {
-    const { stage, bank, action, context } = fixture(); bank("yut");
-    expect(game.validateAction(context, action("movePiece", choice("bank0")))).toMatchObject({ code: "banked_plan_required" });
-    expect(stage.pieces[0]!.nodeId).toBe("reserve");
+  it("retains safe legacy movePiece support for any available result", () => {
+    const { stage, bank, apply } = fixture(); bank("yut");
+    apply("movePiece", choice("bank0"));
+    expect(stage.pieces[0]!.nodeId).toBe("o4");
   });
 
-  it("uses fallback dispositions and zero mandatory throws for legacy persisted state", () => {
-    const { stage } = fixture();
+  it("plans legacy results without dispositions and defaults missing mandatory throws to zero", () => {
+    const { stage, bank } = fixture(); bank("mo");
     delete stage.turn.mandatoryThrows;
+    delete stage.turn.pending[0]!.disposition;
+    stage.turn.pending.push({ rollId: "gae", outcome: "gae", steps: 2 });
     expect(mandatoryThrows(stage)).toBe(0);
-    for (const [outcome, disposition] of [["yut", "banked"], ["mo", "banked"], ["do", "immediate"], ["backDo", "immediate"]] as const) {
-      expect(rollDisposition({ rollId: outcome, outcome, steps: 1 })).toBe(disposition);
-    }
+    const plan = simulateMovePlan(stage, [choice("bank0"), choice("gae", "A1", "diagonalA")], 100);
+    expect(plan.complete).toBe(true);
+    expect(plan.stage.pieces[0]!.nodeId).toBe("a2");
   });
 });
 
 describe("atomic ordered move plans", () => {
+  it("supports either mo→gae or gae→mo without imposing legacy disposition priority", () => {
+    const { state, stage, bank, payload, apply } = fixture(); bank("mo");
+    stage.turn.pending.push({ rollId: "gae", outcome: "gae", steps: 2, disposition: "immediate" });
+    const before = structuredClone(state);
+    const moFirst = [choice("bank0"), choice("gae", "A1", "diagonalA")];
+    const gaeFirst = [choice("gae"), choice("bank0")];
+    expect(simulateMovePlan(stage, moFirst, 100).stage.pieces[0]!.nodeId).toBe("a2");
+    expect(simulateMovePlan(stage, gaeFirst, 100).stage.pieces[0]!.nodeId).toBe("o7");
+    expect(state).toEqual(before);
+    apply("commitMoves", payload(moFirst));
+    expect(stage.pieces[0]!.nodeId).toBe("a2");
+    expect(stage.lastMoveSequence!.moves.map((move) => move.rollId)).toEqual(["bank0", "gae"]);
+  });
+
+  it("requires earned throws before legacy moves, discards, batches or signals", () => {
+    const { stage, bank, action, context, payload } = fixture(); bank("mo");
+    stage.turn.throwsRemaining = 1;
+    stage.turn.pending.push({ rollId: "back", outcome: "backDo", steps: -1, disposition: "immediate" });
+    for (const input of [action("movePiece", choice("bank0")), action("discardRoll", { rollId: "back" }), action("commitMoves", payload([{ rollId: "back", discard: true }, choice("bank0")]))]) {
+      expect(game.validateAction(context, input)).toMatchObject({ code: "extra_throw_required" });
+    }
+    expect(game.validateAction(context, action("throwYut"))).toEqual({ ok: true });
+  });
+
+  it("discards an unusable backDo at its selected point in the atomic plan", () => {
+    const { state, stage, bank, payload, apply } = fixture(); bank("mo");
+    stage.turn.pending.push({ rollId: "back", outcome: "backDo", steps: -1 });
+    const before = structuredClone(state);
+    const choices: PlanChoice[] = [{ rollId: "back", discard: true }, choice("bank0")];
+    const plan = simulateMovePlan(stage, choices, 100);
+    expect(plan).toMatchObject({ complete: true, discardedRollIds: ["back"] });
+    expect(plan.stage.pieces[0]!.nodeId).toBe("o5");
+    expect(state).toEqual(before);
+    expect(() => simulateMovePlan(stage, [choice("bank0"), { rollId: "back", discard: true }], 100)).toThrow();
+    expect(simulateMovePlan(stage, [choice("bank0"), choice("back", "A1", "back")], 100).stage.pieces[0]!.nodeId).toBe("o4");
+    const result = apply("commitMoves", payload(choices));
+    expect(result.events.slice(0, 2).map((event) => event.type)).toEqual(["yutnori.rollDiscarded", "yutnori.moved"]);
+    expect(stage.lastMoveSequence!.moves).toHaveLength(1);
+  });
+
+  it("can complete a discard-only turn, while rejecting a legal or duplicate discard", () => {
+    const { state, stage, bank, payload, apply, context, action } = fixture(); bank();
+    stage.turn.pending.push({ rollId: "back", outcome: "backDo", steps: -1 });
+    const result = apply("commitMoves", payload([{ rollId: "back", discard: true }]));
+    expect(stage.turn.pending).toEqual([]);
+    expect(stage.currentPlayerId).toBe("p1");
+    expect(stage.lastMoveSequence).toMatchObject({ durationMs: 0, moves: [] });
+    expect(result.events.map((event) => event.type)).toEqual(["yutnori.rollDiscarded", "yutnori.turnChanged"]);
+    expect(state.version).toBe(1);
+    bank("mo");
+    expect(game.validateAction(context, action("commitMoves", payload([{ rollId: "bank0", discard: true }]))).ok).toBe(false);
+    stage.turn.pending.push({ rollId: "back2", outcome: "backDo", steps: -1 });
+    expect(game.validateAction(context, action("commitMoves", payload([{ rollId: "back2", discard: true }, { rollId: "back2", discard: true }]))).ok).toBe(false);
+  });
   it("previews a cloned prefix, commits all moves in chosen order, and schedules sequential timing", () => {
     const { state, stage, context, bank, payload, apply } = fixture(); bank("yut", "mo");
     const before = structuredClone(state);
@@ -150,6 +206,17 @@ describe("atomic ordered move plans", () => {
 });
 
 describe("capture creates a mandatory new own turn", () => {
+  it("carries every unused result across capture and rejects moves beyond the capture boundary", () => {
+    const { stage, bank, apply, payload, action, context } = fixture(); bank("mo");
+    stage.turn.pending.push({ rollId: "gae", outcome: "gae", steps: 2 }, { rollId: "back", outcome: "backDo", steps: -1 });
+    stage.pieces[4]!.nodeId = "o5";
+    const before = structuredClone(stage);
+    expect(game.validateAction(context, action("commitMoves", payload([choice("bank0"), choice("gae")]))).ok).toBe(false);
+    expect(stage).toEqual(before);
+    apply("commitMoves", payload([choice("bank0")]));
+    expect(stage.turn).toMatchObject({ turnId: 2, teamId: "A", mandatoryThrows: 1, throwsRemaining: 1 });
+    expect(stage.turn.pending.map((roll) => roll.rollId)).toEqual(["gae", "back"]);
+  });
   it("stops a batch at capture, carries banked tokens, and requires its bonus throw before further moves", () => {
     rigThrows(2);
     const { stage, context, bank, action, payload, apply, ready } = fixture(); bank("mo", "yut");
@@ -167,7 +234,7 @@ describe("capture creates a mandatory new own turn", () => {
     for (const type of ["movePiece", "commitMoves", "discardRoll"]) expect(game.validateAction(context, action(type, payload([choice("bank1")])))).toMatchObject({ code: "capture_throw_required" });
     apply("throwYut"); ready();
     expect(stage.turn.mandatoryThrows).toBe(0);
-    const immediate = stage.turn.pending.find((roll) => rollDisposition(roll) === "immediate")!;
+    const immediate = stage.turn.pending.find((roll) => roll.outcome === "do")!;
     expect(game.validateAction(context, action("commitMoves", payload([choice("bank1")]))).ok).toBe(false);
     apply("movePiece", choice(immediate.rollId)); ready();
     apply("commitMoves", payload([choice("bank1")])); ready();
@@ -198,5 +265,53 @@ describe("capture creates a mandatory new own turn", () => {
     apply("throwYut");
     expect(stage.turn).toMatchObject({ turnId: 2, controllerPlayerId: "p0", mandatoryThrows: 0, throwsRemaining: 1 });
     expect(stage.turn.pending[0]).toMatchObject({ outcome: "yut", disposition: "banked" });
+  });
+});
+
+describe("private team plan previews", () => {
+  it("relays a controller's valid prefix or clear without changing board, version or public view", () => {
+    const { state, stage, bank, context, payload } = fixture(); bank("mo", "yut");
+    const before = structuredClone(state);
+    const publicBefore = game.getPublicView(context);
+    const signal = { type: "previewPlan", payload: { ...payload([choice("bank0")]), expectedVersion: state.version, revision: 3 } };
+    expect(game.handleSignal!(context, "p0", signal)).toMatchObject({ recipientPlayerIds: ["p0", "p2"], type: "yutnori.preview", payload: { playerId: "p0", revision: 3, expectedVersion: 1, moves: [choice("bank0")] } });
+    expect(game.handleSignal!(context, "p0", { ...signal, payload: { ...signal.payload, moves: [], revision: 4 } })).toMatchObject({ payload: { moves: [], revision: 4 } });
+    expect(state).toEqual(before);
+    expect(game.getPublicView(context)).toEqual(publicBefore);
+    expect(stage.pieces[0]!.nodeId).toBe("reserve");
+  });
+
+  it("rejects unauthorized, stale, malformed, impossible and capture-overrun previews", () => {
+    const { state, stage, bank, context, payload } = fixture(); bank("mo", "yut");
+    const signal = { type: "previewPlan", payload: { ...payload([choice("bank0")]), expectedVersion: state.version, revision: 1 } };
+    for (const playerId of ["p1", "p2", "p3", "outsider"]) expect(game.handleSignal!(context, playerId, signal)).toBeUndefined();
+    for (const patch of [{ expectedVersion: 0 }, { turnId: 99 }, { matchId: "old" }, { revision: -1 }, { revision: 1.5 }, { moves: [choice("bank0", "B1")] }, { moves: [{ rollId: "bank0", discard: true, pieceId: "A1" }] }]) {
+      expect(game.handleSignal!(context, "p0", { ...signal, payload: { ...signal.payload, ...patch } })).toBeUndefined();
+    }
+    stage.pieces[4]!.nodeId = "o5";
+    expect(game.handleSignal!(context, "p0", { ...signal, payload: { ...signal.payload, moves: [choice("bank0"), choice("bank1")] } })).toBeUndefined();
+    stage.turn.throwsRemaining = 1;
+    expect(game.handleSignal!(context, "p0", signal)).toBeUndefined();
+  });
+
+  it("validates teammate destination suggestions on the simulated prefix, never the original board", () => {
+    const { state, stage, bank, context, payload } = fixture(); bank("mo", "yut");
+    const before = structuredClone(state);
+    const signal = { type: "suggestMove", payload: { ...payload([choice("bank0")]), expectedVersion: state.version, planRevision: 3, move: choice("bank1", "A1", "diagonalA") } };
+    expect(getLegalMoves(stage).some((move) => move.rollId === "bank1" && move.pathId === "diagonalA")).toBe(false);
+    expect(game.handleSignal!(context, "p2", signal)).toMatchObject({ recipientPlayerIds: ["p0", "p2"], type: "yutnori.suggestion", payload: { playerId: "p2", planRevision: 3, expectedVersion: 1, moves: [choice("bank0")], rollId: "bank1", pieceId: "A1", pathId: "diagonalA" } });
+    for (const playerId of ["p0", "p1", "p3"]) expect(game.handleSignal!(context, playerId, signal)).toBeUndefined();
+    for (const patch of [{ expectedVersion: 0 }, { planRevision: -1 }, { moves: [] }, { move: choice("bank0") }, { move: choice("bank1", "B1") }]) {
+      expect(game.handleSignal!(context, "p2", { ...signal, payload: { ...signal.payload, ...patch } })).toBeUndefined();
+    }
+    expect(state).toEqual(before);
+  });
+
+  it("supports an explicit unusable-result prefix in previews and suggestions", () => {
+    const { state, stage, bank, context, payload } = fixture(); bank("mo");
+    stage.turn.pending.push({ rollId: "back", outcome: "backDo", steps: -1 });
+    const prefix = { ...payload([{ rollId: "back", discard: true }]), expectedVersion: state.version };
+    expect(game.handleSignal!(context, "p0", { type: "previewPlan", payload: { ...prefix, revision: 1 } })).toMatchObject({ payload: { moves: [{ rollId: "back", discard: true }] } });
+    expect(game.handleSignal!(context, "p2", { type: "suggestMove", payload: { ...prefix, planRevision: 1, move: choice("bank0") } })).toMatchObject({ payload: { rollId: "bank0" } });
   });
 });

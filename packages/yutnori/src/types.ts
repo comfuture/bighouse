@@ -32,6 +32,8 @@ export type LegalMove = {
   stackedPieceIds: string[];
 };
 export type MoveChoice = Pick<LegalMove, "rollId" | "pieceId" | "pathId">;
+export type DiscardChoice = { rollId: string; discard: true };
+export type PlanChoice = MoveChoice | DiscardChoice;
 export type YutMove = LegalMove & { matchId: string; turnId: number; playerId: string; startedAt?: number };
 export type MoveSequence = { sequenceId: string; startedAt: number; durationMs: number; moves: YutMove[] };
 export type YutnoriStage = {
@@ -65,6 +67,17 @@ export type YutSuggestion = {
   rollId: string;
   pieceId: string;
   pathId: string;
+  playerId: string;
+  expectedVersion?: number;
+  planRevision?: number;
+  moves?: PlanChoice[];
+};
+export type YutPlanPreview = {
+  matchId: string;
+  turnId: number;
+  expectedVersion: number;
+  revision: number;
+  moves: PlanChoice[];
   playerId: string;
 };
 export const OUTCOME_LABELS: Record<Outcome, string> = {

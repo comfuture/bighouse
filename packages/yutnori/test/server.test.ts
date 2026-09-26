@@ -2,8 +2,8 @@ import type { ClientGameAction, JsonObject, RoomState } from "@bighouse/game-sdk
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { BOARD_NODES, getLegalMoves, piecePaths } from "../src/board";
 import { outcomeFromFaces, THROW_DURATION_MS, yutnoriDefinition as game } from "../src/server";
-import type { YutnoriStage, YutPiece } from "../src/types";
-import { mandatoryThrows, rollDisposition, simulateMovePlan, THROW_RESULT_HOLD_MS } from "../src/rules";
+import type { PlanChoice, YutnoriStage, YutPiece } from "../src/types";
+import { mandatoryThrows, simulateMovePlan, THROW_RESULT_HOLD_MS } from "../src/rules";
 
 function setup(count = 2) {
   const state: RoomState = {
@@ -177,21 +177,20 @@ describe("turns, stacks, capture and winning", () => {
     expect(stage.turn.throwsRemaining).toBe(1);
     expect(result.events.some((entry) => entry.type === "yutnori.captured" && entry.payload.rollId === "three")).toBe(true);
   });
-  it("does not capture passed squares, and adds capture throws to unused throws", () => {
+  it("does not capture passed squares, and awards a new throw for the landing capture", () => {
     const { stage, pending, move } = setup();
     pending(3);
-    stage.turn.throwsRemaining = 2;
     stage.pieces[4]!.nodeId = "o1";
     stage.pieces[5]!.nodeId = "o3";
     move();
     expect(stage.pieces[4]!.nodeId).toBe("o1");
     expect(stage.pieces[5]!.nodeId).toBe("reserve");
-    expect(stage.turn.throwsRemaining).toBe(3);
+    expect(stage.turn.throwsRemaining).toBe(1);
   });
-  it("finishes a four-piece stack and ends immediately even with unused rolls/throws", () => {
+  it("finishes a four-piece stack and ends immediately even with unused results", () => {
     const { stage, state, pending, move, action, context } = setup(4);
     for (const piece of stage.pieces.slice(0, 4)) Object.assign(piece, { nodeId: "o0", stackId: "A1" });
-    pending(1); pending(4, "extra"); stage.turn.throwsRemaining = 2;
+    pending(1); pending(4, "extra");
     const result = move();
     expect(state.phase).toBe("finished");
     expect(stage.teams[0]!.finishedCount).toBe(4);
@@ -245,22 +244,17 @@ describe("complete games", () => {
     const { stage, state, context, apply } = setup(count);
     for (let step = 0; step < 2000 && state.phase === "active"; step++) {
       context.now = Math.max(context.now + THROW_DURATION_MS + THROW_RESULT_HOLD_MS, (stage.lastMoveSequence?.startedAt ?? 0) + (stage.lastMoveSequence?.durationMs ?? 0));
-      const moves = getLegalMoves(stage);
-      const immediate = stage.turn.pending.find((roll) => rollDisposition(roll) === "immediate");
-      const immediateMoves = moves.filter((move) => move.rollId === immediate?.rollId);
-      if (mandatoryThrows(stage) > 0) apply("throwYut");
-      else if (immediateMoves.length > 0) {
-        const move = immediateMoves[random() % immediateMoves.length]!;
-        apply("movePiece", { rollId: move.rollId, pieceId: move.pieceId, pathId: move.pathId });
-      } else if (immediate) apply("discardRoll", { rollId: immediate.rollId });
-      else if (stage.turn.throwsRemaining > 0) apply("throwYut");
+      if (mandatoryThrows(stage) > 0 || stage.turn.throwsRemaining > 0) apply("throwYut");
       else {
-        const choices = [];
+        const choices: PlanChoice[] = [];
         let plan = simulateMovePlan(stage, choices, context.now);
         while (!plan.complete) {
           const candidates = getLegalMoves(plan.stage);
-          const move = candidates[random() % candidates.length]!;
-          choices.push({ rollId: move.rollId, pieceId: move.pieceId, pathId: move.pathId });
+          const options: PlanChoice[] = [
+            ...candidates.map((move) => ({ rollId: move.rollId, pieceId: move.pieceId, pathId: move.pathId })),
+            ...plan.stage.turn.pending.filter((roll) => !candidates.some((move) => move.rollId === roll.rollId)).map((roll) => ({ rollId: roll.rollId, discard: true as const }))
+          ];
+          choices.push(options[random() % options.length]!);
           plan = simulateMovePlan(stage, choices, context.now);
         }
         apply("commitMoves", { matchId: stage.matchId, turnId: stage.turn.turnId, moves: choices });
