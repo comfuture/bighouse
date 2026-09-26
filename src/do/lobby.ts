@@ -1,3 +1,4 @@
+import { resolvePlayerLimits } from "../core/game-settings";
 import { DurableObject } from "cloudflare:workers";
 import { normalizeChatBody, type ChatInput, type ChatMessage } from "../core/chat";
 import { GameServerError } from "../core/errors";
@@ -67,11 +68,7 @@ export class LobbyDO extends DurableObject<Env> {
   async join(input: LobbyJoinInput): Promise<LobbyJoinResult> {
     const repo = new D1Repository(this.env.DB);
     const definition = getGameDefinition(input.gameId);
-    const minPlayers = input.minPlayers ?? definition.minPlayers;
-    const maxPlayers = input.maxPlayers ?? definition.maxPlayers;
-    if (minPlayers < 1 || maxPlayers < minPlayers || maxPlayers > definition.maxPlayers) {
-      throw new GameServerError("bad_request", "Invalid room player limits", 400);
-    }
+    const { minPlayers, maxPlayers } = resolvePlayerLimits(definition, input);
 
     const existing = await repo.findJoinableRoom(input.gameId, input.mode);
     const roomRecord =
@@ -116,11 +113,7 @@ export class LobbyDO extends DurableObject<Env> {
   async createRoom(input: LobbyCreateRoomInput): Promise<LobbyJoinResult> {
     const repo = new D1Repository(this.env.DB);
     const definition = getGameDefinition(input.gameId);
-    const minPlayers = input.minPlayers ?? definition.minPlayers;
-    const maxPlayers = input.maxPlayers ?? definition.maxPlayers;
-    if (minPlayers < 1 || maxPlayers < minPlayers || maxPlayers > definition.maxPlayers) {
-      throw new GameServerError("bad_request", "Invalid room player limits", 400);
-    }
+    const { minPlayers, maxPlayers } = resolvePlayerLimits(definition, input);
     const roomRecord = await this.createIndexedRoom(repo, {
       roomId: createId("room"),
       gameId: input.gameId,
@@ -189,6 +182,7 @@ export class LobbyDO extends DurableObject<Env> {
   }
 
   async sendChat(input: ChatInput): Promise<ChatMessage> {
+    if (input.channel && input.channel !== "public") throw new GameServerError("bad_request", "Team chat is only available in game rooms", 400);
     if (!this.hasOnlinePlayer(input.playerId)) {
       throw new GameServerError("player_not_found", "Sender is not connected to this lobby", 404);
     }
@@ -359,6 +353,7 @@ export class LobbyDO extends DurableObject<Env> {
       const chat = await this.sendChat({
         playerId,
         body: message.body,
+        ...(message.channel === undefined ? {} : { channel: message.channel }),
         ...(message.targetPlayerId ? { targetPlayerId: message.targetPlayerId } : {})
       });
       this.sendToSocket(ws, this.message("ack", { command: "chat", result: { chatId: chat.id } }));

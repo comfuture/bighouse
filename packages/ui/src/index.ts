@@ -27,7 +27,7 @@ export type MountedGameUi = {
   destroy(): void;
 };
 
-export function createGameUi(container: HTMLElement, snapshot: GameClientSnapshot, actions: GameClientActions): MountedGameUi {
+export function createGameUi(container: HTMLElement, snapshot: GameClientSnapshot, actions: GameClientActions, options: { theme?: "minimal" | "playful" } = {}): MountedGameUi {
   registerBighouseUi();
   const computedPosition = getComputedStyle(container).position;
   const previousPosition = container.style.position;
@@ -39,9 +39,11 @@ export function createGameUi(container: HTMLElement, snapshot: GameClientSnapsho
   const gameControls = document.createElement("bighouse-game-controls") as BighouseGameControlsElement;
   const result = document.createElement("bighouse-game-result-dialog") as BighouseGameResultDialogElement;
   const notice = document.createElement("bighouse-game-modal") as BighouseGameModalElement;
+  if (options.theme) for (const component of [roomControls, chat, gameControls, result, notice]) component.setAttribute("data-theme", options.theme);
   container.append(roomControls, chat, gameControls, result, notice);
 
   const listeners: Array<[HTMLElement, string, EventListener]> = [];
+  let currentTeamId: string | undefined;
   const listen = (target: HTMLElement, name: string, listener: EventListener): void => {
     target.addEventListener(name, listener);
     listeners.push([target, name, listener]);
@@ -77,6 +79,9 @@ export function createGameUi(container: HTMLElement, snapshot: GameClientSnapsho
     if (!event.detail.open && chatHadFocus) queueMicrotask(() => gameControls.focusChatTrigger());
   }) as EventListener);
   listen(chat, "bighouse-chat-send", ((event: CustomEvent<{ body: string; targetPlayerId?: string }>) => actions.sendChat(event.detail.body, event.detail.targetPlayerId)) as EventListener);
+  listen(chat, "bighouse-team-chat-send", ((event: CustomEvent<{ body: string; teamId: string }>) => {
+    if (currentTeamId && currentTeamId === event.detail.teamId) actions.sendTeamChat?.(event.detail.body);
+  }) as EventListener);
   listen(result, "bighouse-rematch", (() => actions.requestPlayAgain()) as EventListener);
   listen(result, "bighouse-leave-finished", (() => actions.leaveFinishedGame()) as EventListener);
 
@@ -84,6 +89,11 @@ export function createGameUi(container: HTMLElement, snapshot: GameClientSnapsho
     roomControls.snapshot = next;
     gameControls.snapshot = next;
     chat.enabled = (next.phase === "waiting" || next.phase === "active" || next.phase === "finished") && !next.room.activeInterruption;
+    const team = actions.sendTeamChat && (next.phase === "active" || next.phase === "finished") && !next.room.activeInterruption
+      ? next.room.teams?.find((entry) => entry.playerIds.includes(next.playerId) && entry.playerIds.length > 1)
+      : undefined;
+    currentTeamId = team?.teamId;
+    chat.teamChannel = team ? { ...team, scopeId: next.room.roomId } : undefined;
     chat.messages = next.chatMessages;
     gameControls.chatState = { open: chat.open, unread: chat.unread };
   };

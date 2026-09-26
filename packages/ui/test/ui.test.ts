@@ -512,6 +512,129 @@ describe("@bighouse/ui", () => {
   });
 });
 
+describe("shared team chat", () => {
+  function createTeamChat() {
+    registerBighouseUi();
+    const host = document.createElement("div");
+    document.body.append(host);
+    const initial: GameClientSnapshot = { ...snapshot(), phase: "active" };
+    initial.room = { ...initial.room, teams: [{ teamId: "A", displayName: "팀 A", playerIds: ["host", "guest"] }] };
+    const actions = { ...actionSpies(), sendTeamChat: vi.fn() };
+    const ui = createGameUi(host, initial, actions);
+    const chat = host.querySelector("bighouse-game-chat") as BighouseGameChatElement;
+    chat.open = true;
+    const input = chat.shadowRoot!.querySelector<HTMLInputElement>("input")!;
+    const channel = chat.shadowRoot!.querySelector<HTMLSelectElement>("select")!;
+    const select = (value: string) => { channel.value = value; channel.dispatchEvent(new Event("change", { bubbles: true })); };
+    const type = (value: string) => { input.value = value; input.dispatchEvent(new Event("input", { bubbles: true })); };
+    const submit = () => chat.shadowRoot!.querySelector("form")!.dispatchEvent(new SubmitEvent("submit", { bubbles: true, cancelable: true }));
+    return { initial, actions, ui, chat, input, channel, select, type, submit };
+  }
+
+  it("sends through the selected channel and isolates public and team drafts", () => {
+    const { actions, ui, channel, input, select, type, submit } = createTeamChat();
+    expect(channel.hidden).toBe(false);
+    expect([...channel.options].map((entry) => entry.textContent)).toEqual(["전체", "우리 팀"]);
+    type("public draft");
+    select("team");
+    expect(input.value).toBe("");
+    type("private strategy");
+    select("public");
+    expect(input.value).toBe("public draft");
+    select("team");
+    expect(input.value).toBe("private strategy");
+    submit();
+    expect(actions.sendTeamChat).toHaveBeenCalledWith("private strategy");
+    expect(actions.sendChat).not.toHaveBeenCalled();
+    select("public"); submit();
+    expect(actions.sendChat).toHaveBeenCalledWith("public draft", undefined);
+    ui.destroy();
+  });
+
+  it("preserves the channel, draft, focused input and active composition during snapshots", async () => {
+    const { initial, ui, chat, input, channel, select, type, submit, actions } = createTeamChat();
+    await Promise.resolve();
+    select("team"); type("중앙으로");
+    input.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
+    ui.update({ ...initial, version: 2, chatMessages: [{ id: "team-1", scope: "room", visibility: "team", teamId: "A", playerId: "guest", body: "좋아", createdAt: 1 }] });
+    expect(chat.shadowRoot!.querySelector("input")).toBe(input);
+    expect(chat.shadowRoot!.activeElement).toBe(input);
+    expect(channel.value).toBe("team");
+    expect(input.value).toBe("중앙으로");
+    submit();
+    expect(actions.sendTeamChat).not.toHaveBeenCalled();
+    input.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true }));
+    submit();
+    expect(actions.sendTeamChat).toHaveBeenCalledWith("중앙으로");
+    ui.destroy();
+  });
+
+  it("clears an old team draft and never falls back to public when the capability disappears", () => {
+    const { initial, ui, input, channel, chat, select, type, submit, actions } = createTeamChat();
+    select("team"); type("secret plan");
+    ui.update({ ...initial, room: { ...initial.room, teams: [] } });
+    expect(channel.hidden).toBe(true);
+    expect(channel.value).toBe("public");
+    expect(input.value).toBe("");
+    submit();
+    chat.dispatchEvent(new CustomEvent("bighouse-team-chat-send", { detail: { body: "stale", teamId: "A" } }));
+    expect(actions.sendTeamChat).not.toHaveBeenCalled();
+    expect(actions.sendChat).not.toHaveBeenCalled();
+    ui.update(initial);
+    select("team");
+    expect(input.value).toBe("");
+    ui.destroy();
+  });
+
+  it("resets team drafts when membership changes, including an in-progress IME commit", async () => {
+    const { initial, ui, input, channel, select, type, submit, actions } = createTeamChat();
+    select("team"); type("비밀");
+    input.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
+    ui.update({ ...initial, room: { ...initial.room, teams: [{ teamId: "A", displayName: "팀 A", playerIds: ["host", "new-member"] }] } });
+    expect(channel.value).toBe("public");
+    input.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true }));
+    await Promise.resolve();
+    type("비밀 작전"); submit();
+    expect(input.value).toBe("");
+    expect(actions.sendChat).not.toHaveBeenCalled();
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "h", bubbles: true }));
+    type("hello"); submit();
+    expect(actions.sendChat).toHaveBeenCalledWith("hello", undefined);
+    ui.destroy();
+  });
+
+  it("requires a team of at least two, supported sending and an active or finished room", () => {
+    const { initial, ui, channel } = createTeamChat();
+    ui.update({ ...initial, phase: "waiting" });
+    expect(channel.hidden).toBe(true);
+    ui.update({ ...initial, phase: "finished" });
+    expect(channel.hidden).toBe(false);
+    ui.update({ ...initial, room: { ...initial.room, activeInterruption: { reason: "player_left", playerId: "guest", hostPlayerId: "host", createdAt: 2 } } });
+    expect(channel.hidden).toBe(true);
+    ui.update({ ...initial, room: { ...initial.room, teams: [{ teamId: "A", displayName: "A", playerIds: ["host"] }] } });
+    expect(channel.hidden).toBe(true);
+    ui.destroy();
+    const host = document.createElement("div"); document.body.append(host);
+    const unsupported = createGameUi(host, initial, actionSpies());
+    expect(host.querySelector("bighouse-game-chat")!.shadowRoot!.querySelector<HTMLSelectElement>("select")!.hidden).toBe(true);
+    unsupported.destroy();
+  });
+
+  it("labels team/private messages and renders untrusted names and bodies only as text", () => {
+    const { initial, ui, chat } = createTeamChat();
+    ui.update({ ...initial, chatMessages: [
+      { id: "team", scope: "room", visibility: "team", teamId: "A", playerId: "guest", displayName: "<img src=x>", body: "<script>secret</script>", createdAt: 1 },
+      { id: "private", scope: "room", visibility: "private", playerId: "guest", body: "whisper", createdAt: 2 }
+    ] });
+    const log = chat.shadowRoot!.querySelector("[role=log]")!;
+    expect(log.querySelector(".is-team")!.textContent).toContain("[우리 팀]");
+    expect(log.querySelector(".is-private")!.textContent).toContain("[private]");
+    expect(log.textContent).toContain("<script>secret</script>");
+    expect(log.querySelector("script, img")).toBeNull();
+    ui.destroy();
+  });
+});
+
 function snapshot(overrides?: { displayName?: string }): GameClientSnapshot {
   return {
     playerId: "host",

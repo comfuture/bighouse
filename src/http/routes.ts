@@ -1,3 +1,4 @@
+import { resolvePlayerLimits } from "../core/game-settings";
 import { z } from "zod";
 import { GameServerError, toErrorResponse } from "../core/errors";
 import { lobbyDoName, matchmakerDoName, roomDoName } from "../core/ids";
@@ -33,6 +34,8 @@ type GameListItem = {
   description: string;
   minPlayers: number;
   maxPlayers: number;
+  modes?: Array<{ id: string; displayName: string; minPlayers: number; maxPlayers: number }>;
+  supportsBots?: boolean;
   thumbnail?: {
     src: string;
     alt: string;
@@ -69,6 +72,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     const gameId = routeParam(lobbyJoin, "gameId");
     const mode = routeParam(lobbyJoin, "mode");
     const game = requireGame(gameId);
+    resolvePlayerLimits(game, { mode, ...(body.minPlayers !== undefined ? { minPlayers: body.minPlayers } : {}), ...(body.maxPlayers !== undefined ? { maxPlayers: body.maxPlayers } : {}) });
     const lobby = env.LOBBY_DO.getByName(lobbyDoName(game.gameId, mode));
     const result = await lobby.join({
       gameId: game.gameId,
@@ -93,6 +97,7 @@ async function route(request: Request, env: Env): Promise<Response> {
   if (request.method === "GET" && lobbyRooms) {
     const game = requireGame(routeParam(lobbyRooms, "gameId"));
     const mode = routeParam(lobbyRooms, "mode");
+    resolvePlayerLimits(game, { mode });
     const rooms = await refreshLobbyRooms(env, repo, await repo.listLobbyRooms(game.gameId, mode));
     return Response.json({ rooms });
   }
@@ -101,6 +106,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     const body = joinSchema.parse(await request.json());
     const game = requireGame(routeParam(lobbyRooms, "gameId"));
     const mode = routeParam(lobbyRooms, "mode");
+    resolvePlayerLimits(game, { mode, ...(body.minPlayers !== undefined ? { minPlayers: body.minPlayers } : {}), ...(body.maxPlayers !== undefined ? { maxPlayers: body.maxPlayers } : {}) });
     const lobby = env.LOBBY_DO.getByName(lobbyDoName(game.gameId, mode));
     const result = await lobby.createRoom({
       gameId: game.gameId,
@@ -125,6 +131,7 @@ async function route(request: Request, env: Env): Promise<Response> {
   if (request.method === "GET" && lobbyWsPath) {
     const game = requireGame(routeParam(lobbyWsPath, "gameId"));
     const mode = routeParam(lobbyWsPath, "mode");
+    resolvePlayerLimits(game, { mode });
     return env.LOBBY_DO.getByName(lobbyDoName(game.gameId, mode)).fetch(request);
   }
 
@@ -245,6 +252,8 @@ function requireGame(gameId: string): RegisteredGame {
     description: metadata.description,
     minPlayers: metadata.minPlayers,
     maxPlayers: metadata.maxPlayers,
+    ...(metadata.modes ? { modes: metadata.modes } : {}),
+    ...(metadata.supportsBots === undefined ? {} : { supportsBots: metadata.supportsBots }),
     ...(metadata.thumbnail ? { thumbnail: metadata.thumbnail } : {}),
     config: structuredClone(metadata.config ?? {})
   };
@@ -302,6 +311,8 @@ function listRegisteredGames(): GameListItem[] {
         description: metadata.description,
         minPlayers: metadata.minPlayers,
         maxPlayers: metadata.maxPlayers,
+        ...(metadata.modes ? { modes: metadata.modes } : {}),
+        ...(metadata.supportsBots === undefined ? {} : { supportsBots: metadata.supportsBots }),
         ...(metadata.thumbnail ? { thumbnail: metadata.thumbnail } : {})
       };
     });

@@ -10,6 +10,7 @@ export type {
   GameEvent,
   GameMetadata,
   GameThumbnail,
+  GameTeam,
   JsonObject,
   PlayerIdentity,
   PlayerKind,

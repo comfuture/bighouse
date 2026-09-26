@@ -1,5 +1,5 @@
 import type { ChatMessage } from "./chat";
-import type { BotDifficulty, GameEvent, JsonObject, PlayerSeat, RoomInterruption, RoomPhase } from "./game";
+import type { BotDifficulty, GameEvent, GameTeam, JsonObject, PlayerSeat, RoomInterruption, RoomPhase } from "./game";
 
 export type ClientMessage =
   | {
@@ -66,8 +66,15 @@ export type ClientMessage =
       };
     }
   | {
+      type: "gameSignal";
+      playerId: string;
+      signal: { type: string; payload: JsonObject };
+    }
+  | {
       type: "chat";
       playerId: string;
+      channel?: "public" | "team";
+      expectedTeam?: { teamId: string; playerIds: string[] };
       body: string;
       targetPlayerId?: string;
     }
@@ -84,6 +91,8 @@ export type SnapshotPayload = {
   version: number;
   minPlayers: number;
   maxPlayers: number;
+  supportsBots?: boolean;
+  teams?: GameTeam[];
   hostPlayerId?: string;
   rematchRequests: string[];
   activeInterruption?: RoomInterruption;

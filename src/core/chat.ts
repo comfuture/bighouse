@@ -1,7 +1,7 @@
 import { GameServerError } from "./errors";
 
 export type ChatScope = "lobby" | "room";
-export type ChatVisibility = "public" | "private";
+export type ChatVisibility = "public" | "private" | "team";
 
 export type ChatMessage = {
   id: string;
@@ -11,11 +11,14 @@ export type ChatMessage = {
   playerId: string;
   displayName?: string;
   targetPlayerId?: string;
+  teamId?: string;
   body: string;
   createdAt: number;
 };
 
 export type ChatInput = {
+  channel?: "public" | "team";
+  expectedTeam?: { teamId: string; playerIds: string[] };
   playerId: string;
   body: string;
   targetPlayerId?: string;

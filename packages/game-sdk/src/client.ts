@@ -1,6 +1,8 @@
 import type {
   BotDifficulty,
   GameMetadata,
+  GameEvent,
+  GameTeam,
   JsonObject,
   PlayerSeat,
   RoomInterruption,
@@ -10,6 +12,8 @@ import type {
 export type {
   BotDifficulty,
   GameMetadata,
+  GameEvent,
+  GameTeam,
   GameThumbnail,
   JsonObject,
   PlayerSeat,
@@ -28,6 +32,8 @@ export type GameClientRoom = {
   mode: string;
   minPlayers: number;
   maxPlayers: number;
+  supportsBots?: boolean;
+  teams?: GameTeam[];
   hostPlayerId?: string;
   players: PlayerSeat[];
   activeInterruption?: RoomInterruption;
@@ -38,7 +44,8 @@ export type GameClientChatMessage = {
   id?: string;
   scope: "lobby" | "room";
   scopeId?: string;
-  visibility: "public" | "private";
+  visibility: "public" | "private" | "team";
+  teamId?: string;
   playerId: string;
   displayName?: string;
   targetPlayerId?: string;
@@ -64,11 +71,16 @@ export type GameClientSnapshot = {
   privateView: JsonObject;
   rematchRequests: string[];
   chatMessages: GameClientChatMessage[];
+  /** Bounded recent events; consumers deduplicate by event.id. */
+  events?: GameEvent[];
+  actionError?: { revision: number; message: string };
+  connected?: boolean;
 };
 
 /** Stable command callbacks retained for the lifetime of a mounted client. */
 export type GameClientActions = {
   sendAction(action: GameClientAction): void;
+  sendSignal?(signal: GameClientAction): void;
   setReady(ready: boolean): void;
   startGame(): void;
   restartGame(): void;
@@ -77,6 +89,7 @@ export type GameClientActions = {
   removeBot(botPlayerId: string): void;
   transferHost(targetPlayerId: string): void;
   sendChat(body: string, targetPlayerId?: string): void;
+  sendTeamChat?(body: string): void;
   shareRoom(): void;
   leaveRoom(): void;
   requestPlayAgain(): void;
