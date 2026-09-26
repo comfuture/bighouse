@@ -416,3 +416,24 @@
 .yut-piece { position: relative; }
 .yut-piece::after { content: ""; position: absolute; left: 50%; top: 50%; width: max(100%, 44px); height: max(100%, 44px); transform: translate(-50%, -50%); border-radius: inherit; }
 .yut-piece.is-origin-ghost { display: inline-grid; place-items: center; pointer-events: none; }
+/* Private team proposals float above the board without moving real pieces. */
+.yut-proposal-ghost { position: absolute; z-index: 2; width: 7.3%; aspect-ratio: 1; transform: translate(calc(-50% + var(--proposal-index) * 7px), calc(-50% - var(--proposal-index) * 5px)); pointer-events: none; opacity: .55; }
+.yut-proposal-ghost .yut-piece-face, .yut-proposal-ghost .yut-piece-layer { border-style: dashed; border-color: #526eac; box-shadow: 0 2px #7598c585; }
+.yut-proposal-ghost.team-B .yut-piece-face, .yut-proposal-ghost.team-B .yut-piece-layer { border-color: #c47b82; }
+.yut-proposal-name { position: absolute; top: calc(100% + 5px); left: 50%; transform: translateX(-50%); font-size: 9px; line-height: 1.4; white-space: nowrap; max-width: 84px; overflow: hidden; text-overflow: ellipsis; padding: 2px 5px; border-radius: 6px; background: #e8e8f9; color: #686694; }
+.yut-plan-suggestions { max-width: 650px; margin: 13px auto 0; border-radius: 17px; background: #f6faf4; box-shadow: 0 3px #d6e3d9; overflow: hidden; }
+.yut-plan-suggestions[hidden], .yut-proposals-panel[hidden] { display: none; }
+.yut-proposals-toggle { display: flex; align-items: center; gap: 9px; width: 100%; min-height: 47px; padding: 10px 15px; text-align: left; border: 0; background: transparent; color: #657d75; font-size: 12px !important; font-weight: 700 !important; }
+.yut-proposals-toggle > span:first-child { display: grid; place-items: center; width: 23px; height: 23px; background: #e0e8fb; color: #6581b6; border-radius: 50%; font-size: 10px; }
+.yut-proposals-toggle > span:last-child { margin-left: auto; font-size: 18px; }
+.yut-proposals-panel { padding: 0 12px 12px; }
+.yut-plan-proposal { display: flex; gap: 12px; align-items: center; padding: 12px; border-radius: 13px; background: #edf1fc; }
+.yut-plan-proposal + .yut-plan-proposal { margin-top: 9px; }
+.yut-plan-proposal > div { flex: 1; min-width: 0; }
+.yut-plan-proposal strong { color: #667ba9; font-size: 12px; }
+.yut-plan-proposal p { margin: 6px 0; color: #8291ac; font-size: 11px; line-height: 1.7; overflow-wrap: anywhere; }
+.yut-plan-proposal small { color: #9a9bac; font-size: 10px; }
+.yut-plan-proposal button { flex-shrink: 0; min-width: 62px; min-height: 44px; padding: 9px 13px; border: 2px solid #c2d1ef; border-radius: 18px; background: #7199d5; color: #fff; box-shadow: 0 3px #547aad; font-size: 12px !important; font-weight: 700 !important; }
+.yut-plan-proposal button:disabled { opacity: .45; }
+.yut-teams-bottom { margin-top: 19px; margin-bottom: 0; }
+@media (max-width: 720px) { .yut-teams-bottom { margin-top: 15px; } }

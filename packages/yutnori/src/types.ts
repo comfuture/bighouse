@@ -80,6 +80,17 @@ export type YutPlanPreview = {
   moves: PlanChoice[];
   playerId: string;
 };
+export type YutPlanSuggestion = {
+  matchId: string;
+  turnId: number;
+  expectedVersion: number;
+  planRevision: number;
+  /** The controller's shared draft at the time of the suggestion. */
+  moves: PlanChoice[];
+  /** Complete committable plan, beginning with moves and adding at least one choice. */
+  proposal: PlanChoice[];
+  playerId: string;
+};
 export const OUTCOME_LABELS: Record<Outcome, string> = {
   backDo: "빽도", do: "도", gae: "개", geol: "걸", yut: "윷", mo: "모"
 };
