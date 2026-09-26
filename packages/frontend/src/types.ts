@@ -1,3 +1,4 @@
+import type { GameTeam } from "@bighouse/game-sdk/client";
 export type Game = {
   gameId: string;
   adapterKey: string;
@@ -5,6 +6,8 @@ export type Game = {
   description: string;
   minPlayers: number;
   maxPlayers: number;
+  modes?: Array<{ id: string; displayName: string; minPlayers: number; maxPlayers: number }>;
+  supportsBots?: boolean;
   thumbnail?: {
     src: string;
     alt: string;
@@ -35,6 +38,8 @@ export type RoomIndex = {
 };
 
 export type RoomSnapshot = {
+  teams?: GameTeam[];
+  supportsBots?: boolean;
   roomId: string;
   gameId: string;
   mode: string;
@@ -58,7 +63,8 @@ export type RoomSnapshot = {
 
 export type ChatMessage = {
   scope: "lobby" | "room";
-  visibility: "public" | "private";
+  visibility: "public" | "private" | "team";
+  teamId?: string;
   playerId: string;
   displayName?: string;
   targetPlayerId?: string;

@@ -1,3 +1,4 @@
+import { gameMetadata as yutnoriMetadata } from "@bighouse/yutnori/client-metadata";
 import type { GameClientModule, GameMetadata } from "@bighouse/game-sdk/client";
 import { gameMetadata as chessMetadata } from "@bighouse/chess/client-metadata";
 import { gameMetadata as gomokuMetadata } from "@bighouse/gomoku/client-metadata";
@@ -11,6 +12,10 @@ type ClientGamePlugin = {
 };
 
 const clientGamePlugins = {
+  [yutnoriMetadata.gameId]: {
+    metadata: yutnoriMetadata,
+    load: () => import("@bighouse/yutnori/client")
+  },
   [chessMetadata.gameId]: {
     metadata: chessMetadata,
     load: () => import("@bighouse/chess/client")

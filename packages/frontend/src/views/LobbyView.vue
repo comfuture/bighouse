@@ -20,11 +20,15 @@
           <h1 id="lobby-title" class="game-lobby-hero-title">{{ displayGameName }}</h1>
           <p class="game-lobby-hero-copy">{{ gameDescription }}</p>
           <div class="game-lobby-badges">
-            <span>{{ mode }}</span>
+            <span>{{ selectedMode?.displayName ?? mode }}</span>
             <span>public lobby</span>
           </div>
+          <nav v-if="gameMetadata?.modes" class="portal-game-modes" aria-label="게임 방식 선택">
+            <RouterLink v-for="option in gameMetadata.modes" :key="option.id" :to="`/game/${gameId}/${option.id}`" :aria-current="option.id === mode ? 'page' : undefined">{{ option.displayName }}</RouterLink>
+          </nav>
+          <label v-if="gameId === 'yutnori'" class="lobby-rule-option"><input v-model="backDo" type="checkbox" /> 빽도 사용 · 출구를 지나면 완주</label>
         </div>
-        <button class="portal-primary-action game-lobby-create" type="button" :disabled="creatingRoom" @click="createRoom">
+        <button class="portal-primary-action game-lobby-create" type="button" :disabled="creatingRoom || invalidMode" @click="createRoom">
           <UIcon :name="creatingRoom ? 'i-lucide-loader-circle' : 'i-lucide-plus'" :class="{ 'portal-spin': creatingRoom }" aria-hidden="true" />
           {{ creatingRoom ? "Opening room…" : "Create a room" }}
         </button>
@@ -69,7 +73,7 @@
               </div>
               <div class="lobby-room-meta">
                 <span><UIcon name="i-lucide-users" aria-hidden="true" /> {{ room.playerCount }}/{{ room.maxPlayers }}</span>
-                <span>Starts at {{ room.minPlayers }}</span>
+                <span>{{ selectedMode?.displayName ?? `Starts at ${room.minPlayers}` }}</span>
               </div>
             </div>
             <div class="lobby-room-capacity" :aria-label="`${room.playerCount} of ${room.maxPlayers} seats filled`">
@@ -93,7 +97,7 @@
             <h3>Be the first at the table</h3>
             <p>No rooms are waiting right now. Open one and invite your crew.</p>
           </div>
-          <button class="portal-secondary-action" type="button" :disabled="creatingRoom" @click="createRoom">
+          <button class="portal-secondary-action" type="button" :disabled="creatingRoom || invalidMode" @click="createRoom">
             <UIcon name="i-lucide-plus" aria-hidden="true" />
             Create room
           </button>
@@ -140,6 +144,9 @@ const router = useRouter();
 const gameId = computed(() => String(route.params.gameId));
 const mode = computed(() => String(route.params.mode));
 const gameMetadata = computed(() => getClientGameMetadata(gameId.value));
+const selectedMode = computed(() => gameMetadata.value?.modes?.find((entry) => entry.id === mode.value));
+const invalidMode = computed(() => Boolean(gameMetadata.value?.modes && !selectedMode.value));
+const backDo = ref(true);
 const displayGameName = computed(() => gameMetadata.value?.displayName ?? gameId.value);
 const gameDescription = computed(() => gameMetadata.value?.description ?? "Create a room or join an open table.");
 const lobbyHeroStyle = computed(() => {
@@ -153,7 +160,7 @@ const rooms = ref<RoomIndex[]>([]);
 const chat = ref<ChatMessage[]>([]);
 const error = ref("");
 const roomListError = ref("");
-const displayedError = computed(() => error.value || roomListError.value);
+const displayedError = computed(() => invalidMode.value ? "지원하지 않는 게임 방식입니다. 개인전 또는 팀전을 선택해 주세요." : error.value || roomListError.value);
 const loadingRooms = ref(true);
 const refreshingRooms = ref(false);
 const creatingRoom = ref(false);
@@ -168,6 +175,15 @@ onMounted(() => {
   void refreshRooms();
   if (identityReady.value) connectLobby();
   pollId = window.setInterval(() => void refreshRooms(), 3000);
+});
+
+watch([gameId, mode], () => {
+  rooms.value = [];
+  chat.value = [];
+  error.value = "";
+  loadingRooms.value = true;
+  void refreshRooms();
+  if (identityReady.value) connectLobby();
 });
 
 watch(identityReady, (ready) => {
@@ -186,8 +202,13 @@ onBeforeUnmount(() => {
 });
 
 async function refreshRooms(): Promise<void> {
+  if (invalidMode.value) { loadingRooms.value = false; return; }
+  const requestedGame = gameId.value;
+  const requestedMode = mode.value;
   try {
-    rooms.value = await listLobbyRooms(gameId.value, mode.value);
+    const nextRooms = await listLobbyRooms(requestedGame, requestedMode);
+    if (requestedGame !== gameId.value || requestedMode !== mode.value) return;
+    rooms.value = nextRooms;
     roomListError.value = "";
   } catch (cause) {
     roomListError.value = cause instanceof Error ? cause.message : "Failed to load rooms";
@@ -207,7 +228,12 @@ async function createRoom(): Promise<void> {
   if (creatingRoom.value) return;
   creatingRoom.value = true;
   try {
-    const result = await createLobbyRoom(gameId.value, mode.value);
+    const options = selectedMode.value ? {
+      minPlayers: selectedMode.value.minPlayers,
+      maxPlayers: selectedMode.value.maxPlayers,
+      ...(gameId.value === "yutnori" ? { config: { backDo: backDo.value } } : {})
+    } : {};
+    const result = await createLobbyRoom(gameId.value, mode.value, options);
     await router.push(`/game/${encodeURIComponent(gameId.value)}/${encodeURIComponent(result.roomId)}`);
   } catch (cause) {
     error.value = cause instanceof Error ? cause.message : "Failed to create room";
@@ -242,6 +268,7 @@ function connectLobby(): void {
   clearReconnectTimer();
   closingLobby = false;
   ws?.close();
+  if (invalidMode.value) return;
   const socket = new WebSocket(lobbyWebsocketUrl(gameId.value, mode.value));
   ws = socket;
   socket.addEventListener("open", () => {

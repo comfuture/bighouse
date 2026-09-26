@@ -15,7 +15,8 @@ describe("HTTP API", () => {
       "gomoku",
       "indian-poker",
       "onecard",
-      "tank-battle"
+      "tank-battle",
+      "yutnori"
     ]);
     expect(gamesBody.games).toContainEqual(
       expect.objectContaining({
@@ -38,7 +39,8 @@ describe("HTTP API", () => {
       "gomoku",
       "indian-poker",
       "onecard",
-      "tank-battle"
+      "tank-battle",
+      "yutnori"
     ]);
     const staleJoinResponse = await SELF.fetch("https://bighouse.test/games/stale-game/lobbies/default/join", {
       method: "POST",

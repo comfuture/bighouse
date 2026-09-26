@@ -15,12 +15,12 @@ export async function listLobbyRooms(gameId: string, mode: string): Promise<Room
   return data.rooms;
 }
 
-export async function createLobbyRoom(gameId: string, mode: string): Promise<RoomJoinResponse> {
+export async function createLobbyRoom(gameId: string, mode: string, options: { minPlayers?: number; maxPlayers?: number; config?: Record<string, unknown> } = {}): Promise<RoomJoinResponse> {
   requirePlayerId();
   const res = await fetch(`/games/${encodeURIComponent(gameId)}/lobbies/${encodeURIComponent(mode)}/rooms`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ playerId: identity.playerId, displayName: identity.displayName || undefined })
+    body: JSON.stringify({ playerId: identity.playerId, displayName: identity.displayName || undefined, ...options })
   });
   const data = (await res.json()) as RoomJoinResponse;
   if (!res.ok) throw new Error(JSON.stringify(data));

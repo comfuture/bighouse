@@ -142,6 +142,8 @@ Client messages:
 - `action`: `{ "type": "action", "playerId": "p1", "clientActionId": "a1", "expectedVersion": 2, "action": { "type": "placeStone", "payload": { "x": 0, "y": 0 } } }`
 - `chat`: `{ "type": "chat", "playerId": "p1", "body": "hello" }`
 - `chat` private: `{ "type": "chat", "playerId": "p1", "targetPlayerId": "p2", "body": "secret" }`
+- `chat` team: `{ "type": "chat", "playerId": "p1", "channel": "team", "expectedTeam": { "teamId": "A", "playerIds": ["p1", "p3"] }, "body": "중앙으로 가요" }`
+- `gameSignal`: `{ "type": "gameSignal", "playerId": "p3", "signal": { "type": "suggestMove", "payload": { "matchId": "match-id", "turnId": 1, "rollId": "roll-id", "pieceId": "A1", "pathId": "outer" } } }`
 - `ping`: `{ "type": "ping", "nonce": "n1" }`
 
 Server messages include `roomId`, `version`, and `serverTime` and use these types:
@@ -186,6 +188,28 @@ The application-level string message `ping` receives an automatic `pong` respons
 - Matching the wagers, by a call or by both players checking, opens the cards. The higher rank takes the pot and equal ranks refund each contribution. Uncalled chips are returned so an all-in short stack never loses more than it risked.
 - Chips persist across rounds in the same room. Both players must send `nextRound` before a new hand is dealt, and the match finishes once a player cannot ante again.
 - Room config accepts `startingChips` (default 100), `ante` (default 5), and `maxRaises` (default 4).
+
+`yutnori`
+
+- Korean Yutnori with four pieces per team and server-authoritative throws, stacks, captures, shortcuts, back-do, and finishing.
+- `/game/yutnori/solo` requires exactly two players; `/game/yutnori/team-2v2` requires exactly four. Room creation, matchmaking, start, restart, and rematch enforce mode limits. Bots are disabled.
+- Seats 0/2 form team A, seats 1/3 form team B. Teams alternate turns; teammates alternate the controller role. Only the controller throws and confirms moves. Teammates send private move suggestions and use the common chat's team channel.
+- Shared Three.js throws use the server's four faces, seed, and 1,800 ms timeline. A large centered overlay shows the throw and an 800 ms result reveal, with optional synthesized wood-impact sounds; the board resumes afterward. WebGL failure/context loss uses static faces; reduced motion, hidden tabs, and an offscreen scene settle immediately. Optional turn vibration is deduplicated within the browser session.
+- The playful pastel game table uses a rounded toy-like board frame and tactile blue circular/coral rounded-square pieces, with stacked silhouettes/counts directly on the board. Movement follows the confirmed path; captured pieces bounce back to their reserve. Fork arrows mark available route choices.
+- Yut/mo results are banked and require another throw before movement. Ordinary results move immediately; stored rolls are planned in a chosen order and submitted once as `commitMoves`. A capture stops the plan and starts a new turn for the same controller, preserves unused banked rolls, and requires a throw first.
+- Round stick faces show three X marks; flat faces are blank except the marked stick's small red dot.
+- Back-do is enabled by default and configurable when creating a lobby room. Landing on the start node does not finish a piece: it must advance through the exit. Four finished pieces win immediately.
+- Game metadata exposes `modes` and `supportsBots`; the adapter's `getTeams()` supplies server-owned membership to snapshots and room messaging. `gameSignal` delivers `yutnori.suggestion` as a team-only `privateEvent` without advancing the game version. Team chat validates `expectedTeam` against current membership and is never replayed to a later team member.
+
+Create a team room locally:
+
+```sh
+curl -X POST http://localhost:8787/games/yutnori/lobbies/team-2v2/rooms \
+  -H 'content-type: application/json' \
+  -d '{"playerId":"p1","displayName":"민수","config":{"backDo":true}}'
+```
+
+See [the Korean Yutnori rules and protocol guide](docs/yutnori.md) for exact routes, turn order, movement examples, team privacy, rendering behavior, and verification scenarios. See [the online-game guide](docs/online-game-guide.md#13-modes-teams-and-transient-game-signals) for the reusable SDK contracts.
 
 ## Deployment Notes
 

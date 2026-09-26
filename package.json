@@ -9,7 +9,7 @@
     "build:frontend": "pnpm --filter @bighouse/frontend build",
     "build": "pnpm build:frontend",
     "deploy": "pnpm build:frontend && wrangler deploy",
-    "typecheck": "tsc --noEmit && pnpm --filter @bighouse/game-sdk typecheck && pnpm --filter @bighouse/ui typecheck && pnpm --filter @bighouse/chess typecheck && pnpm --filter @bighouse/gomoku typecheck && pnpm --filter @bighouse/indian-poker typecheck && pnpm --filter @bighouse/onecard typecheck && pnpm --filter @bighouse/tank-battle typecheck && pnpm --filter @bighouse/frontend typecheck",
+    "typecheck": "tsc --noEmit && pnpm --filter @bighouse/game-sdk typecheck && pnpm --filter @bighouse/ui typecheck && pnpm --filter @bighouse/chess typecheck && pnpm --filter @bighouse/gomoku typecheck && pnpm --filter @bighouse/indian-poker typecheck && pnpm --filter @bighouse/onecard typecheck && pnpm --filter @bighouse/tank-battle typecheck && pnpm --filter @bighouse/yutnori typecheck && pnpm --filter @bighouse/frontend typecheck",
     "test": "vitest run"
   },
   "dependencies": {
@@ -19,7 +19,8 @@
     "@bighouse/indian-poker": "workspace:*",
     "@bighouse/onecard": "workspace:*",
     "@bighouse/tank-battle": "workspace:*",
-    "zod": "^3.25.76"
+    "zod": "^3.25.76",
+    "@bighouse/yutnori": "workspace:*"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.16.6",
