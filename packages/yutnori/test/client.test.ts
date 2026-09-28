@@ -325,6 +325,37 @@ describe("yutnori game client", () => {
     expect(partner.sendSignal).toHaveBeenCalledWith({ type: "suggestPlan", payload: { matchId: "match-1", turnId: 1, expectedVersion: 1, planRevision: signal.payload.revision, moves: signal.payload.moves, proposal: [{ rollId: "m", pieceId: "A1", pathId: "outer" }, { rollId: "g", pieceId: "A1", pathId: "diagonalA" }] } });
     expect(context.sendAction).not.toHaveBeenCalled();
   });
+  it("keeps proposals applicable after an undone draft has been empty for over 30 seconds", () => {
+    const context = fixture();
+    const partner = fixture("c");
+    const host = mount(context);
+    const peer = mount(partner);
+    vi.mocked(context.sendSignal!).mockImplementation((signal) => {
+      partner.events!.push({ id: crypto.randomUUID(), type: "yutnori.preview", visibility: "private", createdAt: Date.now(), payload: { ...signal.payload, playerId: "a" } });
+      peer.game.update({ ...partner, serverTime: Date.now() });
+    });
+    vi.mocked(partner.sendSignal!).mockImplementation((signal) => {
+      context.events!.push({ id: crypto.randomUUID(), type: "yutnori.planSuggestion", visibility: "private", createdAt: Date.now(), payload: { ...signal.payload, playerId: "c" } });
+      host.game.update({ ...context, serverTime: Date.now() });
+    });
+    host.click('[data-piece="A1"]'); host.click('[data-destination="o1"]');
+    vi.advanceTimersByTime(550);
+    host.click('[data-command="plan-undo"]');
+    vi.advanceTimersByTime(550);
+    const clearedRevision = vi.mocked(context.sendSignal!).mock.lastCall![0].payload.revision;
+    expect(clearedRevision).toBeGreaterThan(0);
+    vi.advanceTimersByTime(31_000);
+    peer.click('[data-piece="A1"]'); peer.click('[data-destination="o1"]'); peer.click('[data-command="plan-propose"]');
+    expect(partner.sendSignal).toHaveBeenCalledWith({ type: "suggestPlan", payload: { matchId: "match-1", turnId: 1, expectedVersion: 1, planRevision: clearedRevision, moves: [], proposal: [{ rollId: "r1", pieceId: "A1", pathId: "outer" }] } });
+    expect(host.container.querySelector('[data-apply-proposal="c"]')).not.toBeNull();
+    host.click('[data-apply-proposal="c"]');
+    expect(context.sendAction).toHaveBeenCalledExactlyOnceWith({ type: "commitMoves", payload: { matchId: "match-1", turnId: 1, moves: [{ rollId: "r1", pieceId: "A1", pathId: "outer" }] } });
+    expect(partner.sendAction).not.toHaveBeenCalled();
+    host.game.update({ ...context, connected: false });
+    vi.mocked(context.sendSignal!).mockClear();
+    vi.advanceTimersByTime(31_000);
+    expect(context.sendSignal).not.toHaveBeenCalled();
+  });
   it("rejects team suggestions with the wrong board version, revision, or draft prefix", () => {
     const context = fixture();
     const view = context.publicView as unknown as YutnoriPublicView;
