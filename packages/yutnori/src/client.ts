@@ -172,7 +172,8 @@ export function mountGame(container: HTMLElement, context: GameClientContext): M
     previewTimer = setTimeout(() => {
       if (!controller() || version !== snapshot.version || turnId !== view.turn.turnId) return;
       context.sendSignal?.({ type: "previewPlan", payload: { matchId: view.matchId, turnId, expectedVersion: version, revision: planRevision, moves: draftMoves.map((choice) => ({ ...choice })) } });
-      if (draftMoves.length) previewRenewTimer = setTimeout(() => sharePreview(false), 12_000);
+      // A cleared draft still has a revision that teammates must retain for proposals.
+      previewRenewTimer = setTimeout(() => sharePreview(false), 12_000);
     }, 550);
   }
   function addDestination(move: LegalMove): void {
