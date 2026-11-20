@@ -4,7 +4,7 @@ export const baseGameMetadata = {
   gameId: "onecard",
   adapterKey: "onecard",
   displayName: "One Card",
-  description: "Standard Korean One Card trump-shedding game with rich animations, action triggers, and stacking attacks.",
+  description: "Korean One Card for 2 to 4 players. Shed your hand first with action cards and stacking attacks.",
   minPlayers: 2,
   maxPlayers: 4,
   category: "card"

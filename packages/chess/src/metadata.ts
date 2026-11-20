@@ -4,7 +4,7 @@ export const baseGameMetadata = {
   gameId: "chess",
   adapterKey: "chess",
   displayName: "Chess",
-  description: "Classic two-player chess with authoritative legal moves, checkmate, stalemate, and draw detection.",
+  description: "Classic two-player chess with check, checkmate, stalemate and draw detection.",
   minPlayers: 2,
   maxPlayers: 2,
   category: "board"
