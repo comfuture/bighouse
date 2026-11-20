@@ -42,9 +42,7 @@ describe("game adapters", () => {
       activeClockStartedAt: 1_000,
       turnDeadline: 901_000,
       moveCount: 0,
-      check: false,
-      checkmate: false,
-      stalemate: false
+      check: false
     });
     expect(chessDefinition.getPrivateView({ state, now: 1 }, "p1")).toEqual({ color: "white" });
     expect(chessDefinition.getPrivateView({ state, now: 1 }, "p2")).toEqual({ color: "black" });
@@ -169,9 +167,14 @@ describe("game adapters", () => {
     expect(chessDefinition.getPublicView({ state: result.state, now: 10 })).toMatchObject({
       result: "checkmate",
       check: true,
-      checkmate: true,
       winnerPlayerId: "p2"
     });
+    // A finished game has no clock running, no deadline and nobody to move.
+    const finishedView = chessDefinition.getPublicView({ state: result.state, now: 10 });
+    expect(finishedView).not.toHaveProperty("turnDeadline");
+    expect(finishedView).not.toHaveProperty("activeClockStartedAt");
+    expect(finishedView).not.toHaveProperty("currentPlayerId");
+    expect(chessDefinition.nextTimers({ state: result.state, now: 10 })).toEqual([]);
     expect(result.events).toContainEqual(expect.objectContaining({
       type: "chess.gameWon",
       visibility: "system",
