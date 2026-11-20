@@ -839,7 +839,9 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
         mob.vx = 0;
         mob.vy = 0;
         mob.hitStunTimer = 0;
-        mob.spawnProtectUntil = rm.spawnProtectUntil + nowOffset;
+        // Measure the protection from the event's own timestamp: `serverTime` is the last
+        // snapshot's, which may be minutes old when an event arrives on its own.
+        mob.spawnProtectUntil = Date.now() + Math.max(0, rm.spawnProtectUntil - ev.createdAt);
         spawnSparkles(mob.x + mob.w * 0.5, mob.y + mob.h * 0.5, "#80DEEA", 10);
       }
       return;

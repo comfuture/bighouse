@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { MOB_CATALOG, VIEWPORT } from "../src/catalogs";
+import { ITEM_CATALOG, MOB_CATALOG, VIEWPORT } from "../src/catalogs";
 import { validateNormalizedStage } from "../src/map-schema";
 import {
   applyExperienceGain,
@@ -406,5 +406,88 @@ describe("@bighouse/sunny-meadow stages, progression, respawn & scale", () => {
       payload: { mobId, knockDir: 1 }
     });
     expect(expiredHit.ok).toBe(false);
+  });
+});
+
+describe("@bighouse/sunny-meadow server hardening", () => {
+  const now = 1_700_000_000_000;
+
+  function worldWith(playerId: string): RoomState {
+    const room = { roomId: "room_hardening", gameId: "sunny-meadow", mode: "default", minPlayers: 1, maxPlayers: 500, config: {}, createdAt: now };
+    const state: RoomState = {
+      room,
+      phase: "active",
+      version: 1,
+      players: [],
+      stageState: sunnyMeadowDefinition.initialStageState({ room, players: [], now }),
+      playerStates: {},
+      updatedAt: now
+    };
+    const seat = { playerId, displayName: playerId, seat: 0, connected: true, ready: true, joinedAt: now };
+    state.players.push(seat);
+    return sunnyMeadowDefinition.onPlayerJoin!({ state, now }, seat, null).state;
+  }
+
+  type World = { stages: Record<string, { mobs: Record<string, Record<string, unknown>>; items: Record<string, { templateId: string }> }> };
+
+  it("schedules the respawn alarm for the due time, not a moving offset from now", () => {
+    const state = worldWith("p1");
+    const stage = (state.stageState as unknown as World).stages["stage-1"]!;
+    const mob = Object.values(stage.mobs)[0]!;
+    mob.alive = false;
+    mob.respawnAt = now + 5_000;
+
+    // However late the host asks, the alarm stays on the respawn time, so a busy room cannot starve it.
+    for (const askedAt of [now, now + 4_900, now + 9_000]) {
+      const [timer] = sunnyMeadowDefinition.nextTimers({ state, now: askedAt });
+      expect(timer?.runAt).toBe(now + 5_000);
+    }
+  });
+
+  it("pays a weapon pickup's score once, however often it is collected", () => {
+    let state = worldWith("p1");
+    // Stand the player on whichever stage has a weapon pickup.
+    const stages = (state.stageState as unknown as World).stages;
+    const [stageId, weaponItemId] = Object.entries(stages).flatMap(([id, stage]) =>
+      Object.entries(stage.items)
+        .filter(([, item]) => ITEM_CATALOG[item.templateId]?.category === "weapon")
+        .map(([itemId]) => [id, itemId] as const)
+    )[0]!;
+    (state.playerStates.p1 as { stageId: string }).stageId = stageId;
+    const scoreOf = (s: RoomState) => (s.playerStates.p1 as { score: number }).score;
+    const collect = (s: RoomState, n: number) =>
+      sunnyMeadowDefinition.applyAction(
+        { state: structuredClone(s), now: now + n },
+        { playerId: "p1", clientActionId: `w${n}`, expectedVersion: 0, type: "collectItem", payload: { itemId: weaponItemId } }
+      ).state;
+
+    state = collect(state, 1);
+    const afterFirst = scoreOf(state);
+    expect(afterFirst).toBeGreaterThan(0);
+    state = collect(collect(state, 2), 3);
+    expect(scoreOf(state)).toBe(afterFirst);
+  });
+
+  it("keeps a checkpoint inside the stage", () => {
+    const state = worldWith("p1");
+    const saved = sunnyMeadowDefinition.applyAction(
+      { state: structuredClone(state), now: now + 1 },
+      { playerId: "p1", clientActionId: "cp", expectedVersion: 0, type: "checkpoint", payload: { x: 1e300, y: -1e300 } }
+    ).state.playerStates.p1 as { x: number; y: number };
+    const stage = getStageById("stage-1");
+    expect(saved.x).toBeLessThanOrEqual(stage.meta.widthTiles * stage.meta.tileSize);
+    expect(saved.y).toBe(-120);
+  });
+
+  it("shows clients only what they draw for mobs and items", () => {
+    const state = worldWith("p1");
+    const stage = (state.stageState as unknown as World).stages["stage-1"]!;
+    Object.values(stage.mobs)[0]!.contributors = { someone: 12 };
+    const view = sunnyMeadowDefinition.getPublicView({ state, now }, "p1") as unknown as {
+      mobs: Record<string, object>;
+      items: Record<string, object>;
+    };
+    expect(Object.keys(Object.values(view.mobs)[0]!).sort()).toEqual(["alive", "hp", "inCombat", "maxHp", "spawnProtectUntil"]);
+    expect(Object.keys(Object.values(view.items)[0]!)).toEqual(["available"]);
   });
 });
