@@ -117,6 +117,24 @@ describe("@bighouse/ui", () => {
     expect(controls.shadowRoot!.querySelector<HTMLButtonElement>(".bh-confirm-bots")?.textContent).toBe("Add bot player");
   });
 
+  it("closes the chat when Enter is pressed with nothing typed, without sending", async () => {
+    registerBighouseUi();
+    const chat = document.createElement("bighouse-game-chat") as BighouseGameChatElement;
+    document.body.append(chat);
+    const sent = vi.fn();
+    chat.addEventListener("bighouse-chat-send", sent);
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    await Promise.resolve();
+    expect(chat.open).toBe(true);
+
+    const form = chat.shadowRoot!.querySelector("form")!;
+    chat.shadowRoot!.querySelector("input")!.value = "   ";
+    form.dispatchEvent(new SubmitEvent("submit", { bubbles: true, cancelable: true }));
+    expect(chat.open).toBe(false);
+    expect(sent).not.toHaveBeenCalled();
+    chat.remove();
+  });
+
   it("opens chat with desktop Enter, focuses the input, sends once, and closes with Escape", async () => {
     registerBighouseUi();
     const chat = document.createElement("bighouse-game-chat") as BighouseGameChatElement;

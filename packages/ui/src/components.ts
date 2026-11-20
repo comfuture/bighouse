@@ -679,7 +679,11 @@ export class BighouseGameChatElement extends HTMLElement {
       event.preventDefault();
       if (!this.#enabled || this.#composing || this.#discardComposition) return;
       const body = input.value.trim();
-      if (!body) return;
+      // Enter toggles: with nothing typed it puts the chat away again.
+      if (!body) {
+        this.open = false;
+        return;
+      }
       if (this.#channel === "team") {
         if (!this.#teamId) return;
         emit(this, "bighouse-team-chat-send", { body, teamId: this.#teamId });
