@@ -16,7 +16,6 @@ import { createGameEventId, defineGameDefinition } from "@bighouse/game-sdk/serv
 import { baseGameMetadata } from "./metadata";
 
 type ChessColor = "white" | "black";
-type GameResult = "checkmate" | "stalemate" | "draw" | "timeout";
 type PromotionPiece = Extract<PieceSymbol, "q" | "r" | "b" | "n">;
 
 export type ChessPieceView = {
@@ -25,24 +24,30 @@ export type ChessPieceView = {
   color: Color;
 };
 
+/** How a finished game ended. A game in progress has no outcome. */
+export type ChessOutcome =
+  | { kind: "checkmate"; winnerPlayerId: string | undefined }
+  | { kind: "timeout"; winnerPlayerId: string | undefined }
+  | { kind: "stalemate" }
+  | { kind: "draw"; reason: string };
+
+/**
+ * Only what cannot be derived is stored. The board, side to move, check,
+ * current player, move count and turn deadline all follow from these fields.
+ */
 export type ChessStageState = {
+  /** Current position. */
   fen: string;
-  board: Array<Array<ChessPieceView | null>>;
-  currentPlayerId?: string;
-  turn: Color;
-  clocks: ChessClockState;
-  activeClockStartedAt?: number;
-  turnDeadline?: number;
-  moveCount: number;
+  /** Moves from the starting position, replayed so repetition draws are detected. */
+  moveHistory: ChessMoveRecord[];
+  /** The same moves in SAN, for display. */
   history: string[];
-  moveHistory?: ChessMoveRecord[];
   lastMove?: ChessMovePayload;
-  winnerPlayerId?: string;
-  result?: GameResult;
-  drawReason?: string;
-  check: boolean;
-  checkmate: boolean;
-  stalemate: boolean;
+  /** Time each side has left, not counting the turn in progress. */
+  clocks: ChessClockState;
+  /** When the side to move started thinking, or null while no clock runs. */
+  clockStartedAt: number | null;
+  outcome: ChessOutcome | null;
 };
 
 export type ChessPlayerState = {
@@ -78,16 +83,15 @@ export const gameMetadata = baseGameMetadata;
 
 export const chessDefinition = defineGameDefinition(gameMetadata, {
   initialStageState(context): JsonObject {
-    const chess = new Chess();
-    const stage = buildStage(chess, {
-      players: context.players,
-      moveCount: 0,
-      clocks: initialClocks()
-    });
-    if (stage.currentPlayerId) {
-      startClock(stage, context.now);
-    }
-    return stage as unknown as JsonObject;
+    return {
+      fen: new Chess().fen(),
+      moveHistory: [],
+      history: [],
+      clocks: { white: playerClockMs, black: playerClockMs },
+      // White's clock starts once there is a white player to run it against.
+      clockStartedAt: context.players[0] ? context.now : null,
+      outcome: null
+    } satisfies ChessStageState as unknown as JsonObject;
   },
 
   initialPlayerState(player: PlayerSeat): JsonObject {
@@ -99,18 +103,18 @@ export const chessDefinition = defineGameDefinition(gameMetadata, {
       return { ok: false, code: "invalid_action", message: "Unsupported chess action" };
     }
     const stage = chessStage(context.state.stageState);
-    if (stage.winnerPlayerId || stage.result) {
+    if (stage.outcome) {
       return { ok: false, code: "invalid_action", message: "Game is already finished" };
     }
-    const currentPlayerId = stage.currentPlayerId ?? playerIdForTurn(context.state.players, stage.turn);
-    if (action.playerId !== currentPlayerId) {
+    const turn = turnOf(stage);
+    if (action.playerId !== playerIdForTurn(context.state.players, turn)) {
       return { ok: false, code: "invalid_turn", message: "It is not this player's turn" };
     }
-    if (remainingClockMs(stage, colorName(stage.turn), context.now) <= 0) {
+    if (remainingClockMs(stage, colorName(turn), context.now) <= 0) {
       return { ok: false, code: "invalid_action", message: "Player clock has expired" };
     }
     const playerColor = colorForPlayer(context.state.playerStates[action.playerId]);
-    if (playerColor !== colorName(stage.turn)) {
+    if (playerColor !== colorName(turn)) {
       return { ok: false, code: "invalid_turn", message: "It is not this player's color to move" };
     }
     const parsed = parseMovePayload(action.payload);
@@ -122,7 +126,7 @@ export const chessDefinition = defineGameDefinition(gameMetadata, {
     if (!piece) {
       return { ok: false, code: "invalid_action", message: "No piece on source square" };
     }
-    if (piece.color !== stage.turn) {
+    if (piece.color !== turn) {
       return { ok: false, code: "invalid_action", message: "Source square has the wrong color" };
     }
     if (isPromotionMove(chess, parsed.from, parsed.to) && !parsed.promotion) {
@@ -143,128 +147,92 @@ export const chessDefinition = defineGameDefinition(gameMetadata, {
     if (!parsed.ok) {
       throw new Error("Chess move payload must be validated before applying");
     }
+    const mover = colorName(turnOf(stage));
     const chess = chessFromStage(stage);
     const move = chess.move(chessMoveInput(parsed), { strict: true });
-    const nextClocks = stopClock(stage, context.now);
-    const moveHistory = [...(stage.moveHistory ?? []), moveRecord(move)];
-    const nextStage = buildStage(chess, {
-      players: state.players,
-      moveCount: stage.moveCount + 1,
+    const lastMove = movePayload(action.playerId, move);
+    const outcome = outcomeOfPosition(chess, state.players);
+
+    const nextStage: ChessStageState = {
+      fen: chess.fen(),
+      moveHistory: [...stage.moveHistory, moveRecord(move)],
       history: [...stage.history, move.san],
-      moveHistory,
-      lastMove: movePayload(action.playerId, move),
-      clocks: nextClocks
-    });
-    const events: GameEvent[] = [
-      {
-        id: createGameEventId(),
-        type: "chess.moveMade",
-        visibility: "public",
-        payload: nextStage.lastMove ?? {},
-        createdAt: context.now
-      }
-    ];
-
-    if (nextStage.result) {
-      delete nextStage.turnDeadline;
-      delete nextStage.activeClockStartedAt;
-      state.phase = "finished";
-      if (nextStage.winnerPlayerId) {
-        events.push({
-          id: createGameEventId(),
-          type: "chess.gameWon",
-          visibility: "system",
-          payload: { winnerPlayerId: nextStage.winnerPlayerId, reason: nextStage.result },
-          createdAt: context.now
-        });
-      } else {
-        events.push({
-          id: createGameEventId(),
-          type: "chess.gameDrawn",
-          visibility: "system",
-          payload: { reason: nextStage.drawReason ?? nextStage.result },
-          createdAt: context.now
-        });
-      }
-    } else {
-      startClock(nextStage, context.now);
-    }
-
+      lastMove,
+      // The mover pays for the time they used; the opponent's clock starts now unless the game is over.
+      clocks: { ...stage.clocks, [mover]: remainingClockMs(stage, mover, context.now) },
+      clockStartedAt: outcome ? null : context.now,
+      outcome
+    };
     state.stageState = nextStage as unknown as JsonObject;
+
+    const events: GameEvent[] = [gameEvent("chess.moveMade", "public", lastMove, context.now)];
+    if (outcome) {
+      state.phase = "finished";
+      events.push(outcomeEvent(outcome, context.now));
+    }
     return { state, events };
   },
 
   applyTimer(context: GameContext, timer: TimerIntent): ActionResult {
-    if (timer.kind !== "turn_timeout") {
-      return { state: context.state, events: [] };
-    }
     const state = context.state;
     const stage = chessStage(state.stageState);
-    const currentPlayerId = stage.currentPlayerId ?? playerIdForTurn(state.players, stage.turn);
-    const timedOutPlayerId = timerPayloadPlayerId(timer.payload) ?? currentPlayerId;
-    const timedOutColor = timerPayloadColor(timer.payload) ?? colorName(stage.turn);
+    const turn = turnOf(stage);
+    const deadline = turnDeadlineOf(stage);
+    // Ignore anything but the flag falling for the side that is actually to move.
     if (
-      stage.result ||
-      !stage.turnDeadline ||
-      context.now < stage.turnDeadline ||
-      !currentPlayerId ||
-      timedOutPlayerId !== currentPlayerId ||
-      timedOutColor !== colorName(stage.turn)
+      timer.kind !== "turn_timeout" ||
+      stage.outcome ||
+      deadline === null ||
+      context.now < deadline ||
+      (timer.payload?.color !== undefined && timer.payload.color !== colorName(turn))
     ) {
       return { state, events: [] };
     }
 
-    const winnerPlayerId = playerIdForTurn(state.players, oppositeColor(stage.turn));
-    stage.clocks = { ...normalizedClocks(stage.clocks), [colorName(stage.turn)]: 0 };
-    stage.result = "timeout";
-    if (winnerPlayerId) {
-      stage.winnerPlayerId = winnerPlayerId;
-    }
-    delete stage.turnDeadline;
-    delete stage.activeClockStartedAt;
+    const timedOutPlayerId = playerIdForTurn(state.players, turn);
+    const outcome: ChessOutcome = { kind: "timeout", winnerPlayerId: playerIdForTurn(state.players, oppositeColor(turn)) };
+    stage.clocks = { ...stage.clocks, [colorName(turn)]: 0 };
+    stage.clockStartedAt = null;
+    stage.outcome = outcome;
     state.phase = "finished";
-    state.stageState = stage as unknown as JsonObject;
 
     const events: GameEvent[] = [
-      {
-        id: createGameEventId(),
-        type: "chess.turnTimedOut",
-        visibility: "system",
-        payload: { playerId: currentPlayerId, ...(winnerPlayerId ? { winnerPlayerId } : {}) },
-        createdAt: context.now
-      }
+      gameEvent(
+        "chess.turnTimedOut",
+        "system",
+        {
+          ...(timedOutPlayerId ? { playerId: timedOutPlayerId } : {}),
+          ...(outcome.winnerPlayerId ? { winnerPlayerId: outcome.winnerPlayerId } : {})
+        },
+        context.now
+      )
     ];
-    if (winnerPlayerId) {
-      events.push({
-        id: createGameEventId(),
-        type: "chess.gameWon",
-        visibility: "system",
-        payload: { winnerPlayerId, reason: "timeout" },
-        createdAt: context.now
-      });
+    if (outcome.winnerPlayerId) {
+      events.push(outcomeEvent(outcome, context.now));
     }
     return { state, events };
   },
 
   getPublicView(context: GameContext): JsonObject {
     const stage = chessStage(context.state.stageState);
+    const chess = new Chess(stage.fen);
+    const turn = chess.turn();
+    const deadline = turnDeadlineOf(stage);
+    const currentPlayerId = stage.outcome ? undefined : playerIdForTurn(context.state.players, turn);
     return {
       fen: stage.fen,
-      board: stage.board,
-      currentPlayerId: stage.currentPlayerId ?? playerIdForTurn(context.state.players, stage.turn),
-      turn: stage.turn,
+      board: chess.board().map((row) => row.map((piece) => (piece ? { square: piece.square, type: piece.type, color: piece.color } : null))),
+      turn,
+      // The host reads `currentPlayerId` to schedule bot turns.
+      ...(currentPlayerId ? { currentPlayerId } : {}),
       clocks: stage.clocks,
-      activeClockStartedAt: stage.activeClockStartedAt,
-      turnDeadline: stage.turnDeadline,
-      moveCount: stage.moveCount,
+      ...(stage.clockStartedAt === null ? {} : { activeClockStartedAt: stage.clockStartedAt }),
+      ...(deadline === null ? {} : { turnDeadline: deadline }),
+      moveCount: stage.moveHistory.length,
       history: stage.history,
-      lastMove: stage.lastMove,
-      winnerPlayerId: stage.winnerPlayerId,
-      result: stage.result,
-      drawReason: stage.drawReason,
-      check: stage.check,
-      checkmate: stage.checkmate,
-      stalemate: stage.stalemate
+      ...(stage.lastMove ? { lastMove: stage.lastMove } : {}),
+      check: chess.isCheck(),
+      ...publicOutcome(stage.outcome)
     };
   },
 
@@ -272,17 +240,20 @@ export const chessDefinition = defineGameDefinition(gameMetadata, {
     return context.state.playerStates[playerId] ?? {};
   },
 
-  nextTimers(context: GameContext) {
+  nextTimers(context: GameContext): TimerIntent[] {
     const stage = chessStage(context.state.stageState);
-    if (context.state.phase !== "active" || !stage.turnDeadline || stage.result) {
+    const deadline = turnDeadlineOf(stage);
+    if (context.state.phase !== "active" || stage.outcome || deadline === null) {
       return [];
     }
+    const turn = turnOf(stage);
+    const playerId = playerIdForTurn(context.state.players, turn);
     return [
       {
         id: "turn-timeout",
         kind: "turn_timeout",
-        runAt: stage.turnDeadline,
-        payload: { playerId: stage.currentPlayerId, color: colorName(stage.turn) }
+        runAt: deadline,
+        payload: { ...(playerId ? { playerId } : {}), color: colorName(turn) }
       }
     ];
   },
@@ -308,12 +279,16 @@ const pieceValues: Record<PieceSymbol, number> = {
 
 function selectChessBotAction(context: BotGameContext): GameAction | null {
   const stage = chessStage(context.state.stageState);
-  const currentPlayerId = stage.currentPlayerId ?? playerIdForTurn(context.state.players, stage.turn);
-  if (context.state.phase !== "active" || stage.result || currentPlayerId !== context.player.playerId) {
+  const turn = turnOf(stage);
+  if (
+    context.state.phase !== "active" ||
+    stage.outcome ||
+    playerIdForTurn(context.state.players, turn) !== context.player.playerId
+  ) {
     return null;
   }
   const botColorName = colorForPlayer(context.state.playerStates[context.player.playerId]);
-  if (botColorName !== colorName(stage.turn)) {
+  if (botColorName !== colorName(turn)) {
     return null;
   }
 
@@ -324,7 +299,7 @@ function selectChessBotAction(context: BotGameContext): GameAction | null {
   }
 
   const seed = `${context.state.room.roomId}:${context.state.version}:${context.player.playerId}`;
-  const botColor = stage.turn;
+  const botColor = turn;
   const selected =
     context.difficulty === "low"
       ? pickLowChessMove(legalMoves, seed)
@@ -454,50 +429,14 @@ function stableChessNoise(seed: string, key: string): number {
   return (hash >>> 0) / 0xffffffff;
 }
 
-function buildStage(
-  chess: Chess,
-  options: {
-    players: PlayerSeat[];
-    moveCount: number;
-    history?: string[];
-    moveHistory?: ChessMoveRecord[];
-    lastMove?: ChessMovePayload;
-    clocks?: ChessClockState;
-  }
-): ChessStageState {
-  const turn = chess.turn();
-  const checkmate = chess.isCheckmate();
-  const stalemate = chess.isStalemate();
-  const draw = chess.isDraw();
-  const result: GameResult | undefined = checkmate ? "checkmate" : stalemate ? "stalemate" : draw ? "draw" : undefined;
-  const winningColor = checkmate ? oppositeColor(turn) : undefined;
-  const currentPlayerId = playerIdForTurn(options.players, turn);
-  const winnerPlayerId = winningColor ? playerIdForTurn(options.players, winningColor) : undefined;
-  return {
-    fen: chess.fen(),
-    board: chess.board().map((row) => row.map((piece) => piece ? { square: piece.square, type: piece.type, color: piece.color } : null)),
-    ...(currentPlayerId ? { currentPlayerId } : {}),
-    turn,
-    clocks: normalizedClocks(options.clocks),
-    moveCount: options.moveCount,
-    history: options.history ?? [],
-    moveHistory: options.moveHistory ?? [],
-    ...(options.lastMove ? { lastMove: options.lastMove } : {}),
-    ...(winnerPlayerId ? { winnerPlayerId } : {}),
-    ...(result ? { result } : {}),
-    ...(draw && !stalemate ? { drawReason: drawReason(chess) } : {}),
-    check: chess.isCheck(),
-    checkmate,
-    stalemate
-  };
-}
-
 function chessStage(value: JsonObject): ChessStageState {
   return value as unknown as ChessStageState;
 }
 
+/** The position as a chess.js game, with its move history when it was played out from the start. */
 function chessFromStage(stage: ChessStageState): Chess {
-  if (!stage.moveHistory?.length) {
+  // A position set up directly (no recorded moves) can only be loaded from its FEN.
+  if (stage.moveHistory.length === 0) {
     return new Chess(stage.fen);
   }
   const chess = new Chess();
@@ -505,6 +444,55 @@ function chessFromStage(stage: ChessStageState): Chess {
     chess.move(chessMoveInput(move), { strict: true });
   }
   return chess;
+}
+
+function turnOf(stage: ChessStageState): Color {
+  return stage.fen.split(" ")[1] === "b" ? "b" : "w";
+}
+
+/** When the side to move runs out of time, or null while no clock is running. */
+function turnDeadlineOf(stage: ChessStageState): number | null {
+  return stage.clockStartedAt === null ? null : stage.clockStartedAt + stage.clocks[colorName(turnOf(stage))];
+}
+
+function remainingClockMs(stage: ChessStageState, color: ChessColor, now: number): number {
+  const running = stage.clockStartedAt !== null && color === colorName(turnOf(stage));
+  const elapsed = running ? Math.max(0, now - stage.clockStartedAt!) : 0;
+  return Math.max(0, stage.clocks[color] - elapsed);
+}
+
+function outcomeOfPosition(chess: Chess, players: PlayerSeat[]): ChessOutcome | null {
+  if (chess.isCheckmate()) {
+    return { kind: "checkmate", winnerPlayerId: playerIdForTurn(players, oppositeColor(chess.turn())) };
+  }
+  if (chess.isStalemate()) return { kind: "stalemate" };
+  if (chess.isDraw()) return { kind: "draw", reason: drawReason(chess) };
+  return null;
+}
+
+/** The outcome as the flat fields clients read. */
+function publicOutcome(outcome: ChessOutcome | null): JsonObject {
+  if (!outcome) return {};
+  switch (outcome.kind) {
+    case "checkmate":
+    case "timeout":
+      return { result: outcome.kind, ...(outcome.winnerPlayerId ? { winnerPlayerId: outcome.winnerPlayerId } : {}) };
+    case "stalemate":
+      return { result: "stalemate" };
+    case "draw":
+      return { result: "draw", drawReason: outcome.reason };
+  }
+}
+
+function outcomeEvent(outcome: ChessOutcome, now: number): GameEvent {
+  if ((outcome.kind === "checkmate" || outcome.kind === "timeout") && outcome.winnerPlayerId) {
+    return gameEvent("chess.gameWon", "system", { winnerPlayerId: outcome.winnerPlayerId, reason: outcome.kind }, now);
+  }
+  return gameEvent("chess.gameDrawn", "system", { reason: outcome.kind === "draw" ? outcome.reason : outcome.kind }, now);
+}
+
+function gameEvent(type: string, visibility: GameEvent["visibility"], payload: JsonObject, now: number): GameEvent {
+  return { id: createGameEventId(), type, visibility, payload, createdAt: now };
 }
 
 function parseMovePayload(payload: unknown):
@@ -571,54 +559,6 @@ function moveRecord(move: Move): ChessMoveRecord {
     to: move.to,
     ...(isPromotionPiece(move.promotion) ? { promotion: move.promotion } : {})
   };
-}
-
-function timerPayloadPlayerId(payload: JsonObject | undefined): string | undefined {
-  return typeof payload?.playerId === "string" ? payload.playerId : undefined;
-}
-
-function timerPayloadColor(payload: JsonObject | undefined): ChessColor | undefined {
-  return payload?.color === "white" || payload?.color === "black" ? payload.color : undefined;
-}
-
-function initialClocks(): ChessClockState {
-  return { white: playerClockMs, black: playerClockMs };
-}
-
-function normalizedClocks(clocks: ChessClockState | undefined): ChessClockState {
-  const white = clocks?.white;
-  const black = clocks?.black;
-  return {
-    white: Math.max(0, Number.isFinite(white) ? Number(white) : playerClockMs),
-    black: Math.max(0, Number.isFinite(black) ? Number(black) : playerClockMs)
-  };
-}
-
-function startClock(stage: ChessStageState, now: number): void {
-  const color = colorName(stage.turn);
-  stage.clocks = normalizedClocks(stage.clocks);
-  stage.activeClockStartedAt = now;
-  stage.turnDeadline = now + stage.clocks[color];
-}
-
-function stopClock(stage: ChessStageState, now: number): ChessClockState {
-  const color = colorName(stage.turn);
-  const clocks = normalizedClocks(stage.clocks);
-  if (stage.activeClockStartedAt === undefined) {
-    return clocks;
-  }
-  return {
-    ...clocks,
-    [color]: Math.max(0, clocks[color] - Math.max(0, now - stage.activeClockStartedAt))
-  };
-}
-
-function remainingClockMs(stage: ChessStageState, color: ChessColor, now: number): number {
-  const clocks = normalizedClocks(stage.clocks);
-  if (color !== colorName(stage.turn) || stage.activeClockStartedAt === undefined) {
-    return clocks[color];
-  }
-  return Math.max(0, clocks[color] - Math.max(0, now - stage.activeClockStartedAt));
 }
 
 function colorForPlayer(state: JsonObject | undefined): ChessColor {

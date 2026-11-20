@@ -31,16 +31,11 @@ describe("chess bot player", () => {
     state.players[0] = { ...state.players[0]!, kind: "bot", botDifficulty: "high" };
     state.stageState = {
       fen: "4k3/P7/8/8/8/8/8/4K3 w - - 0 1",
-      board: [],
-      currentPlayerId: "p1",
-      turn: "w",
-      clocks: { white: 900_000, black: 900_000 },
-      moveCount: 0,
-      history: [],
       moveHistory: [],
-      check: false,
-      checkmate: false,
-      stalemate: false
+      history: [],
+      clocks: { white: 900_000, black: 900_000 },
+      clockStartedAt: null,
+      outcome: null
     };
     state.playerStates.p1 = { color: "white" };
     state.playerStates.p2 = { color: "black" };
@@ -69,16 +64,11 @@ describe("chess bot player", () => {
     state.players[0] = { ...state.players[0]!, kind: "bot", botDifficulty: "high" };
     state.stageState = {
       fen: "4k3/8/8/1r6/Q7/8/4b3/6K1 w - - 0 1",
-      board: [],
-      currentPlayerId: "p1",
-      turn: "w",
-      clocks: { white: 900_000, black: 900_000 },
-      moveCount: 0,
-      history: [],
       moveHistory: [],
-      check: false,
-      checkmate: false,
-      stalemate: false
+      history: [],
+      clocks: { white: 900_000, black: 900_000 },
+      clockStartedAt: null,
+      outcome: null
     };
     state.playerStates.p1 = { color: "white" };
     state.playerStates.p2 = { color: "black" };
