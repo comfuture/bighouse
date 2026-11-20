@@ -77,6 +77,20 @@ export type PendingShotResolution = {
   };
 };
 
+/**
+ * Where the match stands. Exactly one of these holds, so a deadline, a pending
+ * shot and a result can never coexist.
+ */
+export type TankTurn =
+  /** No players seated yet. */
+  | { kind: "idle" }
+  /** `playerId` may fire until `deadline`. */
+  | { kind: "aiming"; playerId: string; deadline: number }
+  /** A shot is in the air: clients replay it until `deadline`, then `resolution` is applied. */
+  | { kind: "resolving"; shooterPlayerId: string; deadline: number; resolution: PendingShotResolution }
+  | { kind: "finished"; result: "win"; winnerPlayerId: string }
+  | { kind: "finished"; result: "draw" };
+
 export type TankBattleStageState = {
   worldWidth: number;
   worldHeight: number;
@@ -87,16 +101,9 @@ export type TankBattleStageState = {
   gravity: number;
   wind: number;
   tanks: TankState[];
-  turnPhase: "aiming" | "resolving";
-  currentPlayerId?: string;
-  pendingNextPlayerId?: string;
+  turn: TankTurn;
   turnNumber: number;
-  turnDeadline?: number;
-  resolutionDeadline?: number;
-  pendingResolution?: PendingShotResolution;
-  botAimHistory?: Record<string, BotAimHistoryEntry>;
-  winnerPlayerId?: string;
-  result?: "win" | "draw";
+  botAimHistory: Record<string, BotAimHistoryEntry>;
   lastShot?: LastShot;
 };
 

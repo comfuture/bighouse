@@ -41,6 +41,7 @@ import {
   type ShotDamage,
   type TankBattlePlayerState,
   type TankBattleStageState,
+  type TankTurn,
   type TankItem,
   type TankItemSelection,
   type TankItems,
@@ -58,7 +59,8 @@ export const tankBattleDefinition = defineGameDefinition(gameMetadata, {
     const playerKey = context.players.map((player) => `${player.seat}:${player.playerId}`).join("|");
     const terrainSeed = hashSeed(`${seedValue}:${context.now}:${playerKey}`) || 1;
     const terrain = generateTerrain(terrainSeed);
-    const randomWind = windFromState(terrainSeed);
+    // Seed the wind separately so the opening wind is not a function of the terrain shape.
+    const randomWind = windFromState(hashSeed(`${seedValue}:${context.now}:${playerKey}:wind`) || 1);
     const tanks = context.players.map((player) => createTank(player, terrain));
     const currentPlayerId = context.players[0]?.playerId;
     return {
@@ -72,9 +74,8 @@ export const tankBattleDefinition = defineGameDefinition(gameMetadata, {
       wind: randomWind.wind,
       tanks,
       botAimHistory: {},
-      turnPhase: "aiming",
-      turnNumber: 1,
-      ...(currentPlayerId ? { currentPlayerId, turnDeadline: context.now + TURN_MS } : {})
+      turn: currentPlayerId ? { kind: "aiming", playerId: currentPlayerId, deadline: context.now + TURN_MS } : { kind: "idle" },
+      turnNumber: 1
     } satisfies TankBattleStageState as unknown as JsonObject;
   },
 
@@ -94,14 +95,13 @@ export const tankBattleDefinition = defineGameDefinition(gameMetadata, {
       return { ok: false, code: "invalid_action", message: "Tank battle is not active" };
     }
     const stage = tankBattleStage(context.state.stageState);
-    if (stage.winnerPlayerId || stage.result) {
+    if (stage.turn.kind === "finished") {
       return { ok: false, code: "invalid_action", message: "Tank battle is already finished" };
     }
-    if (stage.turnPhase !== "aiming") {
+    if (stage.turn.kind === "resolving") {
       return { ok: false, code: "shot_resolving", message: "The previous shot is still resolving" };
     }
-    const currentPlayerId = stage.currentPlayerId ?? context.state.players[0]?.playerId;
-    if (action.playerId !== currentPlayerId) {
+    if (stage.turn.kind !== "aiming" || action.playerId !== stage.turn.playerId) {
       return { ok: false, code: "invalid_turn", message: "It is not this player's turn" };
     }
     const tank = stage.tanks.find((candidate) => candidate.playerId === action.playerId);
@@ -239,13 +239,17 @@ export const tankBattleDefinition = defineGameDefinition(gameMetadata, {
     };
     stage.lastShot = lastShot;
     const botAimUpdate = createBotAimUpdate(stage, state.players, action.playerId, parsed.angle, parsed.power, trajectory);
-    stage.pendingResolution = {
-      terrain: resolvedTerrain,
-      tanks: resolvedTanks,
-      damage,
-      ...(botAimUpdate ? { botAimUpdate } : {})
-    } satisfies PendingShotResolution;
-    beginShotResolution(stage, state.players, action.playerId, context.now, lastShot.replayDurationMs);
+    stage.turn = {
+      kind: "resolving",
+      shooterPlayerId: action.playerId,
+      deadline: context.now + lastShot.replayDurationMs,
+      resolution: {
+        terrain: resolvedTerrain,
+        tanks: resolvedTanks,
+        damage,
+        ...(botAimUpdate ? { botAimUpdate } : {})
+      } satisfies PendingShotResolution
+    };
 
     const events: GameEvent[] = [
       event("tankBattle.shotFired", "public", {
@@ -271,116 +275,73 @@ export const tankBattleDefinition = defineGameDefinition(gameMetadata, {
   applyTimer(context: GameContext, timer: TimerIntent): ActionResult {
     const state = context.state;
     const stage = tankBattleStage(state.stageState);
-    const reason = typeof timer.payload?.reason === "string" ? timer.payload.reason : undefined;
-    if (
-      timer.kind === "turn_timeout" &&
-      reason === "shot_resolution" &&
-      state.phase === "active" &&
-      stage.turnPhase === "resolving" &&
-      stage.resolutionDeadline &&
-      context.now >= stage.resolutionDeadline &&
-      timer.payload?.turnNumber === stage.turnNumber
-    ) {
-      const previousPlayerId = stage.currentPlayerId;
-      if (!stage.pendingResolution) {
-        // Rooms that were already resolving when this version was deployed
-        // have applied their terrain and damage eagerly and do not contain the
-        // new pending payload. Let their existing alarm finish the old turn.
-        if (stage.lastShot) {
-          stage.lastShot = { ...stage.lastShot, resolved: true };
-        }
-        finishShotResolution(stage, context.now);
-        state.stageState = stage as unknown as JsonObject;
-        return {
-          state,
-          events: [event("tankBattle.turnChanged", "public", {
-            previousPlayerId,
-            currentPlayerId: stage.currentPlayerId,
-            wind: stage.wind
-          }, context.now)]
-        };
-      }
-      const pending = stage.pendingResolution;
-      stage.terrain = pending.terrain;
-      stage.tanks = pending.tanks;
-      if (pending.botAimUpdate) {
-        stage.botAimHistory = {
-          ...(stage.botAimHistory ?? {}),
-          [pending.botAimUpdate.playerId]: pending.botAimUpdate.history
-        };
-      }
-      if (stage.lastShot) {
-        stage.lastShot = {
-          ...stage.lastShot,
-          resolved: true,
-          damage: pending.damage
-        };
-      }
-      delete stage.pendingResolution;
-
-      const events: GameEvent[] = [];
-      if (stage.lastShot) {
-        events.push(event("tankBattle.shotResolved", "public", stage.lastShot as unknown as JsonObject, context.now));
-        if (stage.lastShot.impact) {
-          events.push(event("tankBattle.terrainChanged", "public", {
-            impact: stage.lastShot.impact,
-            explosionRadius: stage.lastShot.explosionRadius,
-            debrisSeed: stage.lastShot.debrisSeed
-          }, context.now));
-        }
-      }
-      for (const entry of pending.damage) {
-        events.push(event("tankBattle.tankDamaged", "public", entry as unknown as JsonObject, context.now));
-      }
-
-      const livingTanks = stage.tanks.filter((tank) => tank.health > 0);
-      if (stage.tanks.length >= 2 && livingTanks.length <= 1) {
-        delete stage.turnDeadline;
-        delete stage.resolutionDeadline;
-        delete stage.pendingNextPlayerId;
-        state.phase = "finished";
-        if (livingTanks[0]) {
-          stage.winnerPlayerId = livingTanks[0].playerId;
-          stage.result = "win";
-          events.push(event("tankBattle.gameWon", "system", { winnerPlayerId: livingTanks[0].playerId }, context.now));
-        } else {
-          stage.result = "draw";
-          events.push(event("tankBattle.gameDrawn", "system", { reason: "mutual_destruction" }, context.now));
-        }
-      } else {
-        finishShotResolution(stage, context.now);
-        events.push(event("tankBattle.turnChanged", "public", {
-          previousPlayerId,
-          currentPlayerId: stage.currentPlayerId,
-          wind: stage.wind
-        }, context.now));
-      }
-      state.stageState = stage as unknown as JsonObject;
-      return { state, events };
-    }
-    const timedPlayerId = typeof timer.payload?.playerId === "string" ? timer.payload.playerId : undefined;
+    const turn = stage.turn;
+    const unchanged = { state, events: [] };
+    // Only the timer set for the turn that is still running may act.
     if (
       timer.kind !== "turn_timeout" ||
       state.phase !== "active" ||
-      !stage.turnDeadline ||
-      context.now < stage.turnDeadline ||
-      !stage.currentPlayerId ||
-      timedPlayerId !== stage.currentPlayerId ||
       timer.payload?.turnNumber !== stage.turnNumber ||
-      stage.result
+      (turn.kind !== "aiming" && turn.kind !== "resolving") ||
+      context.now < turn.deadline
     ) {
-      return { state, events: [] };
+      return unchanged;
     }
-    const skippedPlayerId = stage.currentPlayerId;
-    advanceTurn(stage, state.players, skippedPlayerId, context.now);
-    state.stageState = stage as unknown as JsonObject;
-    return {
-      state,
-      events: [event("tankBattle.turnTimedOut", "system", {
-        playerId: skippedPlayerId,
-        nextPlayerId: stage.currentPlayerId
-      }, context.now)]
-    };
+
+    if (turn.kind === "aiming") {
+      if (timer.payload?.playerId !== turn.playerId) return unchanged;
+      const nextPlayerId = startNextTurn(stage, state.players, turn.playerId, context.now);
+      return {
+        state,
+        events: [event("tankBattle.turnTimedOut", "system", { playerId: turn.playerId, ...(nextPlayerId ? { nextPlayerId } : {}) }, context.now)]
+      };
+    }
+
+    if (timer.payload?.reason !== "shot_resolution") return unchanged;
+    const { resolution, shooterPlayerId } = turn;
+    stage.terrain = resolution.terrain;
+    stage.tanks = resolution.tanks;
+    if (resolution.botAimUpdate) {
+      stage.botAimHistory = { ...stage.botAimHistory, [resolution.botAimUpdate.playerId]: resolution.botAimUpdate.history };
+    }
+
+    const events: GameEvent[] = [];
+    if (stage.lastShot) {
+      stage.lastShot = { ...stage.lastShot, resolved: true, damage: resolution.damage };
+      events.push(event("tankBattle.shotResolved", "public", stage.lastShot as unknown as JsonObject, context.now));
+      if (stage.lastShot.impact) {
+        events.push(event("tankBattle.terrainChanged", "public", {
+          impact: stage.lastShot.impact,
+          explosionRadius: stage.lastShot.explosionRadius,
+          debrisSeed: stage.lastShot.debrisSeed
+        }, context.now));
+      }
+    }
+    for (const entry of resolution.damage) {
+      events.push(event("tankBattle.tankDamaged", "public", entry as unknown as JsonObject, context.now));
+    }
+
+    const livingTanks = stage.tanks.filter((tank) => tank.health > 0);
+    if (stage.tanks.length >= 2 && livingTanks.length <= 1) {
+      state.phase = "finished";
+      const winner = livingTanks[0];
+      if (winner) {
+        stage.turn = { kind: "finished", result: "win", winnerPlayerId: winner.playerId };
+        events.push(event("tankBattle.gameWon", "system", { winnerPlayerId: winner.playerId }, context.now));
+      } else {
+        stage.turn = { kind: "finished", result: "draw" };
+        events.push(event("tankBattle.gameDrawn", "system", { reason: "mutual_destruction" }, context.now));
+      }
+    } else {
+      // The next player is picked after damage is applied, so a tank this shot destroyed is skipped.
+      const nextPlayerId = startNextTurn(stage, state.players, shooterPlayerId, context.now);
+      events.push(event("tankBattle.turnChanged", "public", {
+        previousPlayerId: shooterPlayerId,
+        ...(nextPlayerId ? { currentPlayerId: nextPlayerId } : {}),
+        wind: stage.wind
+      }, context.now));
+    }
+    return { state, events };
   },
 
   getPublicView(context: GameContext): JsonObject {
@@ -401,12 +362,8 @@ export const tankBattleDefinition = defineGameDefinition(gameMetadata, {
           itemCounts: { ...privateState.items }
         };
       }),
-      turnPhase: stage.turnPhase,
-      currentPlayerId: stage.currentPlayerId ?? context.state.players[0]?.playerId,
       turnNumber: stage.turnNumber,
-      turnDeadline: stage.turnDeadline,
-      ...(stage.winnerPlayerId ? { winnerPlayerId: stage.winnerPlayerId } : {}),
-      ...(stage.result ? { result: stage.result } : {}),
+      ...publicTurn(stage.turn),
       ...(stage.lastShot ? { lastShot: stage.lastShot } : {})
     };
   },
@@ -417,23 +374,25 @@ export const tankBattleDefinition = defineGameDefinition(gameMetadata, {
 
   nextTimers(context: GameContext): TimerIntent[] {
     const stage = tankBattleStage(context.state.stageState);
-    if (context.state.phase === "active" && stage.turnPhase === "resolving" && stage.resolutionDeadline) {
+    const turn = stage.turn;
+    if (context.state.phase !== "active") return [];
+    if (turn.kind === "resolving") {
       return [{
         id: "tank-battle-shot-resolution",
         kind: "turn_timeout",
-        runAt: stage.resolutionDeadline,
+        runAt: turn.deadline,
         payload: { reason: "shot_resolution", turnNumber: stage.turnNumber }
       }];
     }
-    if (context.state.phase !== "active" || !stage.turnDeadline || !stage.currentPlayerId || stage.result) {
-      return [];
+    if (turn.kind === "aiming") {
+      return [{
+        id: "tank-battle-turn-timeout",
+        kind: "turn_timeout",
+        runAt: turn.deadline,
+        payload: { playerId: turn.playerId, turnNumber: stage.turnNumber }
+      }];
     }
-    return [{
-      id: "tank-battle-turn-timeout",
-      kind: "turn_timeout",
-      runAt: stage.turnDeadline,
-      payload: { playerId: stage.currentPlayerId, turnNumber: stage.turnNumber }
-    }];
+    return [];
   },
 
   selectBotAction(context: BotGameContext): GameAction | null {
@@ -465,29 +424,22 @@ function initialItems(): TankItems {
 }
 
 export function tankBattleStage(value: JsonObject): TankBattleStageState {
-  const stage = value as unknown as Partial<TankBattleStageState>;
-  return {
-    worldWidth: stage.worldWidth ?? WORLD_WIDTH,
-    worldHeight: stage.worldHeight ?? WORLD_HEIGHT,
-    terrainStep: stage.terrainStep ?? TERRAIN_STEP,
-    terrainSeed: stage.terrainSeed ?? 1,
-    rngState: stage.rngState ?? 1,
-    terrain: stage.terrain ?? generateTerrain(1),
-    gravity: stage.gravity ?? 58,
-    wind: stage.wind ?? 0,
-    tanks: stage.tanks ?? [],
-    botAimHistory: stage.botAimHistory ?? {},
-    turnPhase: stage.turnPhase ?? "aiming",
-    turnNumber: stage.turnNumber ?? 1,
-    ...(stage.currentPlayerId ? { currentPlayerId: stage.currentPlayerId } : {}),
-    ...(stage.pendingNextPlayerId ? { pendingNextPlayerId: stage.pendingNextPlayerId } : {}),
-    ...(stage.turnDeadline ? { turnDeadline: stage.turnDeadline } : {}),
-    ...(stage.resolutionDeadline ? { resolutionDeadline: stage.resolutionDeadline } : {}),
-    ...(stage.pendingResolution ? { pendingResolution: stage.pendingResolution } : {}),
-    ...(stage.winnerPlayerId ? { winnerPlayerId: stage.winnerPlayerId } : {}),
-    ...(stage.result ? { result: stage.result } : {}),
-    ...(stage.lastShot ? { lastShot: stage.lastShot } : {})
-  };
+  return value as unknown as TankBattleStageState;
+}
+
+/** The turn as the flat fields clients read. */
+function publicTurn(turn: TankTurn): JsonObject {
+  switch (turn.kind) {
+    case "idle":
+      return { turnPhase: "aiming" };
+    case "aiming":
+      // The host reads `currentPlayerId` to schedule bot turns.
+      return { turnPhase: "aiming", currentPlayerId: turn.playerId, turnDeadline: turn.deadline };
+    case "resolving":
+      return { turnPhase: "resolving", currentPlayerId: turn.shooterPlayerId };
+    case "finished":
+      return { turnPhase: "resolving", result: turn.result, ...(turn.result === "win" ? { winnerPlayerId: turn.winnerPlayerId } : {}) };
+  }
 }
 
 function tankBattlePlayer(value: JsonObject | undefined): TankBattlePlayerState {
@@ -527,57 +479,27 @@ function parseFirePayload(payload: JsonObject): ParsedFire {
   };
 }
 
-function advanceTurn(stage: TankBattleStageState, players: PlayerSeat[], currentPlayerId: string, now: number): void {
+/**
+ * Hands the turn to the next living tank after `afterPlayerId`, with fresh wind.
+ * Returns that player's id, or undefined when nobody is left to play.
+ */
+function startNextTurn(stage: TankBattleStageState, players: PlayerSeat[], afterPlayerId: string, now: number): string | undefined {
   const livingIds = new Set(stage.tanks.filter((tank) => tank.health > 0).map((tank) => tank.playerId));
-  const currentIndex = players.findIndex((player) => player.playerId === currentPlayerId);
+  const afterIndex = Math.max(0, players.findIndex((player) => player.playerId === afterPlayerId));
+  let nextPlayerId: string | undefined;
   for (let offset = 1; offset <= players.length; offset += 1) {
-    const candidate = players[(Math.max(0, currentIndex) + offset) % players.length];
+    const candidate = players[(afterIndex + offset) % players.length];
     if (candidate && livingIds.has(candidate.playerId)) {
-      stage.currentPlayerId = candidate.playerId;
+      nextPlayerId = candidate.playerId;
       break;
     }
   }
-  stage.turnNumber += 1;
   const randomWind = windFromState(stage.rngState);
   stage.rngState = randomWind.state;
   stage.wind = randomWind.wind;
-  stage.turnPhase = "aiming";
-  stage.turnDeadline = now + TURN_MS;
-}
-
-function beginShotResolution(
-  stage: TankBattleStageState,
-  players: PlayerSeat[],
-  currentPlayerId: string,
-  now: number,
-  replayDurationMs: number
-): void {
-  const livingIds = new Set(stage.tanks.filter((tank) => tank.health > 0).map((tank) => tank.playerId));
-  const currentIndex = players.findIndex((player) => player.playerId === currentPlayerId);
-  for (let offset = 1; offset <= players.length; offset += 1) {
-    const candidate = players[(Math.max(0, currentIndex) + offset) % players.length];
-    if (candidate && livingIds.has(candidate.playerId)) {
-      stage.pendingNextPlayerId = candidate.playerId;
-      break;
-    }
-  }
-  stage.turnPhase = "resolving";
-  delete stage.turnDeadline;
-  stage.resolutionDeadline = now + replayDurationMs;
-}
-
-function finishShotResolution(stage: TankBattleStageState, now: number): void {
-  if (stage.pendingNextPlayerId) {
-    stage.currentPlayerId = stage.pendingNextPlayerId;
-  }
-  delete stage.pendingNextPlayerId;
-  delete stage.resolutionDeadline;
   stage.turnNumber += 1;
-  const randomWind = windFromState(stage.rngState);
-  stage.rngState = randomWind.state;
-  stage.wind = randomWind.wind;
-  stage.turnPhase = "aiming";
-  stage.turnDeadline = now + TURN_MS;
+  stage.turn = nextPlayerId ? { kind: "aiming", playerId: nextPlayerId, deadline: now + TURN_MS } : { kind: "idle" };
+  return nextPlayerId;
 }
 
 function event(type: string, visibility: "public" | "private" | "system", payload: JsonObject, now: number): GameEvent {
@@ -666,10 +588,9 @@ function selectTankBattleBotAction(context: BotGameContext): GameAction | null {
   if (
     !shooter ||
     !target ||
-    stage.currentPlayerId !== shooter.playerId ||
-    stage.turnPhase !== "aiming" ||
-    context.state.phase !== "active" ||
-    stage.result
+    stage.turn.kind !== "aiming" ||
+    stage.turn.playerId !== shooter.playerId ||
+    context.state.phase !== "active"
   ) {
     return null;
   }
