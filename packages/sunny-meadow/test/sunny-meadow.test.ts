@@ -240,17 +240,19 @@ describe("@bighouse/sunny-meadow stages, progression, respawn & scale", () => {
     expect(tick.events.some((e) => e.type === "sunny.mobsRespawned")).toBe(true);
 
     // During 2-second blink window, attacking MUST be rejected as spawn_protected
-    const duringProtect = sunnyMeadowDefinition.validateAction({ state, now: respawnTime + 1000 }, {
+    const duringProtectAction = {
       playerId: "p_0",
       clientActionId: "atk_during_blink",
       expectedVersion: state.version,
       type: "attackMob",
       payload: { mobId: targetMobId, knockDir: 1 }
-    });
-    expect(duringProtect.ok).toBe(false);
-    if (!duringProtect.ok) {
-      expect(duringProtect.code).toBe("spawn_protected");
-    }
+    };
+    // Losing a race is not an error: the action is accepted and changes nothing.
+    expect(sunnyMeadowDefinition.validateAction({ state, now: respawnTime + 1000 }, duringProtectAction)).toEqual({ ok: true });
+    const duringProtect = sunnyMeadowDefinition.applyAction({ state: structuredClone(state), now: respawnTime + 1000 }, duringProtectAction);
+    expect(duringProtect.state).toEqual(state);
+    expect(duringProtect.events).toEqual([expect.objectContaining({ type: "sunny.actionIgnored", visibility: "private" })]);
+    expect(duringProtect.events[0]!.payload).toMatchObject({ action: "attackMob", reason: "spawn_protected" });
 
     // After 2 seconds, attacking is allowed again
     const afterProtect = sunnyMeadowDefinition.validateAction(
@@ -329,14 +331,18 @@ describe("@bighouse/sunny-meadow stages, progression, respawn & scale", () => {
     }).state;
 
     // Duplicate grab by pA in the same cycle is rejected
-    const pickADup = sunnyMeadowDefinition.validateAction({ state, now: now + 250 }, {
+    const pickADupAction = {
       playerId: "pA",
       clientActionId: "pick_a_dup",
       expectedVersion: state.version,
       type: "collectItem",
       payload: { itemId: coinId }
-    });
-    expect(pickADup.ok).toBe(false);
+    };
+    // Losing a race is not an error: the action is accepted and changes nothing.
+    expect(sunnyMeadowDefinition.validateAction({ state, now: now + 250 }, pickADupAction)).toEqual({ ok: true });
+    const pickADup = sunnyMeadowDefinition.applyAction({ state: structuredClone(state), now: now + 250 }, pickADupAction);
+    expect(pickADup.state).toEqual(state);
+    expect(pickADup.events).toEqual([expect.objectContaining({ type: "sunny.actionIgnored", visibility: "private" })]);
 
     expect((state.playerStates.pA as { coins: number }).coins).toBe(1);
     expect((state.playerStates.pB as { coins: number }).coins).toBe(1);
@@ -398,14 +404,18 @@ describe("@bighouse/sunny-meadow stages, progression, respawn & scale", () => {
     expect((state.playerStates.pC as { xp: number }).xp).toBeGreaterThan(0);
 
     // After grace window expires (2000ms later), hitting dead mob is rejected
-    const expiredHit = sunnyMeadowDefinition.validateAction({ state, now: t + 2000 }, {
+    const expiredHitAction = {
       playerId: "pC",
       clientActionId: "coop_c_too_late",
       expectedVersion: state.version,
       type: "attackMob",
       payload: { mobId, knockDir: 1 }
-    });
-    expect(expiredHit.ok).toBe(false);
+    };
+    // Losing a race is not an error: the action is accepted and changes nothing.
+    expect(sunnyMeadowDefinition.validateAction({ state, now: t + 2000 }, expiredHitAction)).toEqual({ ok: true });
+    const expiredHit = sunnyMeadowDefinition.applyAction({ state: structuredClone(state), now: t + 2000 }, expiredHitAction);
+    expect(expiredHit.state).toEqual(state);
+    expect(expiredHit.events).toEqual([expect.objectContaining({ type: "sunny.actionIgnored", visibility: "private" })]);
   });
 });
 
@@ -489,5 +499,93 @@ describe("@bighouse/sunny-meadow server hardening", () => {
     };
     expect(Object.keys(Object.values(view.mobs)[0]!).sort()).toEqual(["alive", "hp", "inCombat", "maxHp", "spawnProtectUntil"]);
     expect(Object.keys(Object.values(view.items)[0]!)).toEqual(["available"]);
+  });
+});
+
+describe("@bighouse/sunny-meadow death and revival", () => {
+  const now = 1_700_000_000_000;
+
+  function downedPlayer(): RoomState {
+    const room = { roomId: "room_death", gameId: "sunny-meadow", mode: "default", minPlayers: 1, maxPlayers: 500, config: {}, createdAt: now };
+    let state: RoomState = {
+      room,
+      phase: "active",
+      version: 1,
+      players: [],
+      stageState: sunnyMeadowDefinition.initialStageState({ room, players: [], now }),
+      playerStates: {},
+      updatedAt: now
+    };
+    const seat = { playerId: "p1", displayName: "p1", seat: 0, connected: true, ready: true, joinedAt: now };
+    state.players.push(seat);
+    state = sunnyMeadowDefinition.onPlayerJoin!({ state, now }, seat, null).state;
+    Object.assign(state.playerStates.p1!, { xp: 37, coins: 5, level: 3 });
+    return act(state, "playerHurt", { amount: 99_999 }).state;
+  }
+
+  function act(state: RoomState, type: string, payload: Record<string, unknown> = {}, at = now + 1) {
+    const action = { playerId: "p1", clientActionId: `${type}-${at}`, expectedVersion: 0, type, payload };
+    expect(sunnyMeadowDefinition.validateAction({ state, now: at }, action)).toEqual({ ok: true });
+    return sunnyMeadowDefinition.applyAction({ state: structuredClone(state), now: at }, action);
+  }
+
+  const player = (state: RoomState) => state.playerStates.p1 as { dead?: boolean; hp: number; xp: number; coins: number; level: number; maxHp: number };
+
+  it("leaves a player down, with experience and coins intact, until they revive", () => {
+    const state = downedPlayer();
+    expect(player(state)).toMatchObject({ dead: true, hp: 0, xp: 37, coins: 5 });
+  });
+
+  it("announces the death with what reviving will cost", () => {
+    const room = downedPlayer();
+    const fresh = sunnyMeadowDefinition.onPlayerJoin!(
+      { state: { ...room, players: [...room.players, { playerId: "p2", displayName: "p2", seat: 1, connected: true, ready: true, joinedAt: now }] }, now },
+      { playerId: "p2", displayName: "p2", seat: 1, connected: true, ready: true, joinedAt: now },
+      null
+    ).state;
+    Object.assign(fresh.playerStates.p2!, { xp: 11, coins: 2 });
+    const died = sunnyMeadowDefinition.applyAction(
+      { state: fresh, now: now + 5 },
+      { playerId: "p2", clientActionId: "die", expectedVersion: 0, type: "playerHurt", payload: { amount: 99_999 } }
+    );
+    expect(died.events).toContainEqual(
+      expect.objectContaining({ type: "sunny.playerDied", payload: expect.objectContaining({ playerId: "p2", lostXp: 11, lostCoins: 2 }) })
+    );
+  });
+
+  it("ignores everything a downed player tries except reviving", () => {
+    const state = downedPlayer();
+    for (const [type, payload] of [
+      ["attackMob", { mobId: "s1_mob_1a" }],
+      ["usePotion", {}],
+      ["changeStage", { targetStageId: "stage-2" }],
+      ["playerHurt", { amount: 5 }],
+      ["checkpoint", { x: 10, y: 10 }]
+    ] as const) {
+      const result = act(state, type, payload);
+      expect(result.state).toEqual(state);
+      expect(result.events).toEqual([expect.objectContaining({ type: "sunny.actionIgnored" })]);
+    }
+    expect(sunnyMeadowDefinition.handleSignal!({ state, now }, "p1", { type: "playerPose", payload: { x: 50, y: 50 } })).toBeUndefined();
+  });
+
+  it("revives at 60% health and takes the experience toward the next level and all coins", () => {
+    const revived = act(downedPlayer(), "revive");
+    const p = player(revived.state);
+    expect(p.dead).toBeUndefined();
+    expect(p).toMatchObject({ xp: 0, coins: 0, level: 3 });
+    expect(p.hp).toBe(Math.max(20, Math.round(p.maxHp * 0.6)));
+    expect(revived.events).toContainEqual(
+      expect.objectContaining({ type: "sunny.playerRespawned", payload: expect.objectContaining({ playerId: "p1", lostXp: 37, lostCoins: 5 }) })
+    );
+    // Reviving while standing is a harmless no-op.
+    const again = act(revived.state, "revive", {}, now + 2);
+    expect(again.state).toEqual(revived.state);
+  });
+
+  it("saves the revived, penalised profile when a player leaves while down", () => {
+    const profile = sunnyMeadowDefinition.extractPlayerProfile!({ state: downedPlayer(), now }, "p1") as { xp: number; coins: number; hp: number; level: number };
+    expect(profile).toMatchObject({ xp: 0, coins: 0, level: 3 });
+    expect(profile.hp).toBeGreaterThan(0);
   });
 });

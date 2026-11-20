@@ -303,6 +303,17 @@ export type WorldPlayerState = {
   equippedWeaponId: string;
   highestStageNumber: number;
   lastUpdatedAt: number;
+  /**
+   * Set while the player is down and waiting to revive. A dead player takes no
+   * actions and does not move. Absent on states saved before death existed.
+   */
+  dead?: boolean;
+};
+
+/** What a player gives up to revive. */
+export type DeathPenalty = {
+  lostXp: number;
+  lostCoins: number;
 };
 
 export type ServerMobState = {

@@ -32,6 +32,7 @@ import {
 } from "./progression";
 import { ALL_STAGES, getStageById, STAGES_BY_ID } from "./stages/index";
 import type {
+  DeathPenalty,
   PersistedPlayerProfile,
   RemotePlayerView,
   ServerItemState,
@@ -293,6 +294,506 @@ function clampToStage(stageId: string, rawX: number, rawY: number): { x: number;
   };
 }
 
+/** Reviving costs the experience earned toward the next level and every coin held. */
+export function deathPenaltyOf(ps: Pick<WorldPlayerState, "xp" | "coins">): DeathPenalty {
+  return { lostXp: Math.max(0, ps.xp), lostCoins: Math.max(0, ps.coins) };
+}
+
+/** Pays the death penalty and stands the player back up at 60% health. */
+function applyRevival(ps: WorldPlayerState): void {
+  ps.xp = 0;
+  ps.coins = 0;
+  ps.hp = Math.max(20, Math.round(ps.maxHp * 0.6));
+  ps.vx = 0;
+  ps.vy = 0;
+  delete ps.dead;
+}
+
+type ActionCheck = { ok: true } | { ok: false; code: string; message: string; stale?: true };
+
+/**
+ * Decides whether an action can take effect. `stale` marks the outcomes that are
+ * normal in a shared, optimistic world: another player got there first, the
+ * target is on a stage this player has left, or the player is down. Those are
+ * not errors and are never shown to the player.
+ */
+function checkAction(context: GameContext, action: ClientGameAction): ActionCheck {
+  const ps = getPlayerState(context.state.playerStates, action.playerId);
+  if (!ps) return { ok: false, code: "player_not_found", message: "Player state missing" };
+  const world = getWorld(context.state.stageState);
+  const stageRt = world.stages[ps.stageId];
+  if (!stageRt) return { ok: false, code: "invalid_action", message: "Unknown player stage" };
+
+  if (action.type === "revive") {
+    return ps.dead ? { ok: true } : { ok: false, code: "not_dead", message: "Player is not down", stale: true };
+  }
+  if (ps.dead) {
+    return { ok: false, code: "player_dead", message: "Player is down", stale: true };
+  }
+
+  switch (action.type) {
+    case "attackMob": {
+      const mobId = typeof action.payload.mobId === "string" ? action.payload.mobId : "";
+      const mob = stageRt.mobs[mobId];
+      if (!mob) {
+        return { ok: false, code: "mob_not_here", message: "Unknown target mob", stale: true };
+      }
+      // Strict 2-second spawn protection: blinking respawned mobs cannot be damaged!
+      if (mob.alive && context.now < mob.spawnProtectUntil) {
+        return { ok: false, code: "spawn_protected", message: "Respawning mob is temporarily invulnerable", stale: true };
+      }
+      if (!mob.alive) {
+        // Cooperative simultaneous kill grace window:
+        // If another player just killed this mob within MOB_KILL_GRACE_MS and this player
+        // hasn't received XP for this kill cycle yet, allow optimistic hit to resolve with shared XP!
+        const defeatedAt = mob.defeatedAt ?? 0;
+        const rewarded = mob.rewardedPlayers ?? [];
+        const withinGrace = defeatedAt > 0 && context.now - defeatedAt <= MOB_KILL_GRACE_MS;
+        if (!withinGrace || rewarded.includes(action.playerId)) {
+          return { ok: false, code: "mob_defeated", message: "Target mob is already defeated", stale: true };
+        }
+      }
+      return { ok: true };
+    }
+    case "collectItem": {
+      const itemId = typeof action.payload.itemId === "string" ? action.payload.itemId : "";
+      const item = stageRt.items[itemId];
+      if (!item) return { ok: false, code: "item_not_here", message: "Unknown item", stale: true };
+      const tpl = ITEM_CATALOG[item.templateId];
+      if (!tpl) return { ok: false, code: "invalid_action", message: "Unknown item template" };
+      if (tpl.category !== "weapon" && !item.available) {
+        // Cooperative simultaneous item pickup grace window:
+        // Allow another player who touched the item nearly simultaneously to also claim it!
+        const collectedAt = item.collectedAt ?? 0;
+        const collectedBy = item.collectedBy ?? [];
+        const withinGrace = collectedAt > 0 && context.now - collectedAt <= ITEM_COOP_GRACE_MS;
+        if (!withinGrace || collectedBy.includes(action.playerId)) {
+          return { ok: false, code: "item_taken", message: "Item is respawning", stale: true };
+        }
+      }
+      return { ok: true };
+    }
+    case "usePotion": {
+      if (ps.potions <= 0 || ps.hp >= ps.maxHp) {
+        return { ok: false, code: "potion_unusable", message: "Cannot use potion right now", stale: true };
+      }
+      return { ok: true };
+    }
+    case "switchWeapon": {
+      const wid = typeof action.payload.weaponId === "string" ? action.payload.weaponId : "";
+      if (!ps.unlockedWeapons.includes(wid)) {
+        return { ok: false, code: "invalid_action", message: "Weapon not unlocked" };
+      }
+      return { ok: true };
+    }
+    case "playerHurt": {
+      const amt = Number(action.payload.amount);
+      if (!Number.isFinite(amt) || amt <= 0) {
+        return { ok: false, code: "invalid_action", message: "Invalid damage amount" };
+      }
+      return { ok: true };
+    }
+    case "changeStage": {
+      const targetStageId = typeof action.payload.targetStageId === "string" ? action.payload.targetStageId : "";
+      const targetStage = STAGES_BY_ID[targetStageId];
+      if (!targetStage) {
+        return { ok: false, code: "invalid_action", message: "Unknown target stage" };
+      }
+      if (
+        targetStage.meta.stageNumber > ps.highestStageNumber + 1 &&
+        ps.level < targetStage.meta.minEntryLevel
+      ) {
+        return {
+          ok: false,
+          code: "level_too_low",
+          message: `Lv.${targetStage.meta.minEntryLevel} 이상부터 입장할 수 있습니다.`
+        };
+      }
+      return { ok: true };
+    }
+    case "checkpoint":
+      return { ok: true };
+    default:
+      return { ok: false, code: "invalid_action", message: `Unsupported action '${action.type}'` };
+  }
+}
+
+function applyCheckedAction(context: GameContext, action: ClientGameAction): ActionResult {
+  const state = context.state;
+  const now = context.now;
+  const world = getWorld(state.stageState);
+  const ps = getPlayerState(state.playerStates, action.playerId)!;
+  const stageRt = world.stages[ps.stageId]!;
+  const events: GameEvent[] = [];
+
+  if (action.type === "attackMob") {
+    const mobId = String(action.payload.mobId);
+    const mob = stageRt.mobs[mobId]!;
+    const mobTpl = MOB_CATALOG[mob.templateId]!;
+    const weapon = WEAPON_CATALOG[ps.equippedWeaponId] ?? WEAPON_CATALOG.wooden_sword!;
+    const clientHitId = typeof action.payload.clientHitId === "string" ? action.payload.clientHitId : undefined;
+
+    // Deterministic hit roll shared with client prediction
+    const roll =
+      typeof action.payload.damageRoll === "number" && Number.isFinite(action.payload.damageRoll)
+        ? action.payload.damageRoll
+        : ((now + ps.score + mob.hp * 17) % 100) / 100;
+    const totalAtk = ps.baseAtk + weapon.atk;
+    const { damage, isCrit } = computeDeterministicHit(totalAtk, weapon.critChance, weapon.critMult, roll);
+    const knockDir = Number(action.payload.knockDir) < 0 ? -1 : 1;
+
+    mob.contributors = mob.contributors ?? {};
+    mob.rewardedPlayers = mob.rewardedPlayers ?? [];
+
+    const awardKillRewardTo = (recipientId: string, persistList: string[]) => {
+      if (mob.rewardedPlayers!.includes(recipientId)) return;
+      const recipient = getPlayerState(state.playerStates, recipientId);
+      if (!recipient) return;
+      mob.rewardedPlayers!.push(recipientId);
+      persistList.push(recipientId);
+
+      const { gainedXp, efficiency } = computeEffectiveXp(recipient.level, mobTpl.level, mobTpl.exp);
+      const lvlResult = applyExperienceGain(recipient.level, recipient.xp, gainedXp);
+      recipient.level = lvlResult.level;
+      recipient.xp = lvlResult.xp;
+      recipient.xpToNext = lvlResult.xpToNext;
+      recipient.score += mobTpl.score;
+      recipient.mobsDefeated += 1;
+      recipient.lastUpdatedAt = now;
+
+      events.push(
+        makeEvent(
+          "sunny.mobDefeated",
+          {
+            stageId: ps.stageId,
+            mobId,
+            killerPlayerId: recipient.playerId,
+            killerName: recipient.displayName,
+            gainedXp,
+            xpEfficiency: efficiency,
+            score: mobTpl.score,
+            respawnAt: mob.respawnAt,
+            ...(recipientId === ps.playerId && clientHitId ? { clientHitId } : {}),
+            persistPlayerIds: [recipient.playerId]
+          },
+          now
+        )
+      );
+
+      if (lvlResult.levelsGained > 0) {
+        recipient.maxHp = computePlayerMaxHp(recipient.level, recipient.goldenHeartBonus);
+        recipient.baseAtk = computePlayerBaseAtk(recipient.level);
+        recipient.hp = recipient.maxHp;
+        for (const st of ALL_STAGES) {
+          if (recipient.level >= st.meta.minEntryLevel && st.meta.stageNumber > recipient.highestStageNumber) {
+            recipient.highestStageNumber = st.meta.stageNumber;
+          }
+        }
+        events.push(
+          makeEvent(
+            "sunny.levelUp",
+            {
+              stageId: ps.stageId,
+              playerId: recipient.playerId,
+              displayName: recipient.displayName,
+              level: recipient.level,
+              levelsGained: lvlResult.levelsGained,
+              maxHp: recipient.maxHp,
+              baseAtk: recipient.baseAtk,
+              x: recipient.x,
+              y: recipient.y,
+              persistPlayerIds: [recipient.playerId]
+            },
+            now
+          )
+        );
+      }
+
+      state.playerStates[recipient.playerId] = recipient as unknown as JsonObject;
+    };
+
+    if (!mob.alive) {
+      // Grace-window simultaneous attack right after another player defeated this mob:
+      // award full XP & score to this player too so optimistic play never feels robbed!
+      mob.contributors[ps.playerId] = (mob.contributors[ps.playerId] ?? 0) + damage;
+      const persistedIds: string[] = [];
+      awardKillRewardTo(ps.playerId, persistedIds);
+    } else {
+      mob.inCombat = true;
+      mob.lastHitAt = now;
+      mob.hp = Math.max(0, mob.hp - damage);
+      mob.contributors[ps.playerId] = (mob.contributors[ps.playerId] ?? 0) + damage;
+
+      events.push(
+        makeEvent(
+          "sunny.mobHit",
+          {
+            stageId: ps.stageId,
+            mobId,
+            attackerId: ps.playerId,
+            damage,
+            isCrit,
+            knockDir,
+            knockbackX: weapon.knockbackX,
+            knockbackY: weapon.knockbackY,
+            hp: mob.hp,
+            maxHp: mob.maxHp,
+            ...(clientHitId ? { clientHitId } : {})
+          },
+          now
+        )
+      );
+
+      if (mob.hp <= 0) {
+        mob.alive = false;
+        mob.inCombat = false;
+        mob.defeatedAt = now;
+
+        // Calculate dynamic player-count-scaled respawn delay
+        const activeCount = countPlayersInStage(world, ps.stageId);
+        const allMobs = Object.values(stageRt.mobs);
+        const aliveCount = allMobs.filter((m) => m.alive).length;
+        const aliveRatio = aliveCount / Math.max(1, allMobs.length);
+        const respawnMs = computeMobRespawnMs(mobTpl.respawnSec, activeCount, aliveRatio);
+        mob.respawnAt = now + respawnMs;
+
+        // Reward EVERY player who dealt damage to this mob!
+        const persistedIds: string[] = [];
+        for (const contributorId of Object.keys(mob.contributors)) {
+          awardKillRewardTo(contributorId, persistedIds);
+        }
+      }
+    }
+  } else if (action.type === "collectItem") {
+    const itemId = String(action.payload.itemId);
+    const item = stageRt.items[itemId]!;
+    const tpl = ITEM_CATALOG[item.templateId]!;
+    const clientPickupId =
+      typeof action.payload.clientPickupId === "string" ? action.payload.clientPickupId : undefined;
+    // A weapon pickup never becomes unavailable, so it pays out only the first time.
+    const alreadyOwned = tpl.category === "weapon" && Boolean(tpl.weaponId) && ps.unlockedWeapons.includes(tpl.weaponId!);
+    if (!alreadyOwned) ps.score += tpl.score;
+
+    if (tpl.category === "weapon" && tpl.weaponId) {
+      if (!ps.unlockedWeapons.includes(tpl.weaponId)) {
+        ps.unlockedWeapons = [...ps.unlockedWeapons, tpl.weaponId].sort(
+          (a, b) => WEAPON_ORDER.indexOf(a as (typeof WEAPON_ORDER)[number]) - WEAPON_ORDER.indexOf(b as (typeof WEAPON_ORDER)[number])
+        );
+      }
+      ps.equippedWeaponId = tpl.weaponId;
+      events.push(
+        makeEvent(
+          "sunny.weaponUnlocked",
+          {
+            stageId: ps.stageId,
+            playerId: ps.playerId,
+            itemId,
+            weaponId: tpl.weaponId,
+            weaponName: tpl.name,
+            ...(clientPickupId ? { clientPickupId } : {}),
+            persistProfile: true
+          },
+          now,
+          "private",
+          ps.playerId
+        )
+      );
+    } else {
+      item.collectedBy = item.collectedBy ?? [];
+      const isFirstCollector = item.available;
+      if (isFirstCollector) {
+        item.available = false;
+        item.collectedAt = now;
+        const activeCount = countPlayersInStage(world, ps.stageId);
+        item.respawnAt = now + computeItemRespawnMs(tpl.respawnSec, activeCount);
+      }
+      if (!item.collectedBy.includes(ps.playerId)) {
+        item.collectedBy.push(ps.playerId);
+      }
+
+      if (tpl.category === "coin") {
+        ps.coins += 1;
+      } else if (tpl.category === "heal") {
+        const healAmt = Math.max(tpl.healAmount ?? 30, Math.round(ps.maxHp * 0.25));
+        ps.hp = Math.min(ps.maxHp, ps.hp + healAmt);
+      } else if (tpl.category === "potion") {
+        ps.potions += tpl.potionCount ?? 1;
+      } else if (tpl.category === "max_hp") {
+        ps.goldenHeartBonus += tpl.maxHpBonus ?? 20;
+        ps.maxHp = computePlayerMaxHp(ps.level, ps.goldenHeartBonus);
+        ps.hp = Math.min(ps.maxHp, ps.hp + (tpl.healAmount ?? 60));
+      }
+
+      events.push(
+        makeEvent(
+          "sunny.itemCollected",
+          {
+            stageId: ps.stageId,
+            itemId,
+            templateId: tpl.id,
+            collectorId: ps.playerId,
+            respawnAt: item.respawnAt,
+            ...(clientPickupId ? { clientPickupId } : {}),
+            persistProfile: true
+          },
+          now
+        )
+      );
+    }
+  } else if (action.type === "usePotion") {
+    const clientPotionId =
+      typeof action.payload.clientPotionId === "string" ? action.payload.clientPotionId : undefined;
+    ps.potions = Math.max(0, ps.potions - 1);
+    const healAmt = Math.max(
+      PLAYER_CONFIG.minPotionHeal,
+      Math.round(ps.maxHp * PLAYER_CONFIG.potionHealRatio)
+    );
+    const before = ps.hp;
+    ps.hp = Math.min(ps.maxHp, ps.hp + healAmt);
+    events.push(
+      makeEvent(
+        "sunny.playerHealed",
+        {
+          stageId: ps.stageId,
+          playerId: ps.playerId,
+          amount: ps.hp - before,
+          hp: ps.hp,
+          maxHp: ps.maxHp,
+          potions: ps.potions,
+          ...(clientPotionId ? { clientPotionId } : {}),
+          persistProfile: true
+        },
+        now
+      )
+    );
+  } else if (action.type === "switchWeapon") {
+    ps.equippedWeaponId = String(action.payload.weaponId);
+    events.push(
+      makeEvent(
+        "sunny.weaponChanged",
+        {
+          stageId: ps.stageId,
+          playerId: ps.playerId,
+          weaponId: ps.equippedWeaponId,
+          persistProfile: true
+        },
+        now
+      )
+    );
+  } else if (action.type === "playerHurt") {
+    const dmg = Math.max(1, Math.min(ps.maxHp, Math.round(Number(action.payload.amount))));
+    ps.hp = Math.max(0, ps.hp - dmg);
+    if (ps.hp <= 0) {
+      // The player goes down and stays down until they choose to revive.
+      ps.dead = true;
+      ps.vx = 0;
+      ps.vy = 0;
+      events.push(
+        makeEvent(
+          "sunny.playerDied",
+          { stageId: ps.stageId, playerId: ps.playerId, ...deathPenaltyOf(ps), persistProfile: true },
+          now
+        )
+      );
+    }
+  } else if (action.type === "revive") {
+    const penalty = deathPenaltyOf(ps);
+    const stage = getStageById(ps.stageId);
+    world.joinCounter = (world.joinCounter ?? 0) + 1;
+    const pos = computeSpawnPositionNear(stage, world.joinCounter);
+    applyRevival(ps);
+    ps.x = pos.x;
+    ps.y = pos.y;
+    events.push(
+      makeEvent(
+        "sunny.playerRespawned",
+        { stageId: ps.stageId, playerId: ps.playerId, x: ps.x, y: ps.y, hp: ps.hp, ...penalty, persistProfile: true },
+        now
+      )
+    );
+  } else if (action.type === "changeStage") {
+    const prevStageId = ps.stageId;
+    const targetStageId = String(action.payload.targetStageId);
+    const targetStage = getStageById(targetStageId);
+    world.joinCounter = (world.joinCounter ?? 0) + 1;
+    const pos = computeSpawnPositionNear(targetStage, world.joinCounter);
+
+    ps.stageId = targetStage.meta.id;
+    ps.x = pos.x;
+    ps.y = pos.y;
+    ps.vx = 0;
+    ps.vy = 0;
+    ps.hp = Math.max(ps.hp, Math.round(ps.maxHp * 0.6));
+    ps.highestStageNumber = Math.max(ps.highestStageNumber, targetStage.meta.stageNumber);
+    world.playerStageMap[ps.playerId] = ps.stageId;
+
+    if (prevStageId !== ps.stageId) {
+      events.push(
+        makeEvent(
+          "sunny.playerLeft",
+          {
+            stageId: prevStageId,
+            playerId: ps.playerId,
+            stagePlayerCount: playersInStageIds(world, prevStageId).length
+          },
+          now
+        )
+      );
+    }
+    events.push(
+      makeEvent(
+        "sunny.playerJoined",
+        {
+          stageId: ps.stageId,
+          stagePlayerCount: countPlayersInStage(world, ps.stageId),
+          persistProfile: true,
+          player: {
+            playerId: ps.playerId,
+            displayName: ps.displayName,
+            stageId: ps.stageId,
+            x: ps.x,
+            y: ps.y,
+            vx: 0,
+            vy: 0,
+            facing: ps.facing,
+            animState: "idle",
+            level: ps.level,
+            hp: ps.hp,
+            maxHp: ps.maxHp,
+            equippedWeaponId: ps.equippedWeaponId
+          }
+        },
+        now
+      )
+    );
+  } else if (action.type === "checkpoint") {
+    const rawX = Number(action.payload.x);
+    const rawY = Number(action.payload.y);
+    if (Number.isFinite(rawX) && Number.isFinite(rawY)) {
+      const position = clampToStage(ps.stageId, rawX, rawY);
+      ps.x = position.x;
+      ps.y = position.y;
+    }
+    events.push(
+      makeEvent(
+        "sunny.checkpointSaved",
+        {
+          stageId: ps.stageId,
+          playerId: ps.playerId,
+          persistProfile: true
+        },
+        now,
+        "private",
+        ps.playerId
+      )
+    );
+  }
+
+  ps.lastUpdatedAt = now;
+  state.playerStates[action.playerId] = ps as unknown as JsonObject;
+  return { state, events };
+}
+
 export const sunnyMeadowDefinition = defineGameDefinition(gameMetadata, {
   initialStageState(): JsonObject {
     return buildInitialWorldState() as unknown as JsonObject;
@@ -364,8 +865,11 @@ export const sunnyMeadowDefinition = defineGameDefinition(gameMetadata, {
   },
 
   extractPlayerProfile(context, playerId): JsonObject | null {
-    const ps = getPlayerState(context.state.playerStates, playerId);
-    if (!ps) return null;
+    const current = getPlayerState(context.state.playerStates, playerId);
+    if (!current) return null;
+    // Leaving while down does not dodge the penalty: the saved profile is the revived one.
+    const ps = { ...current };
+    if (ps.dead) applyRevival(ps);
     const profile: PersistedPlayerProfile = {
       level: ps.level,
       xp: ps.xp,
@@ -397,7 +901,8 @@ export const sunnyMeadowDefinition = defineGameDefinition(gameMetadata, {
     if (signal.type !== "playerPose") return undefined;
     const world = getWorld(context.state.stageState);
     const ps = getPlayerState(context.state.playerStates, playerId);
-    if (!ps) return undefined;
+    // A player who is down does not move.
+    if (!ps || ps.dead) return undefined;
 
     const rawX = Number(signal.payload.x);
     const rawY = Number(signal.payload.y);
@@ -448,468 +953,21 @@ export const sunnyMeadowDefinition = defineGameDefinition(gameMetadata, {
   },
 
   validateAction(context: GameContext, action: ClientGameAction): ValidationResult {
-    const ps = getPlayerState(context.state.playerStates, action.playerId);
-    if (!ps) return { ok: false, code: "player_not_found", message: "Player state missing" };
-    const world = getWorld(context.state.stageState);
-    const stageRt = world.stages[ps.stageId];
-    if (!stageRt) return { ok: false, code: "invalid_action", message: "Unknown player stage" };
-
-    switch (action.type) {
-      case "attackMob": {
-        const mobId = typeof action.payload.mobId === "string" ? action.payload.mobId : "";
-        const mob = stageRt.mobs[mobId];
-        if (!mob) {
-          return { ok: false, code: "invalid_action", message: "Unknown target mob" };
-        }
-        // Strict 2-second spawn protection: blinking respawned mobs cannot be damaged!
-        if (mob.alive && context.now < mob.spawnProtectUntil) {
-          return { ok: false, code: "spawn_protected", message: "Respawning mob is temporarily invulnerable" };
-        }
-        if (!mob.alive) {
-          // Cooperative simultaneous kill grace window:
-          // If another player just killed this mob within MOB_KILL_GRACE_MS and this player
-          // hasn't received XP for this kill cycle yet, allow optimistic hit to resolve with shared XP!
-          const defeatedAt = mob.defeatedAt ?? 0;
-          const rewarded = mob.rewardedPlayers ?? [];
-          const withinGrace = defeatedAt > 0 && context.now - defeatedAt <= MOB_KILL_GRACE_MS;
-          if (!withinGrace || rewarded.includes(action.playerId)) {
-            return { ok: false, code: "invalid_action", message: "Target mob is already defeated" };
-          }
-        }
-        return { ok: true };
-      }
-      case "collectItem": {
-        const itemId = typeof action.payload.itemId === "string" ? action.payload.itemId : "";
-        const item = stageRt.items[itemId];
-        if (!item) return { ok: false, code: "invalid_action", message: "Unknown item" };
-        const tpl = ITEM_CATALOG[item.templateId];
-        if (!tpl) return { ok: false, code: "invalid_action", message: "Unknown item template" };
-        if (tpl.category !== "weapon" && !item.available) {
-          // Cooperative simultaneous item pickup grace window:
-          // Allow another player who touched the item nearly simultaneously to also claim it!
-          const collectedAt = item.collectedAt ?? 0;
-          const collectedBy = item.collectedBy ?? [];
-          const withinGrace = collectedAt > 0 && context.now - collectedAt <= ITEM_COOP_GRACE_MS;
-          if (!withinGrace || collectedBy.includes(action.playerId)) {
-            return { ok: false, code: "invalid_action", message: "Item is respawning" };
-          }
-        }
-        return { ok: true };
-      }
-      case "usePotion": {
-        if (ps.potions <= 0 || ps.hp >= ps.maxHp) {
-          return { ok: false, code: "invalid_action", message: "Cannot use potion right now" };
-        }
-        return { ok: true };
-      }
-      case "switchWeapon": {
-        const wid = typeof action.payload.weaponId === "string" ? action.payload.weaponId : "";
-        if (!ps.unlockedWeapons.includes(wid)) {
-          return { ok: false, code: "invalid_action", message: "Weapon not unlocked" };
-        }
-        return { ok: true };
-      }
-      case "playerHurt": {
-        const amt = Number(action.payload.amount);
-        if (!Number.isFinite(amt) || amt <= 0) {
-          return { ok: false, code: "invalid_action", message: "Invalid damage amount" };
-        }
-        return { ok: true };
-      }
-      case "changeStage": {
-        const targetStageId = typeof action.payload.targetStageId === "string" ? action.payload.targetStageId : "";
-        const targetStage = STAGES_BY_ID[targetStageId];
-        if (!targetStage) {
-          return { ok: false, code: "invalid_action", message: "Unknown target stage" };
-        }
-        if (
-          targetStage.meta.stageNumber > ps.highestStageNumber + 1 &&
-          ps.level < targetStage.meta.minEntryLevel
-        ) {
-          return {
-            ok: false,
-            code: "level_too_low",
-            message: `Lv.${targetStage.meta.minEntryLevel} 이상부터 입장할 수 있습니다.`
-          };
-        }
-        return { ok: true };
-      }
-      case "checkpoint":
-        return { ok: true };
-      default:
-        return { ok: false, code: "invalid_action", message: `Unsupported action '${action.type}'` };
-    }
+    const check = checkAction(context, action);
+    // An action that lost a race is accepted and applied as a no-op, so the player
+    // gets a fresh snapshot instead of an error message.
+    return check.ok || check.stale ? { ok: true } : check;
   },
 
   applyAction(context: GameContext, action: ClientGameAction): ActionResult {
-    const state = context.state;
-    const now = context.now;
-    const world = getWorld(state.stageState);
-    const ps = getPlayerState(state.playerStates, action.playerId)!;
-    const stageRt = world.stages[ps.stageId]!;
-    const events: GameEvent[] = [];
-
-    if (action.type === "attackMob") {
-      const mobId = String(action.payload.mobId);
-      const mob = stageRt.mobs[mobId]!;
-      const mobTpl = MOB_CATALOG[mob.templateId]!;
-      const weapon = WEAPON_CATALOG[ps.equippedWeaponId] ?? WEAPON_CATALOG.wooden_sword!;
-      const clientHitId = typeof action.payload.clientHitId === "string" ? action.payload.clientHitId : undefined;
-
-      // Deterministic hit roll shared with client prediction
-      const roll =
-        typeof action.payload.damageRoll === "number" && Number.isFinite(action.payload.damageRoll)
-          ? action.payload.damageRoll
-          : ((now + ps.score + mob.hp * 17) % 100) / 100;
-      const totalAtk = ps.baseAtk + weapon.atk;
-      const { damage, isCrit } = computeDeterministicHit(totalAtk, weapon.critChance, weapon.critMult, roll);
-      const knockDir = Number(action.payload.knockDir) < 0 ? -1 : 1;
-
-      mob.contributors = mob.contributors ?? {};
-      mob.rewardedPlayers = mob.rewardedPlayers ?? [];
-
-      const awardKillRewardTo = (recipientId: string, persistList: string[]) => {
-        if (mob.rewardedPlayers!.includes(recipientId)) return;
-        const recipient = getPlayerState(state.playerStates, recipientId);
-        if (!recipient) return;
-        mob.rewardedPlayers!.push(recipientId);
-        persistList.push(recipientId);
-
-        const { gainedXp, efficiency } = computeEffectiveXp(recipient.level, mobTpl.level, mobTpl.exp);
-        const lvlResult = applyExperienceGain(recipient.level, recipient.xp, gainedXp);
-        recipient.level = lvlResult.level;
-        recipient.xp = lvlResult.xp;
-        recipient.xpToNext = lvlResult.xpToNext;
-        recipient.score += mobTpl.score;
-        recipient.mobsDefeated += 1;
-        recipient.lastUpdatedAt = now;
-
-        events.push(
-          makeEvent(
-            "sunny.mobDefeated",
-            {
-              stageId: ps.stageId,
-              mobId,
-              killerPlayerId: recipient.playerId,
-              killerName: recipient.displayName,
-              gainedXp,
-              xpEfficiency: efficiency,
-              score: mobTpl.score,
-              respawnAt: mob.respawnAt,
-              ...(recipientId === ps.playerId && clientHitId ? { clientHitId } : {}),
-              persistPlayerIds: [recipient.playerId]
-            },
-            now
-          )
-        );
-
-        if (lvlResult.levelsGained > 0) {
-          recipient.maxHp = computePlayerMaxHp(recipient.level, recipient.goldenHeartBonus);
-          recipient.baseAtk = computePlayerBaseAtk(recipient.level);
-          recipient.hp = recipient.maxHp;
-          for (const st of ALL_STAGES) {
-            if (recipient.level >= st.meta.minEntryLevel && st.meta.stageNumber > recipient.highestStageNumber) {
-              recipient.highestStageNumber = st.meta.stageNumber;
-            }
-          }
-          events.push(
-            makeEvent(
-              "sunny.levelUp",
-              {
-                stageId: ps.stageId,
-                playerId: recipient.playerId,
-                displayName: recipient.displayName,
-                level: recipient.level,
-                levelsGained: lvlResult.levelsGained,
-                maxHp: recipient.maxHp,
-                baseAtk: recipient.baseAtk,
-                x: recipient.x,
-                y: recipient.y,
-                persistPlayerIds: [recipient.playerId]
-              },
-              now
-            )
-          );
-        }
-
-        state.playerStates[recipient.playerId] = recipient as unknown as JsonObject;
+    const check = checkAction(context, action);
+    if (!check.ok) {
+      return {
+        state: context.state,
+        events: [makeEvent("sunny.actionIgnored", { action: action.type, reason: check.code }, context.now, "private", action.playerId)]
       };
-
-      if (!mob.alive) {
-        // Grace-window simultaneous attack right after another player defeated this mob:
-        // award full XP & score to this player too so optimistic play never feels robbed!
-        mob.contributors[ps.playerId] = (mob.contributors[ps.playerId] ?? 0) + damage;
-        const persistedIds: string[] = [];
-        awardKillRewardTo(ps.playerId, persistedIds);
-      } else {
-        mob.inCombat = true;
-        mob.lastHitAt = now;
-        mob.hp = Math.max(0, mob.hp - damage);
-        mob.contributors[ps.playerId] = (mob.contributors[ps.playerId] ?? 0) + damage;
-
-        events.push(
-          makeEvent(
-            "sunny.mobHit",
-            {
-              stageId: ps.stageId,
-              mobId,
-              attackerId: ps.playerId,
-              damage,
-              isCrit,
-              knockDir,
-              knockbackX: weapon.knockbackX,
-              knockbackY: weapon.knockbackY,
-              hp: mob.hp,
-              maxHp: mob.maxHp,
-              ...(clientHitId ? { clientHitId } : {})
-            },
-            now
-          )
-        );
-
-        if (mob.hp <= 0) {
-          mob.alive = false;
-          mob.inCombat = false;
-          mob.defeatedAt = now;
-
-          // Calculate dynamic player-count-scaled respawn delay
-          const activeCount = countPlayersInStage(world, ps.stageId);
-          const allMobs = Object.values(stageRt.mobs);
-          const aliveCount = allMobs.filter((m) => m.alive).length;
-          const aliveRatio = aliveCount / Math.max(1, allMobs.length);
-          const respawnMs = computeMobRespawnMs(mobTpl.respawnSec, activeCount, aliveRatio);
-          mob.respawnAt = now + respawnMs;
-
-          // Reward EVERY player who dealt damage to this mob!
-          const persistedIds: string[] = [];
-          for (const contributorId of Object.keys(mob.contributors)) {
-            awardKillRewardTo(contributorId, persistedIds);
-          }
-        }
-      }
-    } else if (action.type === "collectItem") {
-      const itemId = String(action.payload.itemId);
-      const item = stageRt.items[itemId]!;
-      const tpl = ITEM_CATALOG[item.templateId]!;
-      const clientPickupId =
-        typeof action.payload.clientPickupId === "string" ? action.payload.clientPickupId : undefined;
-      // A weapon pickup never becomes unavailable, so it pays out only the first time.
-      const alreadyOwned = tpl.category === "weapon" && Boolean(tpl.weaponId) && ps.unlockedWeapons.includes(tpl.weaponId!);
-      if (!alreadyOwned) ps.score += tpl.score;
-
-      if (tpl.category === "weapon" && tpl.weaponId) {
-        if (!ps.unlockedWeapons.includes(tpl.weaponId)) {
-          ps.unlockedWeapons = [...ps.unlockedWeapons, tpl.weaponId].sort(
-            (a, b) => WEAPON_ORDER.indexOf(a as (typeof WEAPON_ORDER)[number]) - WEAPON_ORDER.indexOf(b as (typeof WEAPON_ORDER)[number])
-          );
-        }
-        ps.equippedWeaponId = tpl.weaponId;
-        events.push(
-          makeEvent(
-            "sunny.weaponUnlocked",
-            {
-              stageId: ps.stageId,
-              playerId: ps.playerId,
-              itemId,
-              weaponId: tpl.weaponId,
-              weaponName: tpl.name,
-              ...(clientPickupId ? { clientPickupId } : {}),
-              persistProfile: true
-            },
-            now,
-            "private",
-            ps.playerId
-          )
-        );
-      } else {
-        item.collectedBy = item.collectedBy ?? [];
-        const isFirstCollector = item.available;
-        if (isFirstCollector) {
-          item.available = false;
-          item.collectedAt = now;
-          const activeCount = countPlayersInStage(world, ps.stageId);
-          item.respawnAt = now + computeItemRespawnMs(tpl.respawnSec, activeCount);
-        }
-        if (!item.collectedBy.includes(ps.playerId)) {
-          item.collectedBy.push(ps.playerId);
-        }
-
-        if (tpl.category === "coin") {
-          ps.coins += 1;
-        } else if (tpl.category === "heal") {
-          const healAmt = Math.max(tpl.healAmount ?? 30, Math.round(ps.maxHp * 0.25));
-          ps.hp = Math.min(ps.maxHp, ps.hp + healAmt);
-        } else if (tpl.category === "potion") {
-          ps.potions += tpl.potionCount ?? 1;
-        } else if (tpl.category === "max_hp") {
-          ps.goldenHeartBonus += tpl.maxHpBonus ?? 20;
-          ps.maxHp = computePlayerMaxHp(ps.level, ps.goldenHeartBonus);
-          ps.hp = Math.min(ps.maxHp, ps.hp + (tpl.healAmount ?? 60));
-        }
-
-        events.push(
-          makeEvent(
-            "sunny.itemCollected",
-            {
-              stageId: ps.stageId,
-              itemId,
-              templateId: tpl.id,
-              collectorId: ps.playerId,
-              respawnAt: item.respawnAt,
-              ...(clientPickupId ? { clientPickupId } : {}),
-              persistProfile: true
-            },
-            now
-          )
-        );
-      }
-    } else if (action.type === "usePotion") {
-      const clientPotionId =
-        typeof action.payload.clientPotionId === "string" ? action.payload.clientPotionId : undefined;
-      ps.potions = Math.max(0, ps.potions - 1);
-      const healAmt = Math.max(
-        PLAYER_CONFIG.minPotionHeal,
-        Math.round(ps.maxHp * PLAYER_CONFIG.potionHealRatio)
-      );
-      const before = ps.hp;
-      ps.hp = Math.min(ps.maxHp, ps.hp + healAmt);
-      events.push(
-        makeEvent(
-          "sunny.playerHealed",
-          {
-            stageId: ps.stageId,
-            playerId: ps.playerId,
-            amount: ps.hp - before,
-            hp: ps.hp,
-            maxHp: ps.maxHp,
-            potions: ps.potions,
-            ...(clientPotionId ? { clientPotionId } : {}),
-            persistProfile: true
-          },
-          now
-        )
-      );
-    } else if (action.type === "switchWeapon") {
-      ps.equippedWeaponId = String(action.payload.weaponId);
-      events.push(
-        makeEvent(
-          "sunny.weaponChanged",
-          {
-            stageId: ps.stageId,
-            playerId: ps.playerId,
-            weaponId: ps.equippedWeaponId,
-            persistProfile: true
-          },
-          now
-        )
-      );
-    } else if (action.type === "playerHurt") {
-      const dmg = Math.max(1, Math.min(ps.maxHp, Math.round(Number(action.payload.amount))));
-      ps.hp = Math.max(0, ps.hp - dmg);
-      if (ps.hp <= 0) {
-        // Gentle MMO revival near stage spawn with 60% HP
-        const stage = getStageById(ps.stageId);
-        world.joinCounter = (world.joinCounter ?? 0) + 1;
-        const pos = computeSpawnPositionNear(stage, world.joinCounter);
-        ps.x = pos.x;
-        ps.y = pos.y;
-        ps.hp = Math.max(20, Math.round(ps.maxHp * 0.6));
-        events.push(
-          makeEvent(
-            "sunny.playerRespawned",
-            {
-              stageId: ps.stageId,
-              playerId: ps.playerId,
-              x: ps.x,
-              y: ps.y,
-              hp: ps.hp,
-              persistProfile: true
-            },
-            now
-          )
-        );
-      }
-    } else if (action.type === "changeStage") {
-      const prevStageId = ps.stageId;
-      const targetStageId = String(action.payload.targetStageId);
-      const targetStage = getStageById(targetStageId);
-      world.joinCounter = (world.joinCounter ?? 0) + 1;
-      const pos = computeSpawnPositionNear(targetStage, world.joinCounter);
-
-      ps.stageId = targetStage.meta.id;
-      ps.x = pos.x;
-      ps.y = pos.y;
-      ps.vx = 0;
-      ps.vy = 0;
-      ps.hp = Math.max(ps.hp, Math.round(ps.maxHp * 0.6));
-      ps.highestStageNumber = Math.max(ps.highestStageNumber, targetStage.meta.stageNumber);
-      world.playerStageMap[ps.playerId] = ps.stageId;
-
-      if (prevStageId !== ps.stageId) {
-        events.push(
-          makeEvent(
-            "sunny.playerLeft",
-            {
-              stageId: prevStageId,
-              playerId: ps.playerId,
-              stagePlayerCount: playersInStageIds(world, prevStageId).length
-            },
-            now
-          )
-        );
-      }
-      events.push(
-        makeEvent(
-          "sunny.playerJoined",
-          {
-            stageId: ps.stageId,
-            stagePlayerCount: countPlayersInStage(world, ps.stageId),
-            persistProfile: true,
-            player: {
-              playerId: ps.playerId,
-              displayName: ps.displayName,
-              stageId: ps.stageId,
-              x: ps.x,
-              y: ps.y,
-              vx: 0,
-              vy: 0,
-              facing: ps.facing,
-              animState: "idle",
-              level: ps.level,
-              hp: ps.hp,
-              maxHp: ps.maxHp,
-              equippedWeaponId: ps.equippedWeaponId
-            }
-          },
-          now
-        )
-      );
-    } else if (action.type === "checkpoint") {
-      const rawX = Number(action.payload.x);
-      const rawY = Number(action.payload.y);
-      if (Number.isFinite(rawX) && Number.isFinite(rawY)) {
-        const position = clampToStage(ps.stageId, rawX, rawY);
-        ps.x = position.x;
-        ps.y = position.y;
-      }
-      events.push(
-        makeEvent(
-          "sunny.checkpointSaved",
-          {
-            stageId: ps.stageId,
-            playerId: ps.playerId,
-            persistProfile: true
-          },
-          now,
-          "private",
-          ps.playerId
-        )
-      );
     }
-
-    ps.lastUpdatedAt = now;
-    state.playerStates[action.playerId] = ps as unknown as JsonObject;
-    return { state, events };
+    return applyCheckedAction(context, action);
   },
 
   nextTimers(context: GameContext): TimerIntent[] {

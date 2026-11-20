@@ -36,6 +36,7 @@ import {
 } from "./renderer";
 import { ALL_STAGES, getStageById } from "./stages/index";
 import { computeDeterministicHit } from "./server";
+import { registerBighouseUi, type BighouseGameChatElement } from "@bighouse/ui";
 import "./style.css";
 import type {
   MobTemplate,
@@ -166,17 +167,18 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
         <button value="close" class="sm-btn sm-btn-primary" autofocus>확인</button>
       </form>
     </dialog>
-    <aside class="sm-chat-box" data-el="chat-box" hidden>
-      <div class="sm-chat-header">
-        <span>💬 월드 채팅</span>
-        <button type="button" class="sm-btn" data-act="close-chat">✕</button>
+    <dialog class="sm-dialog sm-death-dialog" closedby="none" data-el="death-dialog" aria-labelledby="sm-death-title">
+      <h2 id="sm-death-title">쓰러졌습니다</h2>
+      <p>부활하면 스테이지 시작 지점에서 체력 60%로 다시 시작하고, 아래를 잃습니다.</p>
+      <ul class="sm-death-penalty">
+        <li><span>경험치</span><strong data-el="death-xp">0</strong></li>
+        <li><span>코인</span><strong data-el="death-coins">0</strong></li>
+      </ul>
+      <p class="sm-death-note">레벨, 무기, 포션은 그대로 유지됩니다.</p>
+      <div class="sm-dialog-footer">
+        <button type="button" class="sm-btn sm-btn-primary" data-act="revive">부활하기</button>
       </div>
-      <div class="sm-chat-log" data-el="chat-log"></div>
-      <form class="sm-chat-form" data-el="chat-form">
-        <input type="text" placeholder="메시지를 입력하세요..." maxlength="200" data-el="chat-input" />
-        <button type="submit" class="sm-btn sm-btn-primary">전송</button>
-      </form>
-    </aside>
+    </dialog>
   `;
   container.appendChild(root);
 
@@ -187,10 +189,31 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
   const mapDialog = root.querySelector<HTMLDialogElement>('[data-el="map-dialog"]')!;
   const helpDialog = root.querySelector<HTMLDialogElement>('[data-el="help-dialog"]')!;
   const stageGrid = root.querySelector<HTMLElement>('[data-el="stage-grid"]')!;
-  const chatBox = root.querySelector<HTMLElement>('[data-el="chat-box"]')!;
-  const chatLog = root.querySelector<HTMLElement>('[data-el="chat-log"]')!;
-  const chatForm = root.querySelector<HTMLFormElement>('[data-el="chat-form"]')!;
-  const chatInput = root.querySelector<HTMLInputElement>('[data-el="chat-input"]')!;
+  const deathDialog = root.querySelector<HTMLDialogElement>('[data-el="death-dialog"]')!;
+  const deathXp = root.querySelector<HTMLElement>('[data-el="death-xp"]')!;
+  const deathCoins = root.querySelector<HTMLElement>('[data-el="death-coins"]')!;
+  const reviveBtn = root.querySelector<HTMLButtonElement>('[data-act="revive"]')!;
+
+  // World chat is the shared in-game chat every other game uses: it sits over the
+  // scene, and Enter opens and closes it.
+  registerBighouseUi();
+  const chat = document.createElement("bighouse-game-chat") as BighouseGameChatElement;
+  stageFrame.append(chat);
+  let chatOpen = false;
+  chat.addEventListener("bighouse-chat-send", ((event: CustomEvent<{ body: string }>) => {
+    actions.sendChat(event.detail.body);
+  }) as EventListener);
+  chat.addEventListener("bighouse-chat-open-change", ((event: CustomEvent<{ open: boolean }>) => {
+    chatOpen = event.detail.open;
+    // Typing must not move the character, and held keys must not stick.
+    keysDown.clear();
+    virtualDown.clear();
+  }) as EventListener);
+
+  /** While a dialog is up its buttons own Enter, so the chat shortcut stands down. */
+  function syncChatAvailability(): void {
+    chat.enabled = !(mapDialog.open || helpDialog.open || deathDialog.open);
+  }
   const muteBtn = root.querySelector<HTMLButtonElement>('[data-act="mute"]')!;
 
   // Fallback for closedby="any" light-dismiss when unsupported
@@ -209,6 +232,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
       });
     }
   }
+  for (const dialog of [mapDialog, helpDialog, deathDialog]) dialog.addEventListener("close", syncChatAvailability);
   mapDialog.addEventListener("close", () => {
     mapDialog.returnValue = "";
   });
@@ -292,6 +316,56 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
   let lastSavedPosX = 0;
   let lastSavedPosY = 0;
   let stageTransitionPending = false;
+  // Death is the server's call. Until it confirms, a player at 0 HP is merely "downed":
+  // frozen and untouchable, so nothing they do can race the server's decision.
+  let dead = false;
+  let reviveRetryTimer: number | undefined;
+  const downed = (): boolean => dead || localPlayer.hp <= 0;
+
+  function enterDeath(lostXp: number, lostCoins: number): void {
+    const loss = (amount: number): string => {
+      const value = Math.max(0, Math.round(amount));
+      return value === 0 ? "잃을 것 없음" : `-${value.toLocaleString()}`;
+    };
+    deathXp.textContent = loss(lostXp);
+    deathCoins.textContent = loss(lostCoins);
+    if (dead) return;
+    dead = true;
+    localPlayer.hp = 0;
+    localPlayer.vx = 0;
+    localPlayer.vy = 0;
+    keysDown.clear();
+    virtualDown.clear();
+    stageFrame.classList.add("is-dead");
+    reviveBtn.disabled = false;
+    if (chat.open) chat.open = false;
+    if (mapDialog.open) mapDialog.close();
+    if (helpDialog.open) helpDialog.close();
+    if (!deathDialog.open) deathDialog.showModal();
+    syncChatAvailability();
+  }
+
+  function leaveDeath(): void {
+    if (!dead) return;
+    dead = false;
+    window.clearTimeout(reviveRetryTimer);
+    stageFrame.classList.remove("is-dead");
+    if (deathDialog.open) deathDialog.close();
+    syncChatAvailability();
+  }
+
+  // The dialog is the only way back: Escape must not dismiss it.
+  deathDialog.addEventListener("cancel", (event) => event.preventDefault());
+  reviveBtn.addEventListener("click", () => {
+    if (!dead || reviveBtn.disabled) return;
+    reviveBtn.disabled = true;
+    actions.sendAction({ type: "revive", payload: {} });
+    // If the request is lost, let the player try again.
+    window.clearTimeout(reviveRetryTimer);
+    reviveRetryTimer = window.setTimeout(() => {
+      reviveBtn.disabled = false;
+    }, 4_000);
+  });
   let hitStopTimer = 0;
   let shakeTimer = 0;
   let shakeMag = 0;
@@ -553,6 +627,8 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
     if (Array.isArray(priv.unlockedWeapons)) localPlayer.unlockedWeapons = [...priv.unlockedWeapons];
     if (typeof priv.equippedWeaponId === "string") localPlayer.equippedWeaponId = priv.equippedWeaponId;
     if (typeof priv.highestStageNumber === "number") highestStageNumber = priv.highestStageNumber;
+    if (priv.dead === true) enterDeath(localPlayer.xp, localPlayer.coins);
+    else leaveDeath();
 
     const targetStageId = priv.stageId || pub.stageId || "stage-1";
     const stageChanged = targetStageId !== currentStageId;
@@ -683,7 +759,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
       }
     }
 
-    renderChat(snap);
+    chat.messages = snap.chatMessages;
     if (mapDialog.open) renderStageMapDialog();
   }
 
@@ -909,7 +985,14 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
       return;
     }
 
+    if (ev.type === "sunny.playerDied" && p.playerId === ctx.playerId) {
+      enterDeath(Number(p.lostXp ?? localPlayer.xp), Number(p.lostCoins ?? localPlayer.coins));
+      return;
+    }
+
     if (ev.type === "sunny.playerRespawned" && p.playerId === ctx.playerId) {
+      leaveDeath();
+      if (typeof p.hp === "number") localPlayer.hp = p.hp;
       localPlayer.x = Number(p.x ?? compiledStage.spawn.x);
       localPlayer.y = Number(p.y ?? compiledStage.spawn.y - localPlayer.h);
       localPlayer.vx = 0;
@@ -974,41 +1057,26 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
     }
   }
 
-  function renderChat(snap: GameClientSnapshot): void {
-    chatLog.textContent = "";
-    for (const msg of snap.chatMessages.slice(-60)) {
-      const row = document.createElement("div");
-      const name = document.createElement("strong");
-      name.textContent = `${msg.displayName || msg.playerId.slice(-4)}: `;
-      const body = document.createElement("span");
-      body.textContent = msg.body;
-      row.append(name, body);
-      chatLog.appendChild(row);
-    }
-    chatLog.scrollTop = chatLog.scrollHeight;
-  }
-
   // Toolbar event handlers
   root.querySelector('[data-act="map"]')?.addEventListener("click", () => {
     void audio.unlock();
     renderStageMapDialog();
     mapDialog.showModal();
+    syncChatAvailability();
   });
   root.querySelector('[data-act="help"]')?.addEventListener("click", () => {
     void audio.unlock();
     helpDialog.showModal();
+    syncChatAvailability();
   });
   muteBtn.addEventListener("click", async () => {
     await audio.unlock();
     const muted = audio.toggleMute();
     muteBtn.textContent = muted ? "🔇 음소거" : "🔊 사운드";
   });
-  root.querySelector('[data-act="chat"]')?.addEventListener("click", () => {
-    chatBox.hidden = !chatBox.hidden;
-    if (!chatBox.hidden) chatInput.focus();
-  });
-  root.querySelector('[data-act="close-chat"]')?.addEventListener("click", () => {
-    chatBox.hidden = true;
+  root.querySelector<HTMLElement>('[data-act="chat"]')?.addEventListener("click", (event) => {
+    if (chat.open) chat.open = false;
+    else chat.openFrom(event.currentTarget as HTMLElement);
   });
   root.querySelector('[data-act="share"]')?.addEventListener("click", () => actions.shareRoom());
   root.querySelector('[data-act="fullscreen"]')?.addEventListener("click", () => {
@@ -1018,17 +1086,9 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
     actions.sendAction({ type: "checkpoint", payload: { x: Math.round(localPlayer.x), y: Math.round(localPlayer.y) } });
     actions.leaveRoom();
   });
-  chatForm.addEventListener("submit", (e) => {
-    e.preventDefault();
-    const text = chatInput.value.trim();
-    if (!text) return;
-    actions.sendChat(text);
-    chatInput.value = "";
-  });
-
   // Keyboard listeners
   const onKeyDown = (e: KeyboardEvent) => {
-    if (document.activeElement === chatInput || mapDialog.open || helpDialog.open) return;
+    if (chatOpen || mapDialog.open || helpDialog.open || deathDialog.open) return;
     if (PREVENT_KEYS.has(e.code)) e.preventDefault();
     void audio.unlock();
     keysDown.add(e.code);
@@ -1123,6 +1183,11 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
 
   function stepLocalPlayer(dt: number, now: number): void {
     const p = localPlayer;
+    if (downed()) {
+      p.vx = 0;
+      p.vy = 0;
+      return;
+    }
     p.animTimer += dt;
     if (p.invulnTimer > 0) p.invulnTimer = Math.max(0, p.invulnTimer - dt);
     if (p.slowTimer > 0) p.slowTimer = Math.max(0, p.slowTimer - dt);
@@ -1583,7 +1648,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
 
   function hurtLocalPlayer(amount: number, sourceX: number): void {
     const p = localPlayer;
-    if (p.invulnTimer > 0) return;
+    if (p.invulnTimer > 0 || downed()) return;
     p.invulnTimer = PLAYER_CONFIG.invulnDuration;
     hurtStunTimer = 0.22;
     p.onLadder = false;
@@ -1903,6 +1968,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
   }
 
   function checkItemPickups(now: number): void {
+    if (downed()) return;
     const px = localPlayer.x + localPlayer.w * 0.5;
     const py = localPlayer.y + localPlayer.h * 0.5;
     for (const item of items) {
@@ -2002,7 +2068,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
 
   function sendPeriodicSync(dt: number): void {
     poseSendTimer += dt;
-    if (poseSendTimer >= 0.085 && actions.sendSignal && ctx.connected !== false) {
+    if (poseSendTimer >= 0.085 && actions.sendSignal && ctx.connected !== false && !downed()) {
       poseSendTimer = 0;
       const animState =
         localPlayer.attackAnimTimer > 0
@@ -2132,6 +2198,8 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
       stageFrame.removeEventListener("contentvisibilityautostatechange", onContentVis);
       intersectionObserver?.disconnect();
       audio.destroy();
+      window.clearTimeout(reviveRetryTimer);
+      chat.remove();
       container.innerHTML = "";
     }
   };
