@@ -869,7 +869,14 @@ export const sunnyMeadowDefinition = defineGameDefinition(gameMetadata, {
     if (!current) return null;
     // Leaving while down does not dodge the penalty: the saved profile is the revived one.
     const ps = { ...current };
-    if (ps.dead) applyRevival(ps);
+    if (ps.dead) {
+      // Same outcome as pressing Revive: back at the stage start, not where they fell.
+      const world = getWorld(context.state.stageState);
+      const spawn = computeSpawnPositionNear(getStageById(ps.stageId), world.joinCounter ?? 0);
+      applyRevival(ps);
+      ps.x = spawn.x;
+      ps.y = spawn.y;
+    }
     const profile: PersistedPlayerProfile = {
       level: ps.level,
       xp: ps.xp,
