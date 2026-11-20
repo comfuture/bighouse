@@ -194,6 +194,10 @@ export class RoomDO extends DurableObject<Env> {
   }
 
   async join(input: JoinRoomInput): Promise<RoomSummary> {
+    // Awaiting D1 lets other requests run, so fetch the saved profile before
+    // loading the state this call mutates. Everything from requireState() to
+    // saveState() below must stay synchronous.
+    const savedProfile = await this.loadJoinProfile(input.playerId);
     const state = this.requireState();
     this.clearDisconnectTimer(input.playerId);
     const existing = state.players.find((player) => player.playerId === input.playerId);
@@ -242,11 +246,9 @@ export class RoomDO extends DurableObject<Env> {
     let joinEvents: GameEvent[] = [];
     if (isPersistentWorld) {
       state.phase = "active";
-      const repo = new D1Repository(this.env.DB);
-      const saved = await repo.getPlayerProfile(state.room.gameId, player.playerId);
       state.playerStates[player.playerId] = definition.initialPlayerState(player, { room: state.room, now });
       if (definition.onPlayerJoin) {
-        const applied = definition.onPlayerJoin({ state: cloneState(state), now }, player, saved?.profile ?? null);
+        const applied = definition.onPlayerJoin({ state: cloneState(state), now }, player, savedProfile);
         Object.assign(state, applied.state);
         joinEvents = applied.events;
       }
@@ -354,7 +356,9 @@ export class RoomDO extends DurableObject<Env> {
 
     if (isPersistentWorld) {
       const leavingSeat = state.players.find((candidate) => candidate.playerId === playerId);
-      await this.persistPlayerProfile(state, definition, playerId, leavingSeat?.displayName);
+      // Capture the profile now, but write it to D1 only after the room state
+      // is saved: awaiting earlier would let other requests interleave.
+      const leavingState = cloneState(state);
       let leaveEvents: GameEvent[] = [];
       if (definition.onPlayerLeave) {
         const applied = definition.onPlayerLeave({ state: cloneState(state), now }, playerId);
@@ -383,6 +387,7 @@ export class RoomDO extends DurableObject<Env> {
       state.updatedAt = now;
       state.version += 1;
       this.saveState(state);
+      await this.persistPlayerProfile(leavingState, definition, playerId, leavingSeat?.displayName);
       await this.persistRoomIndex(state);
       await this.rescheduleRoomTimers(state, definition, now);
       this.broadcastPresence(state, playerId, false);
@@ -1582,6 +1587,15 @@ export class RoomDO extends DurableObject<Env> {
         this.broadcastToPlayer(player.playerId, this.message(state, "privateEvent", { event }));
       }
     }
+  }
+
+  /** Saved profile for a player about to join a persistent world for the first time, else null. */
+  private async loadJoinProfile(playerId: string): Promise<JsonObject | null> {
+    const state = this.requireState();
+    if (state.players.some((player) => player.playerId === playerId)) return null;
+    if (!getGameDefinition(state.room.gameId).persistentWorld) return null;
+    const saved = await new D1Repository(this.env.DB).getPlayerProfile(state.room.gameId, playerId);
+    return saved?.profile ?? null;
   }
 
   private async persistPlayerProfile(
