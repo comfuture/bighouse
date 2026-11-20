@@ -17,6 +17,7 @@ describe("chess client accessibility", () => {
       playerId: "white",
       version: 1,
       serverTime: Date.now(),
+      opponentName: "Black",
       publicView: {
         roomPhase: "active",
         fen: "4k3/8/8/8/8/8/P7/4K3 w - - 0 1",
@@ -45,5 +46,48 @@ describe("chess client accessibility", () => {
     expect(renderedCell).not.toBe(originalCell);
     expect(document.activeElement).toBe(renderedCell);
     game.destroy();
+  });
+});
+
+describe("chess client clock", () => {
+  it("keeps counting down when the host repeats the last snapshot for a chat update", () => {
+    vi.spyOn(window, "scrollTo").mockImplementation(() => undefined);
+    const clock = vi.spyOn(performance, "now").mockReturnValue(1_000);
+    const container = document.createElement("div");
+    document.body.append(container);
+    const view = {
+      playerId: "white",
+      version: 1,
+      serverTime: 50_000,
+      opponentName: "Black",
+      publicView: {
+        roomPhase: "active" as const,
+        fen: "4k3/8/8/8/8/8/P7/4K3 w - - 0 1",
+        board: [[]],
+        currentPlayerId: "white",
+        turn: "w" as const,
+        clocks: { white: 600_000, black: 600_000 },
+        activeClockStartedAt: 50_000,
+        moveCount: 0,
+        history: [],
+        check: false
+      },
+      privateView: { color: "white" as const }
+    };
+    const game = createChessGame(container, {
+      ...view,
+      sendAction: vi.fn(),
+      requestPlayAgain: vi.fn(),
+      leaveFinishedGame: vi.fn()
+    });
+    const whiteTime = () => container.querySelector("[data-role='clock-white-time']")!.textContent;
+    expect(whiteTime()).toBe("10:00");
+
+    // Two minutes pass, then a chat message makes the host call update() with the same snapshot.
+    clock.mockReturnValue(121_000);
+    game.update(view);
+    expect(whiteTime()).toBe("8:00");
+    game.destroy();
+    clock.mockRestore();
   });
 });

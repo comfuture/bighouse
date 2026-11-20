@@ -52,6 +52,8 @@ type ChessClient = {
   playerId: string;
   version: number;
   serverTime: number;
+  /** Display name of the other player, for the status line. */
+  opponentName: string;
   publicView: ChessPublicView;
   privateView: ChessPrivateView;
   sendAction(action: { type: string; payload: Record<string, unknown> }): void;
@@ -94,6 +96,7 @@ export function mountGame(container: HTMLElement, context: GameClientContext): M
 export function createChessGame(container: HTMLElement, client: ChessClient) {
   const state = { ...client, receivedAt: performance.now() };
   let selected: ChessSquare | undefined;
+  let scrollFrame = 0;
   let pendingPromotion: { from: ChessSquare; to: ChessSquare } | undefined;
   let seenLastMoveKey = moveKey(client.publicView);
   let pendingMoveAnimationKey: string | undefined;
@@ -163,7 +166,7 @@ export function createChessGame(container: HTMLElement, client: ChessClient) {
     const colorLabel = privateView.color ?? "spectator";
     const destinations = selected && myTurn ? moveDestinationHints(publicView.fen, selected) : undefined;
     const scrollSnapshot = captureScrollSnapshot(history);
-    status.textContent = statusText(publicView, playerId, myTurn, colorLabel);
+    status.textContent = statusText(publicView, playerId, myTurn, colorLabel, state.opponentName);
     turnNotice.classList.toggle("is-hidden", !myTurn);
     turnColor.textContent = colorLabel;
     boardFrame.classList.toggle("is-my-turn", myTurn);
@@ -222,7 +225,8 @@ export function createChessGame(container: HTMLElement, client: ChessClient) {
     }
     renderMoveGhost(publicView);
     renderPromotion();
-    restoreScrollSnapshot(history, scrollSnapshot);
+    cancelAnimationFrame(scrollFrame);
+    scrollFrame = restoreScrollSnapshot(history, scrollSnapshot);
   }
 
   function handleSquareClick(square: ChessSquare, piece: ChessPieceView | undefined): void {
@@ -262,7 +266,16 @@ export function createChessGame(container: HTMLElement, client: ChessClient) {
     triggerPlacementFeedback();
     client.sendAction({ type: "move", payload: { from: selected, to: square } });
     selected = undefined;
+    // Redraw now: if the move is rejected no new version arrives to clear the highlight.
+    render();
   }
+
+  // Clicking outside the piece choices backs out of the promotion.
+  promotionModal.addEventListener("click", (event) => {
+    if (event.target !== promotionModal || !pendingPromotion) return;
+    pendingPromotion = undefined;
+    render();
+  });
 
   function renderPromotion(): void {
     if (!pendingPromotion) {
@@ -289,6 +302,7 @@ export function createChessGame(container: HTMLElement, client: ChessClient) {
           triggerPlacementFeedback();
           client.sendAction({ type: "move", payload: { from: move.from, to: move.to, promotion: piece } });
         }
+        render();
       });
       promotionPanel.append(button);
     }
@@ -388,8 +402,13 @@ export function createChessGame(container: HTMLElement, client: ChessClient) {
   return {
     update(input: Omit<ChessClient, "sendAction" | "requestPlayAgain" | "leaveFinishedGame">) {
       const sameVersion = state.version === input.version;
-      state.serverTime = input.serverTime;
-      state.receivedAt = performance.now();
+      // Chat, presence and error updates repeat the last snapshot's server time.
+      // Re-basing the clock on those would hand back the time already elapsed.
+      if (input.serverTime !== state.serverTime) {
+        state.serverTime = input.serverTime;
+        state.receivedAt = performance.now();
+      }
+      state.opponentName = input.opponentName;
       if (sameVersion) {
         renderClocks();
         return;
@@ -408,6 +427,7 @@ export function createChessGame(container: HTMLElement, client: ChessClient) {
     },
     destroy() {
       clearInterval(clockTimer);
+      cancelAnimationFrame(scrollFrame);
       if (checkOverlayTimer) {
         clearTimeout(checkOverlayTimer);
       }
@@ -422,6 +442,7 @@ function toChessClient(context: GameClientContext): ChessClient {
     playerId: context.playerId,
     version: context.version,
     serverTime: context.serverTime,
+    opponentName: context.room.players.find((player) => player.playerId !== context.playerId)?.displayName || "opponent",
     publicView: {
       ...(context.publicView as ChessPublicView),
       roomPhase: context.phase
@@ -491,10 +512,11 @@ function captureScrollSnapshot(history: HTMLElement): ScrollSnapshot {
   };
 }
 
-function restoreScrollSnapshot(history: HTMLElement, snapshot: ScrollSnapshot): void {
+/** Restores scroll now and once more after layout; returns the frame id so the caller can cancel it. */
+function restoreScrollSnapshot(history: HTMLElement, snapshot: ScrollSnapshot): number {
   history.scrollTop = snapshot.historyTop;
   window.scrollTo(snapshot.windowX, snapshot.windowY);
-  requestAnimationFrame(() => {
+  return requestAnimationFrame(() => {
     history.scrollTop = snapshot.historyTop;
     window.scrollTo(snapshot.windowX, snapshot.windowY);
   });
@@ -548,7 +570,7 @@ function pieceName(piece: ChessPieceView): string {
   return `${color} ${names[piece.type]}`;
 }
 
-function statusText(publicView: ChessPublicView, playerId: string, myTurn: boolean, colorLabel: string): string {
+function statusText(publicView: ChessPublicView, playerId: string, myTurn: boolean, colorLabel: string, opponentName: string): string {
   if (publicView.result) {
     if (publicView.winnerPlayerId) {
       if (colorLabel === "spectator") {
@@ -559,9 +581,9 @@ function statusText(publicView: ChessPublicView, playerId: string, myTurn: boole
     return "Draw";
   }
   if (myTurn) return `Your turn (${colorLabel})`;
-  if (publicView.check) return `Check - waiting for ${publicView.currentPlayerId ?? "opponent"}`;
+  if (publicView.check) return `Check - waiting for ${opponentName}`;
   return publicView.roomPhase === "active" || publicView.roomPhase === undefined
-    ? `Waiting for ${publicView.currentPlayerId ?? "opponent"}`
+    ? `Waiting for ${opponentName}`
     : "Waiting for opponent";
 }
 
