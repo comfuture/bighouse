@@ -1,0 +1,2 @@
+ALTER TABLE room_index ADD COLUMN room_name TEXT;
+ALTER TABLE room_index ADD COLUMN is_fixed INTEGER NOT NULL DEFAULT 0;

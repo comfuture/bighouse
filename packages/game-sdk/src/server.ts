@@ -5,6 +5,13 @@ export type GameThumbnail = {
   alt: string;
 };
 
+export type FixedRoomSpec = {
+  roomId: string;
+  name: string;
+  description?: string;
+  mode?: string;
+};
+
 export type GameMetadata = {
   gameId: string;
   adapterKey: string;
@@ -14,6 +21,10 @@ export type GameMetadata = {
   maxPlayers: number;
   modes?: Array<{ id: string; displayName: string; minPlayers: number; maxPlayers: number }>;
   supportsBots?: boolean;
+  /** When true, rooms run as drop-in/drop-out persistent worlds with concurrent actions and D1 profile persistence. */
+  persistentWorld?: boolean;
+  /** Optional permanent named rooms auto-provisioned for this game that remain open even with 0 players. */
+  fixedRooms?: FixedRoomSpec[];
   config?: JsonObject;
   thumbnail?: GameThumbnail;
 };
@@ -44,6 +55,8 @@ export type PlayerSeat = PlayerIdentity & {
 
 export type RoomConfig = {
   roomId: string;
+  roomName?: string;
+  fixed?: boolean;
   gameId: string;
   mode: string;
   minPlayers: number;
@@ -136,10 +149,18 @@ export type GameDefinition = GameMetadata & {
     recipientPlayerIds: string[];
     type: string;
     payload: JsonObject;
+    /** Optional lightweight player state fields persisted with the player (e.g. latest position for persistent worlds). */
+    playerStatePatch?: JsonObject;
   } | undefined;
+  /** Optional persistent-world hooks for drop-in join, drop-out leave, and D1 player profile persistence. */
+  onPlayerJoin?(context: GameContext, player: PlayerSeat, persistedProfile?: JsonObject | null): ActionResult;
+  onPlayerLeave?(context: GameContext, playerId: string): ActionResult;
+  extractPlayerProfile?(context: GameContext, playerId: string): JsonObject | null;
+  /** Optional stage/spatial interest filter returning recipient playerIds for a public event (undefined = broadcast all). */
+  getBroadcastRecipients?(context: GameContext, event: GameEvent): string[] | undefined;
   applyTimer?(context: GameContext, timer: TimerIntent): ActionResult;
   selectBotAction?(context: BotGameContext): GameAction | null | undefined;
-  getPublicView(context: GameContext): JsonObject;
+  getPublicView(context: GameContext, viewerPlayerId?: string): JsonObject;
   getPrivateView(context: GameContext, playerId: string): JsonObject;
   nextTimers(context: GameContext): TimerIntent[];
 };

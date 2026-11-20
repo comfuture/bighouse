@@ -32,6 +32,7 @@ export async function cleanupStaleRooms(
   let cleaned = 0;
 
   for (const candidate of candidates) {
+    if (candidate.isFixed) continue;
     const room = env.ROOM_DO.getByName(candidate.doName);
     const result = await room.cleanupIfStale({ now, waitingIdleMs, activeIdleMs });
     if (result.cleaned) {

@@ -85,6 +85,8 @@ export type ClientMessage =
 
 export type SnapshotPayload = {
   roomId: string;
+  roomName?: string;
+  fixed?: boolean;
   gameId: string;
   mode: string;
   phase: RoomPhase;
@@ -92,6 +94,7 @@ export type SnapshotPayload = {
   minPlayers: number;
   maxPlayers: number;
   supportsBots?: boolean;
+  persistentWorld?: boolean;
   teams?: GameTeam[];
   hostPlayerId?: string;
   rematchRequests: string[];

@@ -70,7 +70,7 @@ export class LobbyDO extends DurableObject<Env> {
     const definition = getGameDefinition(input.gameId);
     const { minPlayers, maxPlayers } = resolvePlayerLimits(definition, input);
 
-    const existing = await repo.findJoinableRoom(input.gameId, input.mode);
+    const existing = await repo.findJoinableRoom(input.gameId, input.mode, Boolean(definition.persistentWorld));
     const roomRecord =
       existing ??
       (await this.createIndexedRoom(repo, {
@@ -129,7 +129,7 @@ export class LobbyDO extends DurableObject<Env> {
     });
     const record = {
       ...roomRecord,
-      status: summary.playerCount >= summary.minPlayers ? "matching" : "open",
+      status: summary.phase === "active" ? "active" : summary.playerCount >= summary.minPlayers ? "matching" : "open",
       playerCount: summary.playerCount
     } satisfies RoomIndexRecord;
     await this.recordRoom(record);

@@ -29,6 +29,8 @@ import type { Env } from "../types";
 
 export type InitializeRoomInput = {
   roomId: string;
+  roomName?: string;
+  fixed?: boolean;
   gameId: string;
   mode: string;
   minPlayers: number;
@@ -55,6 +57,8 @@ export type RemoveBotInput = {
 
 export type RoomSummary = {
   roomId: string;
+  roomName?: string;
+  fixed?: boolean;
   gameId: string;
   mode: string;
   phase: RoomState["phase"];
@@ -88,7 +92,13 @@ export type CleanupStaleRoomInput = {
 
 export type CleanupStaleRoomResult = {
   cleaned: boolean;
-  reason: "missing_state" | "already_closed" | "connected_clients" | "not_idle" | "stale_no_connections";
+  reason:
+    | "missing_state"
+    | "already_closed"
+    | "connected_clients"
+    | "not_idle"
+    | "stale_no_connections"
+    | "persistent_room";
   summary?: RoomSummary;
 };
 
@@ -128,6 +138,24 @@ export class RoomDO extends DurableObject<Env> {
     await new D1Repository(this.env.DB).upsertGame(definition.metadata);
     const existing = this.loadState();
     if (existing) {
+      let mutated = false;
+      if (input.roomName && existing.room.roomName !== input.roomName) {
+        existing.room.roomName = input.roomName;
+        mutated = true;
+      }
+      if (input.fixed && !existing.room.fixed) {
+        existing.room.fixed = true;
+        mutated = true;
+      }
+      if ((existing.room.fixed || definition.persistentWorld) && existing.phase === "closed") {
+        existing.phase = "active";
+        delete existing.closedAt;
+        mutated = true;
+      }
+      if (mutated) {
+        existing.updatedAt = Date.now();
+        this.saveState(existing);
+      }
       return this.toSummary(existing);
     }
 
@@ -141,6 +169,8 @@ export class RoomDO extends DurableObject<Env> {
 
     const room = {
       roomId: input.roomId,
+      ...(input.roomName ? { roomName: input.roomName } : {}),
+      ...(input.fixed ? { fixed: true } : {}),
       gameId: input.gameId,
       mode: input.mode,
       minPlayers: limits.minPlayers,
@@ -150,7 +180,7 @@ export class RoomDO extends DurableObject<Env> {
     };
     const state: RoomState = {
       room,
-      phase: "waiting",
+      phase: definition.persistentWorld ? "active" : "waiting",
       version: 0,
       players: [],
       stageState: definition.initialStageState({ room, players: [], now }),
@@ -187,7 +217,9 @@ export class RoomDO extends DurableObject<Env> {
     if (state.phase === "closed") {
       throw new GameServerError("room_closed", "Room is closed", 409);
     }
-    if (state.phase !== "waiting" && !state.activeInterruption) {
+    const definition = getGameDefinition(state.room.gameId);
+    const isPersistentWorld = Boolean(definition.persistentWorld);
+    if (!isPersistentWorld && state.phase !== "waiting" && !state.activeInterruption) {
       throw new GameServerError("invalid_room_phase", "New players can only join waiting rooms", 409);
     }
     if (state.players.length >= state.room.maxPlayers) {
@@ -199,16 +231,28 @@ export class RoomDO extends DurableObject<Env> {
       playerId: input.playerId,
       seat: state.players.length,
       connected: true,
-      ready: false,
+      ready: isPersistentWorld,
       joinedAt: now,
       ...(input.displayName ? { displayName: input.displayName } : {})
     };
-    const definition = getGameDefinition(state.room.gameId);
     if (state.players.length === 0) {
       state.room.hostPlayerId = input.playerId;
     }
     state.players.push(player);
-    state.playerStates[player.playerId] = definition.initialPlayerState(player, { room: state.room, now });
+    let joinEvents: GameEvent[] = [];
+    if (isPersistentWorld) {
+      state.phase = "active";
+      const repo = new D1Repository(this.env.DB);
+      const saved = await repo.getPlayerProfile(state.room.gameId, player.playerId);
+      state.playerStates[player.playerId] = definition.initialPlayerState(player, { room: state.room, now });
+      if (definition.onPlayerJoin) {
+        const applied = definition.onPlayerJoin({ state: cloneState(state), now }, player, saved?.profile ?? null);
+        Object.assign(state, applied.state);
+        joinEvents = applied.events;
+      }
+    } else {
+      state.playerStates[player.playerId] = definition.initialPlayerState(player, { room: state.room, now });
+    }
     delete state.emptySince;
     state.updatedAt = now;
     state.version += 1;
@@ -216,7 +260,14 @@ export class RoomDO extends DurableObject<Env> {
     await this.persistRoomIndex(state);
     await this.rescheduleRoomTimers(state, definition, now);
     this.broadcastPresence(state, input.playerId, true);
-    this.broadcastSnapshots(state);
+    if (isPersistentWorld) {
+      this.broadcastToPlayer(player.playerId, this.message(state, "snapshot", this.createSnapshot(state, player.playerId)));
+      if (joinEvents.length > 0) {
+        this.deliverEvents(state, joinEvents, definition);
+      }
+    } else {
+      this.broadcastSnapshots(state);
+    }
     return this.toSummary(state);
   }
 
@@ -271,6 +322,17 @@ export class RoomDO extends DurableObject<Env> {
 
   async refreshLobbyStatus(): Promise<RoomSummary> {
     const state = this.requireState();
+    const definition = getGameDefinition(state.room.gameId);
+    if (state.room.fixed || definition.persistentWorld) {
+      if (state.phase !== "active") {
+        state.phase = "active";
+        delete state.closedAt;
+        state.updatedAt = Date.now();
+        this.saveState(state);
+        await this.persistRoomIndex(state);
+      }
+      return this.toSummary(state);
+    }
     if (state.phase === "waiting" && state.players.length > 0 && state.players.every((player) => !player.connected)) {
       const now = Date.now();
       state.phase = "closed";
@@ -287,6 +349,49 @@ export class RoomDO extends DurableObject<Env> {
 
   private async handleActivePlayerLeave(state: RoomState, playerId: string): Promise<RoomSummary> {
     const now = Date.now();
+    const definition = getGameDefinition(state.room.gameId);
+    const isPersistentWorld = Boolean(definition.persistentWorld);
+
+    if (isPersistentWorld) {
+      const leavingSeat = state.players.find((candidate) => candidate.playerId === playerId);
+      await this.persistPlayerProfile(state, definition, playerId, leavingSeat?.displayName);
+      let leaveEvents: GameEvent[] = [];
+      if (definition.onPlayerLeave) {
+        const applied = definition.onPlayerLeave({ state: cloneState(state), now }, playerId);
+        Object.assign(state, applied.state);
+        leaveEvents = applied.events;
+      }
+      const idx = state.players.findIndex((candidate) => candidate.playerId === playerId);
+      if (idx >= 0) {
+        state.players.splice(idx, 1);
+      }
+      delete state.playerStates[playerId];
+      this.resetSeats(state.players);
+      if (state.room.hostPlayerId === playerId) {
+        const nextHost = nextHumanHost(state.players);
+        if (nextHost) {
+          state.room.hostPlayerId = nextHost.playerId;
+        } else {
+          delete state.room.hostPlayerId;
+        }
+      }
+      if (state.players.length === 0) {
+        state.emptySince = now;
+      } else {
+        delete state.emptySince;
+      }
+      state.updatedAt = now;
+      state.version += 1;
+      this.saveState(state);
+      await this.persistRoomIndex(state);
+      await this.rescheduleRoomTimers(state, definition, now);
+      this.broadcastPresence(state, playerId, false);
+      if (leaveEvents.length > 0) {
+        this.deliverEvents(state, leaveEvents, definition);
+      }
+      return this.toSummary(state);
+    }
+
     const playerIndex = state.players.findIndex((candidate) => candidate.playerId === playerId);
     const [leftPlayer] = state.players.splice(playerIndex, 1);
     delete state.playerStates[playerId];
@@ -604,6 +709,10 @@ export class RoomDO extends DurableObject<Env> {
     if (state.phase === "closed") {
       return { cleaned: false, reason: "already_closed", summary: this.toSummary(state) };
     }
+    const definition = getGameDefinition(state.room.gameId);
+    if (state.room.fixed || definition.persistentWorld) {
+      return { cleaned: false, reason: "persistent_room", summary: this.toSummary(state) };
+    }
 
     const now = input.now ?? Date.now();
     const waitingIdleMs = input.waitingIdleMs ?? 5 * 60 * 1000;
@@ -645,7 +754,10 @@ export class RoomDO extends DurableObject<Env> {
       return JSON.parse(processed.ack_json) as ActionAck;
     }
 
-    if (action.expectedVersion !== state.version) {
+    const definition = getGameDefinition(state.room.gameId);
+    const isPersistentWorld = Boolean(definition.persistentWorld);
+
+    if (!isPersistentWorld && action.expectedVersion !== state.version) {
       throw new GameServerError("stale_action", "Action expectedVersion does not match room version", 409, {
         expectedVersion: action.expectedVersion,
         currentVersion: state.version
@@ -664,7 +776,6 @@ export class RoomDO extends DurableObject<Env> {
     }
 
     const now = Date.now();
-    const definition = getGameDefinition(state.room.gameId);
     const validation = definition.validateAction({ state: cloneState(state), now }, action);
     if (!validation.ok) {
       throw new GameServerError(
@@ -689,6 +800,23 @@ export class RoomDO extends DurableObject<Env> {
       await this.persistFinishedResult(applied.state, applied.events);
       await this.persistRoomIndex(applied.state);
     }
+    const profileIdsToPersist = new Set<string>();
+    if (isPersistentWorld) {
+      for (const ev of applied.events) {
+        if (ev.payload?.persistProfile === true) {
+          profileIdsToPersist.add(action.playerId);
+        }
+        if (Array.isArray(ev.payload?.persistPlayerIds)) {
+          for (const pid of ev.payload.persistPlayerIds) {
+            if (typeof pid === "string") profileIdsToPersist.add(pid);
+          }
+        }
+      }
+      for (const pid of profileIdsToPersist) {
+        const seat = applied.state.players.find((candidate) => candidate.playerId === pid);
+        await this.persistPlayerProfile(applied.state, definition, pid, seat?.displayName);
+      }
+    }
 
     const ack: ActionAck = { version: applied.state.version, events: applied.events };
     this.ctx.storage.sql.exec(
@@ -698,8 +826,18 @@ export class RoomDO extends DurableObject<Env> {
       JSON.stringify(ack),
       now
     );
-    this.deliverEvents(applied.state, applied.events);
-    this.broadcastSnapshots(applied.state);
+    if (isPersistentWorld && applied.state.version % 40 === 0) {
+      this.prunePersistentWorldLogs(now);
+    }
+    this.deliverEvents(applied.state, applied.events, definition);
+    if (isPersistentWorld) {
+      const snapshotTargets = new Set<string>([action.playerId, ...profileIdsToPersist]);
+      for (const pid of snapshotTargets) {
+        this.broadcastToPlayer(pid, this.message(applied.state, "snapshot", this.createSnapshot(applied.state, pid)));
+      }
+    } else {
+      this.broadcastSnapshots(applied.state);
+    }
     return ack;
   }
 
@@ -713,20 +851,32 @@ export class RoomDO extends DurableObject<Env> {
     }
     const now = Date.now();
     const definition = getGameDefinition(state.room.gameId);
-    const team = requirePlayerTeam(state, definition, playerId);
+    const isPersistentWorld = Boolean(definition.persistentWorld);
+    const team = isPersistentWorld ? undefined : requirePlayerTeam(state, definition, playerId);
     const result = definition.handleSignal?.({ state: cloneState(state), now }, playerId, signal);
-    if (!result || result.recipientPlayerIds.length === 0 || result.recipientPlayerIds.some((id) => !team.playerIds.includes(id))) {
+    if (!result) {
       throw new GameServerError("invalid_action", "This suggestion is no longer valid", 409);
     }
+    if (!isPersistentWorld && (result.recipientPlayerIds.length === 0 || result.recipientPlayerIds.some((id) => !team!.playerIds.includes(id)))) {
+      throw new GameServerError("invalid_action", "This suggestion is no longer valid", 409);
+    }
+    const minIntervalMs = isPersistentWorld ? 50 : 500;
     const previous = this.ctx.storage.sql.exec<{ sent_at: number }>("SELECT sent_at FROM signal_limits WHERE player_id = ?", playerId).toArray()[0];
-    if (previous && now - previous.sent_at < 500) {
+    if (previous && now - previous.sent_at < minIntervalMs) {
+      if (isPersistentWorld) return; // Drop excess high-frequency pose frames silently
       throw new GameServerError("invalid_action", "Please wait before sending another suggestion", 429);
     }
     this.ctx.storage.sql.exec("INSERT INTO signal_limits (player_id, sent_at) VALUES (?, ?) ON CONFLICT(player_id) DO UPDATE SET sent_at = excluded.sent_at", playerId, now);
-    // Transient advice is delivered only to adapter-approved recipients. It never
-    // enters the public event log, snapshots, or authoritative version sequence.
+    if (isPersistentWorld && result.playerStatePatch) {
+      const currentPs = state.playerStates[playerId] ?? {};
+      state.playerStates[playerId] = { ...currentPs, ...result.playerStatePatch };
+      this.saveState(state);
+    }
+    // Transient signals are delivered only to adapter-approved recipients. They never
+    // enter the public event log or advance the authoritative version sequence.
+    const activePlayerSet = new Set(state.players.map((p) => p.playerId));
     for (const recipient of new Set(result.recipientPlayerIds)) {
-      if (!state.players.some((player) => player.playerId === recipient)) continue;
+      if (!activePlayerSet.has(recipient)) continue;
       this.broadcastToPlayer(recipient, this.message(state, "privateEvent", { event: {
         id: createId("evt"), type: result.type, visibility: "private", playerId: recipient,
         payload: result.payload, createdAt: now
@@ -973,8 +1123,10 @@ export class RoomDO extends DurableObject<Env> {
             await this.persistFinishedResult(applied.state, applied.events);
             await this.persistRoomIndex(applied.state);
           }
-          this.deliverEvents(applied.state, applied.events);
-          this.broadcastSnapshots(applied.state);
+          this.deliverEvents(applied.state, applied.events, definition);
+          if (!definition.persistentWorld) {
+            this.broadcastSnapshots(applied.state);
+          }
           state = applied.state;
         } else {
           const event: GameEvent = {
@@ -1360,6 +1512,8 @@ export class RoomDO extends DurableObject<Env> {
     const context = { state, now: Date.now() };
     return {
       roomId: state.room.roomId,
+      ...(state.room.roomName ? { roomName: state.room.roomName } : {}),
+      ...(state.room.fixed ? { fixed: true } : {}),
       gameId: state.room.gameId,
       mode: state.room.mode,
       phase: state.phase,
@@ -1367,12 +1521,13 @@ export class RoomDO extends DurableObject<Env> {
       minPlayers: state.room.minPlayers,
       maxPlayers: state.room.maxPlayers,
       ...(definition.supportsBots === undefined ? {} : { supportsBots: definition.supportsBots }),
+      ...(definition.persistentWorld === undefined ? {} : { persistentWorld: definition.persistentWorld }),
       ...(definition.getTeams ? { teams: roomTeams(state, definition) } : {}),
       ...(state.room.hostPlayerId ? { hostPlayerId: state.room.hostPlayerId } : {}),
       rematchRequests: Object.keys(state.rematchRequests ?? {}),
       ...(state.activeInterruption ? { activeInterruption: state.activeInterruption } : {}),
       players: state.players,
-      publicView: definition.getPublicView(context),
+      publicView: definition.getPublicView(context, playerId),
       privateView: definition.getPrivateView(context, playerId)
     };
   }
@@ -1380,6 +1535,8 @@ export class RoomDO extends DurableObject<Env> {
   private toSummary(state: RoomState): RoomSummary {
     return {
       roomId: state.room.roomId,
+      ...(state.room.roomName ? { roomName: state.room.roomName } : {}),
+      ...(state.room.fixed ? { fixed: true } : {}),
       gameId: state.room.gameId,
       mode: state.room.mode,
       phase: state.phase,
@@ -1407,15 +1564,48 @@ export class RoomDO extends DurableObject<Env> {
     } as Extract<ServerMessage, { type: TType }>;
   }
 
-  private deliverEvents(state: RoomState, events: GameEvent[]): void {
+  private deliverEvents(state: RoomState, events: GameEvent[], definition = getGameDefinition(state.room.gameId)): void {
+    const ctx = { state, now: Date.now() };
     for (const event of publicEvents(events)) {
-      this.broadcast(this.message(state, "event", { event }));
+      const msg = this.message(state, "event", { event });
+      const recipients = definition.getBroadcastRecipients?.(ctx, event);
+      if (recipients) {
+        for (const playerId of new Set(recipients)) {
+          this.broadcastToPlayer(playerId, msg);
+        }
+      } else {
+        this.broadcast(msg);
+      }
     }
     for (const player of state.players) {
       for (const event of privateEventsFor(events, player.playerId)) {
         this.broadcastToPlayer(player.playerId, this.message(state, "privateEvent", { event }));
       }
     }
+  }
+
+  private async persistPlayerProfile(
+    state: RoomState,
+    definition: ReturnType<typeof getGameDefinition>,
+    playerId: string,
+    displayName?: string
+  ): Promise<void> {
+    if (!definition.extractPlayerProfile) return;
+    const profile = definition.extractPlayerProfile({ state, now: Date.now() }, playerId);
+    if (!profile) return;
+    const repo = new D1Repository(this.env.DB);
+    await repo.upsertPlayerProfile({
+      gameId: state.room.gameId,
+      playerId,
+      ...(displayName ? { displayName } : {}),
+      profile
+    });
+  }
+
+  private prunePersistentWorldLogs(now: number): void {
+    const cutoff = now - 60_000;
+    this.ctx.storage.sql.exec("DELETE FROM processed_actions WHERE created_at < ?", cutoff);
+    this.ctx.storage.sql.exec("DELETE FROM event_log WHERE created_at < ?", cutoff);
   }
 
   private deliverChat(state: RoomState, chat: ChatMessage, teamRecipients?: string[]): void {
@@ -1462,6 +1652,8 @@ export class RoomDO extends DurableObject<Env> {
             : "open";
     await repo.upsertRoom({
       roomId: state.room.roomId,
+      ...(state.room.roomName ? { roomName: state.room.roomName } : {}),
+      ...(state.room.fixed ? { isFixed: true } : {}),
       gameId: state.room.gameId,
       mode: state.room.mode,
       status,

@@ -4,6 +4,8 @@ export type RoomStatus = "open" | "matching" | "active" | "closed";
 
 export type RoomIndexRecord = {
   roomId: string;
+  roomName?: string;
+  isFixed?: boolean;
   gameId: string;
   mode: string;
   status: RoomStatus;
@@ -40,8 +42,26 @@ export type MatchResultRecord = {
   replayPointer?: string | null;
 };
 
+export type PlayerGameProfileRecord = {
+  gameId: string;
+  playerId: string;
+  displayName?: string;
+  profile: Record<string, unknown>;
+  updatedAt?: string;
+};
+
+type PlayerGameProfileDbRow = {
+  game_id: string;
+  player_id: string;
+  display_name: string | null;
+  profile_json: string;
+  updated_at: string;
+};
+
 type RoomDbRow = {
   room_id: string;
+  room_name?: string | null;
+  is_fixed?: number | null;
   game_id: string;
   mode: string;
   status: RoomStatus;
@@ -69,6 +89,8 @@ type MatchTicketDbRow = {
 function mapRoom(row: RoomDbRow): RoomIndexRecord {
   return {
     roomId: row.room_id,
+    ...(row.room_name ? { roomName: row.room_name } : {}),
+    ...(row.is_fixed ? { isFixed: Boolean(row.is_fixed) } : {}),
     gameId: row.game_id,
     mode: row.mode,
     status: row.status,
@@ -114,9 +136,11 @@ export class D1Repository {
     await this.db
       .prepare(
         `INSERT INTO room_index (
-          room_id, game_id, mode, status, player_count, min_players, max_players, do_name, closed_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+          room_id, room_name, is_fixed, game_id, mode, status, player_count, min_players, max_players, do_name, closed_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
         ON CONFLICT(room_id) DO UPDATE SET
+          room_name = COALESCE(excluded.room_name, room_index.room_name),
+          is_fixed = MAX(excluded.is_fixed, room_index.is_fixed),
           status = excluded.status,
           player_count = excluded.player_count,
           min_players = excluded.min_players,
@@ -126,6 +150,8 @@ export class D1Repository {
       )
       .bind(
         room.roomId,
+        room.roomName ?? null,
+        room.isFixed ? 1 : 0,
         room.gameId,
         room.mode,
         room.status,
@@ -138,13 +164,14 @@ export class D1Repository {
       .run();
   }
 
-  async findJoinableRoom(gameId: string, mode: string): Promise<RoomIndexRecord | null> {
+  async findJoinableRoom(gameId: string, mode: string, includeActive = false): Promise<RoomIndexRecord | null> {
+    const statuses = includeActive ? "('open', 'matching', 'active')" : "('open', 'matching')";
     const row = await this.db
       .prepare(
-        `SELECT room_id, game_id, mode, status, player_count, min_players, max_players, do_name, created_at, updated_at, closed_at
+        `SELECT room_id, room_name, is_fixed, game_id, mode, status, player_count, min_players, max_players, do_name, created_at, updated_at, closed_at
          FROM room_index
-         WHERE game_id = ? AND mode = ? AND status IN ('open', 'matching') AND player_count < max_players
-         ORDER BY created_at ASC
+         WHERE game_id = ? AND mode = ? AND status IN ${statuses} AND player_count < max_players
+         ORDER BY is_fixed DESC, created_at ASC
          LIMIT 1`
       )
       .bind(gameId, mode)
@@ -152,13 +179,14 @@ export class D1Repository {
     return row ? mapRoom(row) : null;
   }
 
-  async listLobbyRooms(gameId: string, mode: string): Promise<RoomIndexRecord[]> {
+  async listLobbyRooms(gameId: string, mode: string, includeActive = false): Promise<RoomIndexRecord[]> {
+    const statuses = includeActive ? "('open', 'matching', 'active')" : "('open', 'matching')";
     const result = await this.db
       .prepare(
-        `SELECT room_id, game_id, mode, status, player_count, min_players, max_players, do_name, created_at, updated_at, closed_at
+        `SELECT room_id, room_name, is_fixed, game_id, mode, status, player_count, min_players, max_players, do_name, created_at, updated_at, closed_at
          FROM room_index
-         WHERE game_id = ? AND mode = ? AND status IN ('open', 'matching') AND player_count < max_players
-         ORDER BY created_at ASC`
+         WHERE game_id = ? AND mode = ? AND status IN ${statuses} AND player_count < max_players
+         ORDER BY is_fixed DESC, created_at ASC`
       )
       .bind(gameId, mode)
       .all<RoomDbRow>();
@@ -168,7 +196,7 @@ export class D1Repository {
   async getRoom(roomId: string): Promise<RoomIndexRecord | null> {
     const row = await this.db
       .prepare(
-        `SELECT room_id, game_id, mode, status, player_count, min_players, max_players, do_name, created_at, updated_at, closed_at
+        `SELECT room_id, room_name, is_fixed, game_id, mode, status, player_count, min_players, max_players, do_name, created_at, updated_at, closed_at
          FROM room_index
          WHERE room_id = ?`
       )
@@ -180,9 +208,9 @@ export class D1Repository {
   async listStaleRoomCandidates(cutoff: string, limit: number): Promise<RoomIndexRecord[]> {
     const result = await this.db
       .prepare(
-        `SELECT room_id, game_id, mode, status, player_count, min_players, max_players, do_name, created_at, updated_at, closed_at
+        `SELECT room_id, room_name, is_fixed, game_id, mode, status, player_count, min_players, max_players, do_name, created_at, updated_at, closed_at
          FROM room_index
-         WHERE status IN ('open', 'matching', 'active') AND updated_at <= ?
+         WHERE is_fixed = 0 AND status IN ('open', 'matching', 'active') AND updated_at <= ?
          ORDER BY updated_at ASC
          LIMIT ?`
       )
@@ -286,6 +314,50 @@ export class D1Repository {
         result.winnerPlayerId ?? null,
         JSON.stringify(result.result),
         result.replayPointer ?? null
+      )
+      .run();
+  }
+
+  async getPlayerProfile(gameId: string, playerId: string): Promise<PlayerGameProfileRecord | null> {
+    const row = await this.db
+      .prepare(
+        `SELECT game_id, player_id, display_name, profile_json, updated_at
+         FROM player_game_profiles
+         WHERE game_id = ? AND player_id = ?`
+      )
+      .bind(gameId, playerId)
+      .first<PlayerGameProfileDbRow>();
+    if (!row) return null;
+    try {
+      const parsed = JSON.parse(row.profile_json) as Record<string, unknown>;
+      return {
+        gameId: row.game_id,
+        playerId: row.player_id,
+        ...(row.display_name ? { displayName: row.display_name } : {}),
+        profile: parsed,
+        updatedAt: row.updated_at
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  async upsertPlayerProfile(record: PlayerGameProfileRecord): Promise<void> {
+    await this.db
+      .prepare(
+        `INSERT INTO player_game_profiles (
+          game_id, player_id, display_name, profile_json, updated_at
+        ) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(game_id, player_id) DO UPDATE SET
+          display_name = COALESCE(excluded.display_name, player_game_profiles.display_name),
+          profile_json = excluded.profile_json,
+          updated_at = CURRENT_TIMESTAMP`
+      )
+      .bind(
+        record.gameId,
+        record.playerId,
+        record.displayName ?? null,
+        JSON.stringify(record.profile)
       )
       .run();
   }

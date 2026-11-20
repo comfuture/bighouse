@@ -68,16 +68,16 @@
             <div class="lobby-room-rank" aria-hidden="true">{{ String(index + 1).padStart(2, "0") }}</div>
             <div class="lobby-room-summary">
               <div class="lobby-room-title-line">
-                <h3>{{ roomLabel(room.roomId) }}</h3>
-                <span :class="['lobby-room-status', `is-${room.status}`]">{{ room.status }}</span>
+                <h3>{{ roomLabel(room) }}</h3>
+                <span :class="['lobby-room-status', `is-${room.status}`]">{{ room.isFixed ? "상시 오픈" : room.status }}</span>
               </div>
               <div class="lobby-room-meta">
                 <span><UIcon name="i-lucide-users" aria-hidden="true" /> {{ room.playerCount }}/{{ room.maxPlayers }}</span>
-                <span>{{ selectedMode?.displayName ?? `Starts at ${room.minPlayers}` }}</span>
+                <span>{{ roomMetaSubtitle(room) }}</span>
               </div>
             </div>
             <div class="lobby-room-capacity" :aria-label="`${room.playerCount} of ${room.maxPlayers} seats filled`">
-              <span v-for="seat in room.maxPlayers" :key="seat" :class="{ 'is-filled': seat <= room.playerCount }" />
+              <span v-for="seat in Math.min(room.maxPlayers, 12)" :key="seat" :class="{ 'is-filled': seat <= Math.ceil((room.playerCount / Math.max(1, room.maxPlayers)) * Math.min(room.maxPlayers, 12)) }" />
             </div>
             <button
               class="lobby-room-join"
@@ -259,9 +259,16 @@ async function joinExisting(roomId: string): Promise<void> {
   }
 }
 
-function roomLabel(roomId: string): string {
-  const suffix = roomId.replace(/^room_/, "").slice(-6).toUpperCase();
+function roomLabel(room: RoomIndex): string {
+  if (room.roomName) return room.roomName;
+  const suffix = room.roomId.replace(/^room_/, "").slice(-6).toUpperCase();
   return suffix ? `Table ${suffix}` : "Waiting table";
+}
+
+function roomMetaSubtitle(room: RoomIndex): string {
+  const fixedSpec = gameMetadata.value?.fixedRooms?.find((spec) => spec.roomId === room.roomId);
+  if (fixedSpec?.description) return fixedSpec.description;
+  return selectedMode.value?.displayName ?? `Starts at ${room.minPlayers}`;
 }
 
 function connectLobby(): void {
