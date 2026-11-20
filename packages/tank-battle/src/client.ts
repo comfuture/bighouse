@@ -17,6 +17,11 @@ type TankBattleClient = {
   playerId: string;
   version: number;
   serverTime: number;
+  /** `performance.now()` when the snapshot carrying `serverTime` arrived. */
+  receivedAt: number;
+  connected: boolean;
+  /** Bumped by the host whenever the server rejects one of this player's actions. */
+  actionErrorRevision: number;
   publicView: TankBattlePublicView;
   privateView: TankBattlePrivateView;
   sendAction(action: { type: string; payload: Record<string, unknown> }): void;
@@ -195,7 +200,7 @@ export function mountGame(container: HTMLElement, context: GameClientContext): M
     requestPlayAgain: context.requestPlayAgain,
     leaveFinishedGame: context.leaveFinishedGame
   };
-  let client = toTankBattleClient(context, callbacks);
+  let client = toTankBattleClient(context, callbacks, undefined);
   const surface = document.createElement("div");
   surface.className = "game-contained-surface tank-battle-game";
   container.replaceChildren(surface);
@@ -244,7 +249,7 @@ export function mountGame(container: HTMLElement, context: GameClientContext): M
   return {
     update(nextContext) {
       const previous = client;
-      client = toTankBattleClient({ ...context, ...nextContext }, callbacks);
+      client = toTankBattleClient({ ...context, ...nextContext }, callbacks, previous);
       gameUi.update(nextContext);
       syncResultDialog(gameUi, client);
       scene.applySnapshot(client, previous);
@@ -290,7 +295,6 @@ class TankBattleScene extends Phaser.Scene {
   private chargeStartedAt: number | undefined;
   private chargingPointerId: number | undefined;
   private awaitingSnapshot = false;
-  private receivedAt = 0;
   private shotAnimation: ShotAnimation | undefined;
   private readonly shotAnimationQueue: QueuedShotAnimation[] = [];
   private seenShotId: number | undefined;
@@ -324,7 +328,6 @@ class TankBattleScene extends Phaser.Scene {
   }
 
   create(): void {
-    this.receivedAt = performance.now();
     this.skyGraphics = this.add.graphics().setDepth(0);
     this.terrainGraphics = this.add.graphics().setDepth(2);
     this.tankGraphics = this.add.graphics().setDepth(4);
@@ -372,9 +375,18 @@ class TankBattleScene extends Phaser.Scene {
 
   applySnapshot(next: TankBattleClient, previous: TankBattleClient): void {
     if (!this.sys.isActive()) return;
-    this.receivedAt = performance.now();
     if (next.version !== previous.version) {
       this.awaitingSnapshot = false;
+    } else if (
+      this.awaitingSnapshot &&
+      (next.actionErrorRevision !== previous.actionErrorRevision || (previous.connected && !next.connected))
+    ) {
+      // The fire was rejected or never left: no snapshot will come for it, so
+      // let the player aim again instead of waiting out the turn.
+      this.awaitingSnapshot = false;
+      this.stopFlightAudio();
+      this.renderPowerAndPreview();
+      this.refreshButtonStyles();
     }
     const shot = next.publicView.lastShot;
     if (!shot) {
@@ -730,7 +742,7 @@ class TankBattleScene extends Phaser.Scene {
     const client = this.getClient();
     const view = this.getVisualView();
     const myTurn = view.currentPlayerId === client.playerId;
-    const estimatedServerTime = client.serverTime + (performance.now() - this.receivedAt);
+    const estimatedServerTime = client.serverTime + (performance.now() - client.receivedAt);
     const seconds = view.turnDeadline ? Math.max(0, Math.ceil((view.turnDeadline - estimatedServerTime) / 1000)) : undefined;
     if (this.shotAnimation) {
       this.statusText?.setText(this.shotAnimation.exploded ? "폭발 충격과 잔해가 가라앉는 중" : "포탄 비행 중");
@@ -1182,7 +1194,7 @@ class TankBattleScene extends Phaser.Scene {
     this.flightSafetyTimer?.remove(false);
     this.flightSafetyTimer = this.time.delayedCall(5_000, () => this.stopFlightAudio());
     void this.audio.resume().then((ready) => {
-      if (!ready || this.soundingShotId !== shotId) return;
+      if (!ready || this.soundingShotId !== shotId || this.shotAnimation?.exploded) return;
       this.audio.playLaunch();
       this.audio.playFlight();
     });
@@ -1216,12 +1228,18 @@ class TankBattleScene extends Phaser.Scene {
 
 function toTankBattleClient(
   context: GameClientContext,
-  callbacks: Pick<TankBattleClient, "sendAction" | "requestPlayAgain" | "leaveFinishedGame">
+  callbacks: Pick<TankBattleClient, "sendAction" | "requestPlayAgain" | "leaveFinishedGame">,
+  previous: TankBattleClient | undefined
 ): TankBattleClient {
   return {
     playerId: context.playerId,
     version: context.version,
     serverTime: context.serverTime,
+    // Chat, presence and error updates repeat the last snapshot's server time,
+    // so the receipt time moves only when a new snapshot brings a new one.
+    receivedAt: previous && previous.serverTime === context.serverTime ? previous.receivedAt : performance.now(),
+    connected: context.connected !== false,
+    actionErrorRevision: context.actionError?.revision ?? 0,
     publicView: {
       ...(context.publicView as unknown as TankBattlePublicView),
       roomPhase: context.phase,
