@@ -231,4 +231,22 @@ describe("Sunny Meadow Bighouse integration (persistent world + D1 profile persi
     expect(clover!.playerCount).toBe(0);
     expect(clover!.status).toBe("active");
   });
+
+  it("keeps every seat when players join a persistent world at the same time", async () => {
+    const createRes = await SELF.fetch("http://example.com/games/sunny-meadow/lobbies/default/rooms", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ playerId: "rush_host", displayName: "Host" })
+    });
+    expect(createRes.status).toBe(200);
+    const created = (await createRes.json()) as { doName: string };
+    const roomDo = env.ROOM_DO.getByName(created.doName) as unknown as RoomDO;
+
+    // Each join awaits a D1 profile lookup, which lets the other joins run in between.
+    const joiners = Array.from({ length: 6 }, (_, index) => `rush_player_${index}`);
+    await Promise.all(joiners.map((playerId) => roomDo.join({ playerId, displayName: playerId })));
+
+    const summary = await roomDo.join({ playerId: "rush_host" });
+    expect(summary.playerCount).toBe(joiners.length + 1);
+  });
 });
