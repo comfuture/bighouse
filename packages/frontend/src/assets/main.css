@@ -98,13 +98,30 @@ input.game-plastic-input::placeholder {
 }
 
 @layer components {
+  /* ---------------------------------------------------------------------
+     Portal (home + lobby)
+     Molded blue plastic: flat tone-on-tone surfaces, a dark outline, a hard
+     drop edge instead of a soft shadow, and one yellow key for the action
+     that matters. Everything sits on a 4px grid.
+     --------------------------------------------------------------------- */
+  :root {
+    --portal-text: #ffffff;
+    --portal-text-2: #d7ecfd;
+    --portal-text-3: #b4d6f2;
+    --portal-line: rgb(132 237 255 / 0.24);
+    --portal-well: #083a80;
+    --portal-well-deep: #062c66;
+    --portal-edge: 0 4px 0 #031532;
+    --portal-gloss: inset 0 2px 0 rgb(255 255 255 / 0.18);
+    --portal-ease: cubic-bezier(0.2, 0.8, 0.3, 1);
+  }
+
   .game-portal-shell {
     min-height: 100vh;
-    overflow: hidden;
-    background:
-      radial-gradient(circle at 88% -8%, rgb(43 188 255 / 0.35), transparent 31rem),
-      radial-gradient(circle at -8% 38%, rgb(36 101 255 / 0.25), transparent 34rem),
-      linear-gradient(145deg, #0877dd 0%, #075bbd 45%, #032f78 100%);
+    background: linear-gradient(180deg, #0a66cc, #06408f);
+    color: var(--portal-text);
+    /* Keep Korean words whole when lines wrap. */
+    word-break: keep-all;
   }
 
   .game-room-app-shell {
@@ -113,512 +130,652 @@ input.game-plastic-input::placeholder {
   }
 
   .game-portal-container {
-    width: min(1240px, calc(100% - 1.5rem));
+    width: min(1240px, calc(100% - 32px));
     margin-inline: auto;
-    padding-block: 1rem 3.5rem;
+    padding-block: 16px 56px;
   }
 
   .portal-page {
     display: grid;
-    gap: 1.4rem;
+    gap: 20px;
   }
 
+  .game-portal-shell :where(a, button, input, summary):focus-visible {
+    outline: 3px solid #fff;
+    outline-offset: 2px;
+  }
+
+  /* Shared plastic panel */
+  .portal-panel,
+  .portal-chat {
+    min-width: 0;
+    border: 2px solid var(--game-border);
+    border-radius: 20px;
+    background: linear-gradient(180deg, #0e62c6, #0a52ae);
+    box-shadow: var(--portal-edge), var(--portal-gloss);
+  }
+
+  .portal-panel {
+    padding: 24px;
+  }
+
+  .portal-panel h2,
+  .portal-chat h2 {
+    color: var(--portal-text);
+    font-size: 1.25rem;
+    font-weight: 800;
+    line-height: 1.2;
+  }
+
+  .portal-count {
+    color: var(--portal-text-3);
+    font-size: 0.875rem;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Top bar */
   .portal-topbar {
     display: flex;
     min-height: 56px;
     align-items: center;
-    justify-content: space-between;
-    gap: 1rem;
-    border: 2px solid rgb(132 237 255 / 0.22);
-    border-radius: 18px;
-    padding: 0.45rem 0.65rem;
-    background: rgb(2 22 57 / 0.82);
-    box-shadow: 0 4px 0 rgb(2 18 48 / 0.75), inset 0 1px 0 rgb(255 255 255 / 0.12);
-    backdrop-filter: blur(16px);
+    gap: 16px;
+    border: 2px solid var(--game-border);
+    border-radius: 16px;
+    padding: 8px 12px 8px 8px;
+    background: #062c66;
+    box-shadow: var(--portal-edge);
   }
 
-  .portal-topbar .game-plastic-button {
-    box-shadow: none;
+  .portal-topbar-slot {
+    display: flex;
+    min-width: 0;
+    flex: 1;
+    align-items: center;
   }
 
   .portal-brand {
     display: inline-flex;
-    min-width: 0;
+    flex: none;
     align-items: center;
-    gap: 0.65rem;
-    border-radius: 12px;
-    padding: 0.25rem 0.45rem 0.25rem 0.25rem;
+    gap: 10px;
+    border-radius: 10px;
     color: #fff;
-    font-size: 1.05rem;
-    font-weight: 950;
-    letter-spacing: -0.03em;
+    font-size: 1.0625rem;
+    font-weight: 800;
   }
 
   .portal-brand-mark {
     display: grid;
-    width: 38px;
-    height: 38px;
+    width: 36px;
+    height: 36px;
     place-items: center;
     border: 2px solid var(--game-border);
-    border-radius: 11px;
-    background: linear-gradient(180deg, #ffe872, #ffbf18);
+    border-radius: 10px;
+    background: var(--game-yellow);
     color: var(--game-ink-dark);
-    font-size: 0.82rem;
-    font-weight: 1000;
-    box-shadow: 0 3px 0 #9b5d00, inset 0 2px 0 rgb(255 255 255 / 0.5);
+    font-size: 0.8125rem;
+    font-weight: 800;
+    box-shadow: 0 2px 0 #9b5d00, inset 0 2px 0 rgb(255 255 255 / 0.5);
   }
 
-  .portal-brand:focus-visible,
-  .portal-game-card:focus-visible,
-  .portal-player-chip:focus-visible,
-  .portal-primary-action:focus-visible,
-  .portal-secondary-action:focus-visible,
-  .portal-refresh-button:focus-visible,
-  .lobby-room-join:focus-visible {
-    outline: 4px solid #fff;
-    outline-offset: 3px;
+  .portal-back-link {
+    display: inline-flex;
+    min-height: 36px;
+    align-items: center;
+    gap: 8px;
+    border-left: 2px solid var(--portal-line);
+    padding-left: 16px;
+    color: var(--portal-text-2);
+    font-size: 0.875rem;
+    font-weight: 700;
+    transition: color 120ms var(--portal-ease);
+  }
+
+  .portal-back-link:hover {
+    color: #fff;
   }
 
   .portal-player-chip {
     appearance: none;
     display: inline-flex;
-    max-width: min(48vw, 260px);
+    max-width: min(48vw, 240px);
     min-height: 40px;
+    flex: none;
     align-items: center;
-    gap: 0.5rem;
-    border: 2px solid rgb(132 237 255 / 0.28);
-    border-radius: 12px;
-    padding: 0.35rem 0.75rem;
-    background: #092b63;
-    color: #e8f7ff;
-    font-size: 0.8rem;
-    font-weight: 850;
-    box-shadow: inset 0 2px 0 rgb(255 255 255 / 0.1);
+    gap: 8px;
+    border: 2px solid var(--portal-line);
+    border-radius: 10px;
+    padding: 4px 12px;
+    background: var(--portal-well);
+    color: var(--portal-text-2);
+    font-size: 0.875rem;
+    font-weight: 700;
     cursor: pointer;
-    transition: border-color 140ms ease, background-color 140ms ease, filter 140ms ease;
+    transition: border-color 120ms var(--portal-ease), color 120ms var(--portal-ease);
   }
 
-  .portal-player-chip:hover { border-color: rgb(132 237 255 / 0.62); background:#0c397d; filter:brightness(1.06); }
+  .portal-player-chip:hover {
+    border-color: rgb(132 237 255 / 0.6);
+    color: #fff;
+  }
 
-  .portal-player-chip span {
+  .portal-player-chip > span:not(.sr-only) {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
-  .portal-player-edit-icon { flex:none; width:14px; height:14px; color:var(--game-cyan); opacity:.72; }
-
-  .game-home-hero {
-    position: relative;
-    min-height: clamp(410px, 47vw, 590px);
-    overflow: hidden;
-    border: 3px solid var(--game-border);
-    border-radius: 28px;
-    background: #063d8d;
-    box-shadow: var(--game-hard-shadow), var(--game-inset);
-  }
-
-  .game-home-hero-image {
-    position: absolute;
-    inset: 0;
-    width: 100%;
-    height: 100%;
-    object-fit: cover;
-    object-position: center;
-    transform: scale(1.015);
-  }
-
-  .game-home-hero-overlay {
-    position: absolute;
-    inset: 0;
-    background:
-      linear-gradient(90deg, rgb(3 19 54 / 0.98) 0%, rgb(4 41 99 / 0.9) 39%, rgb(5 49 111 / 0.3) 68%, transparent 84%),
-      linear-gradient(180deg, transparent 58%, rgb(2 17 48 / 0.62));
-  }
-
-  .game-home-hero-content {
-    position: relative;
-    z-index: 1;
-    display: flex;
-    width: min(660px, 62%);
-    min-height: inherit;
-    flex-direction: column;
-    align-items: flex-start;
-    justify-content: center;
-    gap: 1.15rem;
-    padding: clamp(1.7rem, 5vw, 4.6rem);
-  }
-
-  .portal-eyebrow {
-    display: inline-flex;
-    min-height: 32px;
-    align-items: center;
-    gap: 0.55rem;
-    border: 1px solid rgb(132 237 255 / 0.4);
-    border-radius: 999px;
-    padding: 0.3rem 0.75rem;
-    background: rgb(4 33 81 / 0.8);
-    color: #dff9ff;
-    font-size: 0.76rem;
-    font-weight: 900;
-    letter-spacing: 0.045em;
-    text-transform: uppercase;
-    box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.12);
-    backdrop-filter: blur(12px);
-  }
-
-  .portal-live-dot {
-    width: 9px;
-    height: 9px;
+  .portal-player-edit-icon {
+    width: 14px;
+    height: 14px;
     flex: none;
-    border-radius: 50%;
-    background: var(--game-green);
-    box-shadow: 0 0 0 4px rgb(67 223 130 / 0.16), 0 0 14px rgb(67 223 130 / 0.7);
+    color: var(--portal-text-3);
   }
 
-  .game-home-hero-title {
-    max-width: 10ch;
-    color: #fff;
-    font-size: clamp(3.1rem, 7.6vw, 6.6rem);
-    font-weight: 1000;
-    line-height: 0.86;
-    letter-spacing: -0.075em;
-    text-wrap: balance;
-    text-shadow: 0 4px 0 #051d4a, 0 12px 28px rgb(0 8 30 / 0.45);
-  }
-
-  .game-home-hero-copy {
-    max-width: 36rem;
-    color: #cdeeff;
-    font-size: clamp(1rem, 1.7vw, 1.3rem);
-    font-weight: 700;
-    line-height: 1.45;
-    text-shadow: 0 2px 8px rgb(0 10 36 / 0.6);
-  }
-
+  /* Buttons: a raised key that travels 2px when pressed */
   .portal-primary-action,
   .portal-secondary-action,
-  .lobby-room-join,
-  .portal-refresh-button {
+  .lobby-room-join {
     display: inline-flex;
-    min-height: 48px;
+    min-height: 44px;
+    flex: none;
     align-items: center;
     justify-content: center;
-    gap: 0.65rem;
+    gap: 8px;
     border: 2px solid var(--game-border);
-    border-radius: 14px;
-    padding: 0.72rem 1.1rem;
-    font-weight: 950;
+    border-radius: 12px;
+    padding: 8px 16px;
+    font-size: 0.875rem;
+    font-weight: 800;
     line-height: 1;
-    transition: transform 120ms ease, box-shadow 120ms ease, filter 120ms ease;
+    cursor: pointer;
+    transition: transform 120ms var(--portal-ease), box-shadow 120ms var(--portal-ease), filter 120ms var(--portal-ease);
   }
 
   .portal-primary-action {
-    background: linear-gradient(180deg, #ffe66a, #ffc31b 56%, #e89b00);
+    min-height: 48px;
+    padding-inline: 24px;
+    background: linear-gradient(180deg, #ffe066, #ffc420);
     color: #111f39;
-    box-shadow: 0 6px 0 #8f5500, 0 12px 24px rgb(0 10 34 / 0.3), inset 0 2px 0 rgb(255 255 255 / 0.56);
+    box-shadow: 0 4px 0 #8f5500, inset 0 2px 0 rgb(255 255 255 / 0.55);
     font-size: 1rem;
+  }
+
+  .portal-secondary-action,
+  .lobby-room-join {
+    background: linear-gradient(180deg, #1688e0, #0966be);
+    color: #fff;
+    box-shadow: 0 4px 0 #032658, inset 0 2px 0 rgb(255 255 255 / 0.24);
   }
 
   .portal-primary-action:hover:not(:disabled),
   .portal-secondary-action:hover:not(:disabled),
-  .lobby-room-join:hover:not(:disabled),
-  .portal-refresh-button:hover:not(:disabled) {
-    transform: translateY(-2px);
-    filter: saturate(1.1) brightness(1.04);
+  .lobby-room-join:hover:not(:disabled) {
+    filter: brightness(1.07);
   }
 
   .portal-primary-action:active:not(:disabled),
   .portal-secondary-action:active:not(:disabled),
-  .lobby-room-join:active:not(:disabled),
-  .portal-refresh-button:active:not(:disabled) {
-    transform: translateY(4px);
-    box-shadow: 0 2px 0 #031532, inset 0 3px 7px rgb(0 24 77 / 0.22);
+  .lobby-room-join:active:not(:disabled) {
+    transform: translateY(2px);
+    box-shadow: 0 2px 0 #031532, inset 0 2px 4px rgb(0 24 77 / 0.2);
   }
 
   .portal-primary-action:disabled,
   .portal-secondary-action:disabled,
-  .lobby-room-join:disabled,
-  .portal-refresh-button:disabled {
+  .lobby-room-join:disabled {
     cursor: not-allowed;
-    filter: grayscale(0.35);
-    opacity: 0.62;
+    filter: grayscale(0.4);
+    opacity: 0.6;
   }
 
-  .game-home-hero-status {
+  .portal-spin {
+    animation: portal-spin 850ms linear infinite;
+  }
+
+  /* Hero: one featured game, or the plain Bighouse banner */
+  .portal-hero {
+    position: relative;
+    display: grid;
+    min-height: 288px;
+    align-items: center;
+    overflow: hidden;
+    border: 2px solid var(--game-border);
+    border-radius: 20px;
+    background: #0a4da6;
+    box-shadow: var(--portal-edge), var(--portal-gloss);
+  }
+
+  .portal-hero.is-brand {
+    min-height: 208px;
+  }
+
+  .portal-hero.is-loading {
+    background: var(--portal-well);
+  }
+
+  .portal-hero-art {
     position: absolute;
-    right: 1.2rem;
-    bottom: 1.2rem;
-    z-index: 2;
+    inset: 0 0 0 auto;
+    width: 64%;
+    height: 100%;
+    object-fit: cover;
+    -webkit-mask-image: linear-gradient(90deg, transparent, #000 36%);
+    mask-image: linear-gradient(90deg, transparent, #000 36%);
+  }
+
+  .portal-hero-body {
+    position: relative;
+    display: grid;
+    width: min(480px, 46%);
+    gap: 12px;
+    padding: 32px;
+  }
+
+  .portal-hero-label {
+    color: var(--game-yellow);
+    font-size: 0.875rem;
+    font-weight: 700;
+  }
+
+  .portal-hero-title {
+    color: #fff;
+    font-size: clamp(1.75rem, 3.4vw, 2.5rem);
+    font-weight: 800;
+    line-height: 1.1;
+    letter-spacing: -0.02em;
+    text-wrap: balance;
+  }
+
+  .portal-hero-copy {
+    display: -webkit-box;
+    overflow: hidden;
+    color: var(--portal-text-2);
+    font-size: 1rem;
+    font-weight: 500;
+    line-height: 1.5;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 3;
+  }
+
+  .portal-hero-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 16px;
+    margin-top: 8px;
+  }
+
+  .portal-hero-meta {
+    color: var(--portal-text-2);
+    font-size: 0.875rem;
+    font-weight: 600;
+  }
+
+  .portal-hero-picker {
+    position: absolute;
+    right: 16px;
+    bottom: 16px;
+    display: flex;
+    max-width: calc(100% - 32px);
+    gap: 4px;
+    overflow-x: auto;
+    border: 2px solid var(--game-border);
+    border-radius: 14px;
+    padding: 4px;
+    background: var(--portal-well-deep);
+    scrollbar-width: none;
+  }
+
+  .portal-hero-pick {
+    display: inline-flex;
+    min-height: 40px;
+    flex: none;
+    align-items: center;
+    gap: 8px;
+    border-radius: 8px;
+    padding: 4px 12px 4px 4px;
+    color: var(--portal-text-2);
+    font-size: 0.8125rem;
+    font-weight: 700;
+    cursor: pointer;
+    transition: background-color 120ms var(--portal-ease), color 120ms var(--portal-ease);
+  }
+
+  .portal-hero-pick img {
+    width: 32px;
+    height: 32px;
+    border-radius: 6px;
+    object-fit: cover;
+  }
+
+  .portal-hero-pick:hover {
+    color: #fff;
+  }
+
+  .portal-hero-pick[aria-pressed="true"] {
+    background: var(--game-yellow);
+    color: var(--game-ink-dark);
+  }
+
+  /* Recently played */
+  .portal-recent {
+    display: flex;
+    min-width: 0;
+    align-items: center;
+    gap: 16px;
+  }
+
+  .portal-recent h2 {
+    flex: none;
+    color: var(--portal-text-2);
+    font-size: 0.875rem;
+    font-weight: 700;
+  }
+
+  .portal-recent-list {
+    display: flex;
+    min-width: 0;
+    gap: 8px;
+    overflow-x: auto;
+    padding-block: 4px;
+    scrollbar-width: none;
+  }
+
+  .portal-recent-item {
+    display: inline-flex;
+    min-height: 44px;
+    flex: none;
+    align-items: center;
+    gap: 8px;
+    border: 2px solid var(--game-border);
+    border-radius: 12px;
+    padding: 4px 12px 4px 4px;
+    background: var(--portal-well);
+    color: #fff;
+    font-size: 0.875rem;
+    font-weight: 700;
+    transition: border-color 120ms var(--portal-ease);
+  }
+
+  .portal-recent-item img {
+    width: 32px;
+    height: 32px;
+    border-radius: 6px;
+    object-fit: cover;
+  }
+
+  .portal-recent-item:hover {
+    border-color: #78e5ff;
+  }
+
+  /* Directory */
+  .portal-directory {
+    display: grid;
+    gap: 16px;
+    scroll-margin-top: 16px;
+  }
+
+  .portal-directory-header {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px 16px;
+  }
+
+  .portal-directory-title {
     display: flex;
     align-items: baseline;
-    gap: 0.5rem;
-    border: 2px solid rgb(132 237 255 / 0.26);
-    border-radius: 13px;
-    padding: 0.55rem 0.8rem;
-    background: rgb(3 20 53 / 0.84);
-    box-shadow: 0 4px 0 rgb(1 12 35 / 0.74), inset 0 1px 0 rgb(255 255 255 / 0.12);
-    backdrop-filter: blur(12px);
+    gap: 12px;
   }
 
-  .game-home-hero-status strong {
-    color: var(--game-yellow);
-    font-size: 1.45rem;
-    font-weight: 1000;
-  }
-
-  .game-home-hero-status span {
-    color: #c7e8ff;
-    font-size: 0.72rem;
-    font-weight: 850;
-    text-transform: uppercase;
-  }
-
-  .portal-game-section,
-  .lobby-room-directory,
-  .portal-chat {
-    border: 3px solid var(--game-border);
-    border-radius: 24px;
-    background: linear-gradient(180deg, #0d63c7, #084ba5);
-    box-shadow: var(--game-hard-shadow), var(--game-inset);
-  }
-
-  .portal-game-section {
-    scroll-margin-top: 1rem;
-    padding: clamp(1rem, 2.5vw, 1.7rem);
-  }
-
-  .portal-section-heading {
+  .portal-search {
     display: flex;
-    align-items: end;
-    justify-content: space-between;
-    gap: 1rem;
-    margin-bottom: 1rem;
+    width: min(320px, 100%);
+    min-height: 44px;
+    align-items: center;
+    gap: 8px;
+    border: 2px solid var(--game-border);
+    border-radius: 12px;
+    padding-inline: 12px;
+    background: var(--portal-well-deep);
+    color: var(--portal-text-3);
+    box-shadow: inset 0 2px 4px rgb(0 12 42 / 0.4);
+    transition: border-color 120ms var(--portal-ease);
   }
 
-  .portal-section-heading h2,
-  .portal-chat-header h2 {
+  .portal-search:focus-within {
+    border-color: #78e5ff;
+  }
+
+  .portal-search input {
+    min-width: 0;
+    flex: 1;
+    background: none;
     color: #fff;
-    font-size: clamp(1.35rem, 2.8vw, 2rem);
-    font-weight: 1000;
-    line-height: 1.05;
-    letter-spacing: -0.04em;
-    text-shadow: 0 2px 0 rgb(0 25 79 / 0.7);
+    font-size: 0.9375rem;
+    font-weight: 600;
+    outline: none;
   }
 
-  .portal-kicker {
-    margin-bottom: 0.28rem;
-    color: var(--game-cyan);
-    font-size: 0.68rem;
-    font-weight: 950;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
+  .portal-search input:focus-visible {
+    outline: none;
   }
 
-  .portal-section-count,
-  .portal-chat-count {
+  .portal-search input::placeholder {
+    color: var(--portal-text-3);
+    opacity: 1;
+  }
+
+  .portal-filter-row {
+    display: flex;
+    gap: 8px;
+    overflow-x: auto;
+    padding-bottom: 4px;
+    scrollbar-width: none;
+  }
+
+  .portal-filter {
+    display: inline-flex;
+    min-height: 40px;
     flex: none;
-    border: 2px solid rgb(132 237 255 / 0.28);
-    border-radius: 999px;
-    padding: 0.38rem 0.68rem;
-    background: rgb(3 31 78 / 0.64);
-    color: #dff8ff;
-    font-size: 0.72rem;
-    font-weight: 900;
+    align-items: center;
+    gap: 8px;
+    border: 2px solid var(--game-border);
+    border-radius: 10px;
+    padding: 4px 12px;
+    background: var(--portal-well);
+    color: var(--portal-text-2);
+    font-size: 0.875rem;
+    font-weight: 700;
+    cursor: pointer;
+    transition: background-color 120ms var(--portal-ease), color 120ms var(--portal-ease);
+  }
+
+  .portal-filter:hover {
+    color: #fff;
+  }
+
+  .portal-filter-count {
+    color: var(--portal-text-3);
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .portal-filter[aria-pressed="true"] {
+    background: var(--game-yellow);
+    color: var(--game-ink-dark);
+    box-shadow: inset 0 2px 0 rgb(255 255 255 / 0.5);
+  }
+
+  .portal-filter[aria-pressed="true"] .portal-filter-count {
+    color: #4a3a05;
   }
 
   .portal-game-grid {
     display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 1rem;
+    grid-template-columns: repeat(auto-fill, minmax(232px, 1fr));
+    gap: 16px;
   }
 
   .portal-game-card {
-    position: relative;
+    display: flex;
     min-width: 0;
+    flex-direction: column;
     overflow: hidden;
-    border: 3px solid var(--game-border);
-    border-radius: 18px;
-    background: #092f69;
+    border: 2px solid var(--game-border);
+    border-radius: 14px;
+    background: var(--portal-well);
     color: #fff;
-    box-shadow: 0 6px 0 #031532, 0 13px 24px rgb(0 17 54 / 0.28), inset 0 1px 0 rgb(255 255 255 / 0.12);
-    transition: box-shadow 220ms ease, border-color 220ms ease, filter 140ms ease;
+    box-shadow: var(--portal-edge);
+    transition: transform 120ms var(--portal-ease), box-shadow 120ms var(--portal-ease), border-color 120ms var(--portal-ease);
   }
 
   .portal-game-card:hover {
     border-color: #78e5ff;
-    box-shadow: 0 7px 0 #031532, 0 17px 28px rgb(0 15 47 / 0.32), inset 0 1px 0 rgb(255 255 255 / 0.14);
   }
 
   .portal-game-card:active {
-    filter: brightness(0.96);
-    box-shadow: 0 3px 0 #031532, inset 0 3px 10px rgb(0 18 58 / 0.25);
+    transform: translateY(2px);
+    box-shadow: 0 2px 0 #031532;
   }
 
   .portal-game-art {
-    position: relative;
-    aspect-ratio: 16 / 9;
+    aspect-ratio: 16 / 10;
     overflow: hidden;
-    background: #05265a;
+    border-bottom: 2px solid var(--game-border);
+    background: var(--portal-well-deep);
   }
 
-  .portal-game-art::after {
-    content: "";
-    position: absolute;
-    inset: 0;
-    pointer-events: none;
-    background: linear-gradient(180deg, transparent 58%, rgb(1 13 41 / 0.78));
-  }
-
-  .portal-game-thumbnail {
+  .portal-game-art img {
     width: 100%;
     height: 100%;
     object-fit: cover;
-    transition: transform 320ms cubic-bezier(0.22, 1, 0.36, 1), filter 320ms ease;
-  }
-
-  .portal-game-card:hover .portal-game-thumbnail {
-    transform: scale(1.025);
-    filter: saturate(1.06) brightness(1.03);
-  }
-
-  .portal-game-player-count {
-    position: absolute;
-    right: 0.7rem;
-    bottom: 0.65rem;
-    z-index: 1;
-    display: inline-flex;
-    align-items: center;
-    gap: 0.35rem;
-    border: 2px solid #041a42;
-    border-radius: 10px;
-    padding: 0.35rem 0.55rem;
-    background: linear-gradient(180deg, #ffe364, #f4b400);
-    color: #10213f;
-    font-size: 0.75rem;
-    font-weight: 1000;
-    box-shadow: 0 3px 0 #885200, inset 0 1px 0 rgb(255 255 255 / 0.48);
   }
 
   .portal-game-card-body {
     display: flex;
-    min-height: 124px;
-    align-items: center;
-    justify-content: space-between;
-    gap: 1rem;
-    padding: 1rem;
-    background: linear-gradient(135deg, #0b3f86, #082a61);
+    flex: 1;
+    flex-direction: column;
+    gap: 4px;
+    padding: 12px 12px 16px;
   }
 
   .portal-game-card-body h3 {
-    margin-bottom: 0.35rem;
-    color: #fff;
-    font-size: 1.18rem;
-    font-weight: 1000;
-    letter-spacing: -0.035em;
+    overflow: hidden;
+    font-size: 1rem;
+    font-weight: 800;
+    line-height: 1.3;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .portal-game-card-body p {
     display: -webkit-box;
     overflow: hidden;
-    color: #bcdcf7;
-    font-size: 0.82rem;
-    font-weight: 650;
-    line-height: 1.4;
+    color: var(--portal-text-2);
+    font-size: 0.8125rem;
+    font-weight: 500;
+    line-height: 1.45;
     -webkit-box-orient: vertical;
     -webkit-line-clamp: 2;
   }
 
-  .portal-game-enter {
-    display: grid;
-    width: 44px;
-    height: 44px;
-    flex: none;
-    place-items: center;
-    border: 2px solid rgb(132 237 255 / 0.35);
-    border-radius: 12px;
-    background: #126dcb;
-    color: #fff;
-    box-shadow: 0 3px 0 #032456, inset 0 1px 0 rgb(255 255 255 / 0.2);
-    font-size: 1.1rem;
+  .portal-game-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 12px;
+    margin-top: auto;
+    padding-top: 8px;
+    color: var(--portal-text-3);
+    font-size: 0.75rem;
+    font-weight: 600;
   }
 
-  .portal-game-card-skeleton,
-  .lobby-room-row.is-skeleton {
+  .portal-game-meta span {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .portal-game-card.is-skeleton {
     pointer-events: none;
   }
 
-  .portal-directory-empty {
-    display: flex;
-    min-height: 180px;
-    align-items: center;
-    justify-content: center;
-    gap: 0.9rem;
-    border: 2px dashed rgb(132 237 255 / 0.3);
-    border-radius: 16px;
-    padding: 1.2rem;
-    background: rgb(2 34 83 / 0.42);
-    color: var(--game-cyan);
-    text-align: left;
-  }
-
-  .portal-directory-empty > svg {
-    flex: none;
-    font-size: 1.7rem;
-  }
-
-  .portal-directory-empty h3 {
-    color: #fff;
-    font-weight: 950;
-  }
-
-  .portal-directory-empty p {
-    margin-top: 0.25rem;
-    color: #a9cee9;
-    font-size: 0.78rem;
-  }
-
-  .portal-skeleton-image,
   .portal-skeleton-line {
-    background: linear-gradient(90deg, rgb(111 187 242 / 0.16), rgb(190 237 255 / 0.34), rgb(111 187 242 / 0.16));
+    width: 100%;
+    height: 12px;
+    border-radius: 6px;
+    background: linear-gradient(90deg, rgb(132 200 255 / 0.14), rgb(190 237 255 / 0.3), rgb(132 200 255 / 0.14));
     background-size: 220% 100%;
     animation: portal-shimmer 1.3s linear infinite;
   }
 
-  .portal-skeleton-image {
-    aspect-ratio: 16 / 9;
-  }
-
-  .portal-game-card-skeleton {
-    display: grid;
-    gap: 0.65rem;
-    padding-bottom: 1rem;
-  }
-
-  .portal-skeleton-line {
-    width: calc(100% - 2rem);
-    height: 13px;
-    margin-inline: 1rem;
-    border-radius: 999px;
+  .portal-skeleton-line + .portal-skeleton-line {
+    margin-top: 8px;
   }
 
   .portal-skeleton-line.is-short {
     width: 52%;
   }
 
+  .portal-empty {
+    display: flex;
+    min-height: 144px;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 16px;
+    border: 2px dashed var(--portal-line);
+    border-radius: 14px;
+    padding: 24px;
+    color: var(--portal-text-3);
+  }
+
+  .portal-empty > :first-child {
+    width: 28px;
+    height: 28px;
+    flex: none;
+  }
+
+  .portal-empty > div {
+    min-width: 0;
+    flex: 1 1 200px;
+  }
+
+  .portal-empty h3 {
+    color: #fff;
+    font-size: 1rem;
+    font-weight: 800;
+  }
+
+  .portal-empty p {
+    margin-top: 4px;
+    color: var(--portal-text-2);
+    font-size: 0.875rem;
+    line-height: 1.45;
+  }
+
   .portal-alert {
     display: flex;
-    align-items: flex-start;
-    gap: 0.7rem;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 12px;
     border: 2px solid var(--game-border);
-    border-radius: 16px;
-    padding: 0.85rem 1rem;
-    box-shadow: 0 4px 0 #031532, inset 0 1px 0 rgb(255 255 255 / 0.16);
+    border-radius: 14px;
+    padding: 12px 16px;
+    box-shadow: var(--portal-edge);
   }
 
   .portal-alert.is-error {
     background: #a72d48;
     color: #fff;
+  }
+
+  .portal-alert > div {
+    min-width: 0;
+    flex: 1 1 200px;
   }
 
   .portal-alert strong,
@@ -627,318 +784,329 @@ input.game-plastic-input::placeholder {
   }
 
   .portal-alert strong {
-    font-weight: 950;
+    font-size: 0.9375rem;
+    font-weight: 800;
   }
 
   .portal-alert span {
-    margin-top: 0.15rem;
-    color: rgb(255 255 255 / 0.82);
-    font-size: 0.8rem;
+    margin-top: 4px;
+    color: rgb(255 255 255 / 0.86);
+    font-size: 0.8125rem;
+    overflow-wrap: anywhere;
   }
 
-  .game-lobby-hero {
-    position: relative;
-    min-height: clamp(300px, 31vw, 400px);
+  /* Seat pegs: one peg per seat, yellow when someone sits there */
+  .seat-pegs {
+    display: inline-flex;
+    gap: 4px;
+  }
+
+  .seat-pegs i {
+    width: 12px;
+    height: 12px;
+    border: 2px solid var(--game-border);
+    border-radius: 50%;
+    background: var(--portal-well-deep);
+  }
+
+  .seat-pegs i.is-taken {
+    background: var(--game-yellow);
+  }
+
+  /* Lobby */
+  .lobby-header {
+    display: grid;
+    grid-template-columns: 176px minmax(0, 1fr) 248px;
+    align-items: center;
+    gap: 20px 24px;
+  }
+
+  .lobby-header-art {
+    aspect-ratio: 16 / 10;
     overflow: hidden;
-    border: 3px solid var(--game-border);
-    border-radius: 26px;
-    background:
-      linear-gradient(90deg, rgb(3 26 70 / 0.98), rgb(3 50 119 / 0.78) 52%, rgb(3 49 111 / 0.18)),
-      var(--game-lobby-image, linear-gradient(135deg, #087de1, #053986));
-    background-position: center;
-    background-size: cover;
-    box-shadow: var(--game-hard-shadow), var(--game-inset);
+    border: 2px solid var(--game-border);
+    border-radius: 12px;
+    background: var(--portal-well-deep);
   }
 
-  .game-lobby-hero-overlay {
-    position: absolute;
-    inset: 0;
-    background:
-      linear-gradient(90deg, rgb(2 18 51 / 0.9), rgb(4 51 119 / 0.52) 58%, transparent),
-      linear-gradient(180deg, rgb(255 255 255 / 0.08), transparent 30%, rgb(1 15 44 / 0.55));
+  .lobby-header-art img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
   }
 
-  .game-lobby-hero-content {
-    position: relative;
-    z-index: 1;
-    display: flex;
-    min-height: inherit;
-    align-items: end;
-    justify-content: space-between;
-    gap: 2rem;
-    padding: clamp(1.3rem, 4vw, 3rem);
+  .lobby-header-copy h1 {
+    font-size: clamp(1.5rem, 3vw, 2rem);
+    font-weight: 800;
+    line-height: 1.15;
+    letter-spacing: -0.02em;
   }
 
-  .game-lobby-copy {
+  .lobby-header-copy p {
+    max-width: 60ch;
+    margin-top: 8px;
+    color: var(--portal-text-2);
+    font-size: 0.9375rem;
+    font-weight: 500;
+    line-height: 1.5;
+  }
+
+  .lobby-header-copy .portal-game-meta {
+    font-size: 0.8125rem;
+  }
+
+  .lobby-header-action {
     display: grid;
-    max-width: 700px;
-    gap: 0.85rem;
+    gap: 8px;
   }
 
-  .game-lobby-hero-title {
-    color: #fff;
-    font-size: clamp(3rem, 7.2vw, 6.3rem);
-    font-weight: 1000;
-    line-height: 0.88;
-    letter-spacing: -0.075em;
-    text-shadow: 0 4px 0 #031a43, 0 13px 30px rgb(0 8 31 / 0.48);
+  .lobby-play-now {
+    min-height: 56px;
+    font-size: 1.0625rem;
   }
 
-  .game-lobby-hero-copy {
-    max-width: 37rem;
-    color: #d0edff;
-    font-size: clamp(0.95rem, 1.7vw, 1.18rem);
-    font-weight: 720;
-    line-height: 1.43;
-    text-shadow: 0 2px 8px rgb(0 10 35 / 0.56);
+  .lobby-header-action p {
+    color: var(--portal-text-2);
+    font-size: 0.8125rem;
+    font-weight: 500;
+    line-height: 1.4;
+    text-align: center;
   }
 
-  .game-lobby-badges {
+  .lobby-mode-switch {
     display: flex;
+    grid-column: 1 / -1;
     flex-wrap: wrap;
-    gap: 0.45rem;
+    align-items: center;
+    gap: 8px;
+    border-top: 2px solid rgb(3 27 68 / 0.5);
+    padding-top: 16px;
   }
 
-  .game-lobby-badges span {
-    border: 1px solid rgb(132 237 255 / 0.42);
-    border-radius: 999px;
-    padding: 0.3rem 0.65rem;
-    background: rgb(2 28 68 / 0.68);
-    color: #dff9ff;
-    font-size: 0.7rem;
-    font-weight: 900;
-    text-transform: uppercase;
-    backdrop-filter: blur(10px);
+  .lobby-mode-label {
+    margin-right: 8px;
+    color: var(--portal-text-2);
+    font-size: 0.875rem;
+    font-weight: 700;
   }
 
-  .game-lobby-create {
-    min-width: 190px;
-    min-height: 60px;
-    flex: none;
-    font-size: 1.05rem;
+  .lobby-mode-switch a {
+    display: inline-flex;
+    min-height: 40px;
+    align-items: center;
+    border: 2px solid var(--game-border);
+    border-radius: 10px;
+    padding: 4px 16px;
+    background: var(--portal-well);
+    color: var(--portal-text-2);
+    font-size: 0.875rem;
+    font-weight: 700;
+    transition: background-color 120ms var(--portal-ease), color 120ms var(--portal-ease);
   }
 
-  .game-lobby-layout {
+  .lobby-mode-switch a:hover {
+    color: #fff;
+  }
+
+  .lobby-mode-switch a[aria-current="page"] {
+    background: var(--game-yellow);
+    color: var(--game-ink-dark);
+    box-shadow: inset 0 2px 0 rgb(255 255 255 / 0.5);
+  }
+
+  .lobby-layout {
     display: grid;
-    grid-template-columns: minmax(0, 1.55fr) minmax(300px, 0.65fr);
-    gap: 1.2rem;
+    grid-template-columns: minmax(0, 1fr) 340px;
     align-items: start;
+    gap: 20px;
   }
 
-  .lobby-room-directory {
+  .lobby-side {
+    display: grid;
     min-width: 0;
-    padding: clamp(1rem, 2.2vw, 1.5rem);
+    gap: 20px;
   }
 
-  .portal-refresh-button {
-    min-height: 42px;
-    border-color: rgb(132 237 255 / 0.34);
-    padding: 0.55rem 0.75rem;
-    background: #073674;
-    color: #e8f8ff;
-    box-shadow: 0 3px 0 #031a3d, inset 0 1px 0 rgb(255 255 255 / 0.12);
-    font-size: 0.76rem;
+  .lobby-section-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    margin-bottom: 16px;
   }
 
-  .portal-spin {
-    animation: portal-spin 850ms linear infinite;
+  .lobby-section-header p,
+  .lobby-create > p {
+    margin-top: 4px;
+    color: var(--portal-text-2);
+    font-size: 0.875rem;
+    font-weight: 500;
+    line-height: 1.45;
   }
 
   .lobby-room-list {
     display: grid;
-    gap: 0.65rem;
+    gap: 8px;
   }
 
   .lobby-room-row {
     display: grid;
-    grid-template-columns: 52px minmax(0, 1fr) auto auto;
-    min-width: 0;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    min-height: 68px;
     align-items: center;
-    gap: 0.8rem;
-    border: 2px solid #031b44;
-    border-radius: 15px;
-    padding: 0.65rem;
-    background: linear-gradient(180deg, #0a3b7d, #082f67);
-    box-shadow: 0 4px 0 #031532, inset 0 1px 0 rgb(255 255 255 / 0.11);
+    gap: 16px;
+    border: 2px solid var(--game-border);
+    border-radius: 12px;
+    padding: 8px 12px 8px 16px;
+    background: var(--portal-well);
   }
 
   .lobby-room-row.is-skeleton {
     grid-template-columns: 1fr;
-    min-height: 88px;
     align-content: center;
-  }
-
-  .lobby-room-rank {
-    display: grid;
-    width: 52px;
-    height: 52px;
-    place-items: center;
-    border: 2px solid rgb(132 237 255 / 0.18);
-    border-radius: 11px;
-    background: #06275b;
-    color: #8fc5e9;
-    font-size: 0.8rem;
-    font-weight: 1000;
-    box-shadow: inset 0 2px 8px rgb(0 10 35 / 0.25);
+    gap: 0;
+    pointer-events: none;
   }
 
   .lobby-room-summary {
     min-width: 0;
   }
 
-  .lobby-room-title-line,
-  .lobby-room-meta {
-    display: flex;
-    min-width: 0;
-    align-items: center;
-    gap: 0.55rem;
-  }
-
-  .lobby-room-title-line h3 {
+  .lobby-room-summary h3 {
     overflow: hidden;
-    color: #fff;
-    font-size: 0.95rem;
-    font-weight: 950;
+    font-size: 0.9375rem;
+    font-weight: 800;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
+  .lobby-room-summary p {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0 12px;
+    margin-top: 4px;
+    color: var(--portal-text-3);
+    font-size: 0.8125rem;
+    font-weight: 500;
+  }
+
   .lobby-room-status {
-    flex: none;
-    border-radius: 999px;
-    padding: 0.2rem 0.46rem;
-    background: rgb(255 255 255 / 0.11);
-    color: #d8ebf9;
-    font-size: 0.6rem;
-    font-weight: 950;
-    letter-spacing: 0.05em;
-    text-transform: uppercase;
+    font-weight: 700;
   }
 
   .lobby-room-status.is-open {
-    background: rgb(67 223 130 / 0.16);
-    color: #82f1ad;
+    color: #8ff0b6;
   }
 
   .lobby-room-status.is-matching {
-    background: rgb(255 212 59 / 0.17);
     color: #ffe173;
   }
 
-  .lobby-room-meta {
-    margin-top: 0.35rem;
-    color: #9fc9e8;
-    font-size: 0.7rem;
-    font-weight: 750;
-  }
-
-  .lobby-room-meta span {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.25rem;
-  }
-
-  .lobby-room-capacity {
+  .lobby-room-seats {
     display: flex;
-    max-width: 92px;
-    flex-wrap: wrap;
-    justify-content: flex-end;
-    gap: 4px;
+    align-items: center;
+    gap: 8px;
   }
 
-  .lobby-room-capacity span {
-    width: 10px;
-    height: 10px;
-    border: 1px solid rgb(132 237 255 / 0.25);
-    border-radius: 3px;
-    background: #041d49;
-  }
-
-  .lobby-room-capacity span.is-filled {
-    border-color: #ffec7c;
-    background: var(--game-yellow);
-    box-shadow: 0 0 8px rgb(255 212 59 / 0.44);
+  .lobby-room-seat-count {
+    color: var(--portal-text-2);
+    font-size: 0.875rem;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
   }
 
   .lobby-room-join {
-    min-width: 86px;
-    min-height: 44px;
-    padding: 0.55rem 0.72rem;
-    background: linear-gradient(180deg, #32bfff, #0b82e7 58%, #075eb8);
-    color: #fff;
-    box-shadow: 0 4px 0 #032658, inset 0 2px 0 rgb(255 255 255 / 0.28);
-    font-size: 0.76rem;
+    min-width: 80px;
   }
 
-  .lobby-empty-state {
+  .lobby-create {
     display: grid;
-    min-height: 190px;
-    grid-template-columns: auto minmax(0, 1fr) auto;
+    gap: 16px;
+  }
+
+  .lobby-create > p {
+    margin-top: -8px;
+  }
+
+  .lobby-create-summary {
+    display: grid;
+    gap: 8px;
+    border: 2px solid var(--game-border);
+    border-radius: 12px;
+    padding: 12px 16px;
+    background: var(--portal-well);
+    font-size: 0.875rem;
+  }
+
+  .lobby-create-summary > div {
+    display: flex;
     align-items: center;
-    gap: 1rem;
-    border: 2px dashed rgb(132 237 255 / 0.32);
-    border-radius: 16px;
-    padding: 1.2rem;
-    background: rgb(2 34 83 / 0.42);
+    justify-content: space-between;
+    gap: 16px;
   }
 
-  .lobby-empty-icon {
-    display: grid;
-    width: 54px;
-    height: 54px;
-    place-items: center;
-    border: 2px solid rgb(132 237 255 / 0.22);
-    border-radius: 13px;
-    background: #05285f;
-    color: var(--game-cyan);
-    font-size: 1.4rem;
+  .lobby-create-summary dt {
+    color: var(--portal-text-3);
+    font-weight: 600;
   }
 
-  .lobby-empty-state h3 {
+  .lobby-create-summary dd {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
     color: #fff;
-    font-size: 1rem;
-    font-weight: 950;
+    font-weight: 700;
   }
 
-  .lobby-empty-state p {
-    margin-top: 0.3rem;
-    color: #a9cee9;
-    font-size: 0.78rem;
-    line-height: 1.4;
+  .lobby-rule-option {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    color: #fff;
+    font-size: 0.875rem;
+    font-weight: 700;
+    cursor: pointer;
   }
 
-  .portal-secondary-action {
-    min-height: 44px;
-    background: #0a3b7c;
-    color: #e7f7ff;
-    box-shadow: 0 4px 0 #031b43, inset 0 1px 0 rgb(255 255 255 / 0.13);
-    font-size: 0.76rem;
+  .lobby-rule-option input {
+    width: 20px;
+    height: 20px;
+    flex: none;
+    accent-color: var(--game-yellow);
   }
 
+  .lobby-rule-option small {
+    display: block;
+    margin-top: 4px;
+    color: var(--portal-text-2);
+    font-size: 0.8125rem;
+    font-weight: 500;
+  }
+
+  .lobby-create-button {
+    width: 100%;
+    min-height: 48px;
+  }
+
+  /* Chat */
   .portal-chat {
-    min-width: 0;
     overflow: hidden;
   }
 
   .portal-chat-header {
     display: flex;
-    align-items: center;
+    align-items: baseline;
     justify-content: space-between;
-    gap: 1rem;
-    border-bottom: 2px solid rgb(3 27 68 / 0.82);
-    padding: 1rem;
-    background: #084795;
-  }
-
-  .portal-chat-header h2 {
-    font-size: 1.2rem;
+    gap: 16px;
+    border-bottom: 2px solid var(--game-border);
+    padding: 16px 24px;
   }
 
   .portal-chat-log {
-    height: 360px;
+    height: 280px;
     overflow: auto;
-    padding: 0.9rem;
-    background: rgb(2 25 62 / 0.7);
+    padding: 16px;
+    background: var(--portal-well-deep);
     scrollbar-color: #177bcf #05295f;
   }
 
@@ -947,58 +1115,66 @@ input.game-plastic-input::placeholder {
     height: 100%;
     place-content: center;
     justify-items: center;
-    gap: 0.55rem;
-    color: #88b8da;
-    text-align: center;
-    font-size: 0.78rem;
-    font-weight: 700;
+    gap: 8px;
+    color: var(--portal-text-3);
+    font-size: 0.875rem;
+    font-weight: 600;
   }
 
-  .portal-chat-empty svg {
-    font-size: 1.55rem;
+  .portal-chat-empty > :first-child {
+    width: 24px;
+    height: 24px;
   }
 
   .portal-chat-message + .portal-chat-message {
-    margin-top: 0.85rem;
+    margin-top: 12px;
   }
 
   .portal-chat-message-meta {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: 0.35rem;
-    color: #7fb0d6;
-    font-size: 0.65rem;
+    gap: 8px;
+    color: var(--portal-text-3);
+    font-size: 0.75rem;
   }
 
   .portal-chat-message-meta strong {
-    color: #bfe9ff;
-    font-weight: 900;
+    color: var(--portal-text-2);
+    font-weight: 700;
   }
 
   .portal-chat-private {
-    border-radius: 999px;
-    padding: 0.12rem 0.35rem;
-    background: rgb(255 212 59 / 0.14);
-    color: #ffe170;
-    font-weight: 900;
+    color: #ffe173;
+    font-weight: 700;
   }
 
   .portal-chat-message p {
-    margin-top: 0.18rem;
+    margin-top: 4px;
     overflow-wrap: anywhere;
-    color: #f3faff;
-    font-size: 0.78rem;
-    line-height: 1.4;
+    color: #fff;
+    font-size: 0.875rem;
+    line-height: 1.45;
   }
 
   .portal-chat-composer {
     display: flex;
     align-items: center;
-    gap: 0.55rem;
-    border-top: 2px solid rgb(132 237 255 / 0.16);
-    padding: 0.75rem;
-    background: #063676;
+    gap: 8px;
+    border-top: 2px solid var(--game-border);
+    padding: 12px;
+  }
+
+  .identity-advanced summary {
+    width: fit-content;
+    color: var(--ui-text-muted);
+    font-size: 0.8125rem;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .identity-advanced[open] summary {
+    margin-bottom: 16px;
   }
 
   .game-plastic-surface,
@@ -1133,59 +1309,6 @@ input.game-plastic-input::placeholder {
     font-size: 0.8rem;
   }
 
-  .room-creation-progress {
-    display: grid;
-    grid-template-columns: auto minmax(0, 1fr);
-    align-items: center;
-    gap: 1rem;
-    min-height: 112px;
-    border: 2px solid #062355;
-    border-radius: 20px;
-    padding: 1rem;
-    color: #fff;
-    background:
-      radial-gradient(circle at 82% 18%, rgb(129 231 255 / 0.22), transparent 8rem),
-      linear-gradient(145deg, #0a4aa1, #09316f);
-    box-shadow: 0 7px 0 #051c46, inset 0 2px 0 rgb(255 255 255 / 0.16);
-  }
-
-  .room-creation-progress strong {
-    display: block;
-    font-family: var(--game-font-display);
-    font-size: 1.15rem;
-    letter-spacing: -0.02em;
-  }
-
-  .room-creation-progress p {
-    margin: 0.25rem 0 0;
-    color: #c6e7ff;
-    font-size: 0.9rem;
-    font-weight: 650;
-  }
-
-  .room-creation-orbit {
-    position: relative;
-    display: grid;
-    width: 58px;
-    height: 58px;
-    place-items: center;
-    border: 3px solid rgb(129 231 255 / 0.28);
-    border-radius: 50%;
-    color: #fff;
-    background: #0b5bc0;
-  }
-
-  .room-creation-orbit::after {
-    position: absolute;
-    inset: -3px;
-    border: 3px solid transparent;
-    border-top-color: var(--game-yellow);
-    border-right-color: var(--game-cyan);
-    border-radius: inherit;
-    content: "";
-    animation: portal-spin 800ms linear infinite;
-  }
-
   .room-qr-image {
     width: min(16rem, 100%);
     aspect-ratio: 1;
@@ -1240,153 +1363,141 @@ input.game-plastic-input::placeholder {
     }
   }
 
-  @media (max-width: 900px) {
-    .game-home-hero-content {
-      width: 72%;
+  @media (max-width: 960px) {
+    .lobby-header {
+      grid-template-columns: 144px minmax(0, 1fr);
     }
 
-    .game-lobby-layout {
+    .lobby-header-action {
+      grid-column: 1 / -1;
+    }
+
+    .lobby-layout {
       grid-template-columns: 1fr;
-    }
-
-    .portal-chat-log {
-      height: 260px;
-    }
-
-    .lobby-chat-panel {
-      order: 2;
     }
   }
 
   @media (max-width: 680px) {
     .game-portal-container {
-      width: min(100% - 0.85rem, 1240px);
-      padding-block: 0.45rem 2rem;
+      width: calc(100% - 24px);
+      padding-block: 12px 40px;
     }
 
     .portal-page {
-      gap: 0.9rem;
+      gap: 16px;
     }
 
-    .portal-topbar {
-      min-height: 52px;
-      border-radius: 15px;
+    .portal-panel {
+      padding: 16px;
     }
 
-    .portal-player-chip {
-      max-width: 46vw;
-      padding-inline: 0.55rem;
-    }
-
-    .portal-brand > span:last-child {
+    .portal-brand-name {
       display: none;
     }
 
-    .game-home-hero {
-      min-height: 570px;
-      border-radius: 22px;
+    .portal-back-link {
+      border-left: 0;
+      padding-left: 0;
     }
 
-    .game-home-hero-image {
-      object-position: 62% center;
+    .portal-hero {
+      min-height: 0;
+      align-items: stretch;
     }
 
-    .game-home-hero-overlay {
-      background:
-        linear-gradient(180deg, rgb(3 22 59 / 0.32), rgb(3 27 69 / 0.78) 48%, rgb(2 16 47 / 0.98) 78%),
-        linear-gradient(90deg, rgb(3 24 63 / 0.64), transparent);
-    }
-
-    .game-home-hero-content {
+    .portal-hero-art {
+      position: static;
       width: 100%;
-      min-height: inherit;
-      justify-content: flex-end;
-      gap: 0.9rem;
-      padding: 1.2rem 1.05rem 1.35rem;
+      height: 152px;
+      -webkit-mask-image: linear-gradient(180deg, #000 60%, transparent);
+      mask-image: linear-gradient(180deg, #000 60%, transparent);
     }
 
-    .game-home-hero-title {
-      max-width: 9ch;
-      font-size: clamp(3.25rem, 16vw, 4.8rem);
-    }
-
-    .game-home-hero-copy {
-      max-width: 25rem;
-      font-size: 0.95rem;
-    }
-
-    .game-home-hero-status {
-      top: 0.8rem;
-      right: 0.8rem;
-      bottom: auto;
-    }
-
-    .portal-primary-action {
+    .portal-hero-body {
       width: 100%;
-      min-height: 54px;
+      padding: 4px 16px 16px;
     }
 
-    .portal-game-section,
-    .lobby-room-directory,
-    .portal-chat {
-      border-radius: 19px;
+    .portal-hero.is-brand .portal-hero-body {
+      padding-top: 4px;
+    }
+
+    .portal-hero-title {
+      font-size: 1.75rem;
+    }
+
+    .portal-hero-copy {
+      font-size: 0.9375rem;
+    }
+
+    .portal-hero-picker {
+      position: static;
+      max-width: none;
+      margin: 0 16px 16px;
+    }
+
+    .portal-recent {
+      flex-direction: column;
+      align-items: stretch;
+      gap: 4px;
+    }
+
+    .portal-search {
+      width: 100%;
     }
 
     .portal-game-grid {
-      grid-template-columns: 1fr;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
     }
 
-    .portal-game-card-body {
-      min-height: 108px;
-    }
-
-    .game-lobby-hero {
-      min-height: 440px;
-      border-radius: 21px;
-    }
-
-    .game-lobby-hero-content {
-      flex-direction: column;
-      align-items: stretch;
-      justify-content: flex-end;
-      gap: 1.2rem;
-      padding: 1.1rem;
-    }
-
-    .game-lobby-hero-title {
-      font-size: clamp(3.1rem, 16vw, 4.8rem);
-    }
-
-    .game-lobby-create {
-      width: 100%;
-      min-height: 56px;
-    }
-
-    .lobby-room-row {
-      grid-template-columns: 44px minmax(0, 1fr) auto;
-      gap: 0.65rem;
-    }
-
-    .lobby-room-rank {
-      width: 44px;
-      height: 54px;
-    }
-
-    .lobby-room-capacity {
+    .portal-game-card-body p {
       display: none;
     }
 
+    .portal-game-card .portal-game-meta span + span {
+      display: none;
+    }
+
+    .lobby-header {
+      grid-template-columns: 96px minmax(0, 1fr);
+      gap: 16px;
+    }
+
+    .lobby-header-art {
+      align-self: start;
+    }
+
+    .lobby-header-copy p {
+      font-size: 0.875rem;
+    }
+
+    .lobby-section-header {
+      align-items: flex-start;
+    }
+
+    .lobby-room-row {
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 8px 12px;
+      padding: 12px;
+    }
+
+    .lobby-room-seats {
+      grid-column: 1;
+      grid-row: 2;
+    }
+
     .lobby-room-join {
-      min-width: 78px;
+      grid-column: 2;
+      grid-row: 1 / span 2;
     }
 
-    .lobby-empty-state {
-      grid-template-columns: auto minmax(0, 1fr);
+    .portal-chat-header {
+      padding: 12px 16px;
     }
 
-    .lobby-empty-state .portal-secondary-action {
-      grid-column: 1 / -1;
-      width: 100%;
+    .portal-chat-log {
+      height: 232px;
     }
 
     .game-room-shell {
@@ -1398,47 +1509,6 @@ input.game-plastic-input::placeholder {
   }
 
   @media (max-width: 420px) {
-    .portal-eyebrow {
-      font-size: 0.64rem;
-    }
-
-    .portal-section-heading {
-      align-items: center;
-    }
-
-    .portal-section-count {
-      display: none;
-    }
-
-    .portal-section-heading h2 {
-      font-size: 1.35rem;
-    }
-
-    .lobby-room-row {
-      grid-template-columns: 40px minmax(0, 1fr);
-      padding: 0.62rem;
-    }
-
-    .lobby-room-rank {
-      width: 40px;
-      height: 52px;
-    }
-
-    .lobby-room-join {
-      grid-column: 1 / -1;
-      width: 100%;
-    }
-
-    .lobby-room-title-line {
-      align-items: flex-start;
-      flex-direction: column;
-      gap: 0.2rem;
-    }
-
-    .portal-chat-log {
-      height: 230px;
-    }
-
     .room-connection-banner {
       top: calc(max(0.65rem, env(safe-area-inset-top)) + 50px);
       width: calc(100% - 1.3rem);
@@ -1460,11 +1530,3 @@ input.game-plastic-input::placeholder {
     }
   }
 }
-
-.portal-game-option { display: flex; flex-direction: column; min-width: 0; gap: 10px; }
-.portal-game-option > .portal-game-card { flex: 1; }
-.portal-game-modes { display: flex; flex-wrap: wrap; gap: 8px; }
-.portal-game-modes a { flex: 1; text-align: center; padding: 12px 16px; min-height: 44px; border: 1px solid #8dd9f6; border-radius: 12px; background: #082a59; color: #fff; font-weight: 800; }
-.portal-game-modes a:hover, .portal-game-modes a[aria-current="page"] { background: #1268c4; border-color: #ffe9a7; }
-.lobby-rule-option { display: flex; align-items: center; gap: 9px; margin-top: 14px; color: #fff4d6; font-size: 14px; }
-.lobby-rule-option input { width: 20px; height: 20px; }

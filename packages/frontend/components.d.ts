@@ -13,6 +13,7 @@ declare module 'vue' {
   export interface GlobalComponents {
     ChatPanel: typeof import('./src/components/ChatPanel.vue')['default']
     IdentityModal: typeof import('./src/components/IdentityModal.vue')['default']
+    PortalTopbar: typeof import('./src/components/PortalTopbar.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']
     UAlert: typeof import('./../../node_modules/.pnpm/@nuxt+ui@4.7.1_@internationalized+date@3.12.1_@internationalized+number@3.6.6_@tiptap+e_1f6155090c18c4bfc60e1919612d7b3b/node_modules/@nuxt/ui/dist/runtime/components/Alert.vue')['default']

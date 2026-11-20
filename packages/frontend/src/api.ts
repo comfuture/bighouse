@@ -34,6 +34,19 @@ export async function createLobbyRoom(gameId: string, mode: string, options: { m
   return data;
 }
 
+/** Quick play: joins a room with a free seat, or opens a new one when none is waiting. */
+export async function quickJoinLobby(gameId: string, mode: string, options: { minPlayers?: number; maxPlayers?: number; config?: Record<string, unknown> } = {}): Promise<RoomJoinResponse> {
+  requirePlayerId();
+  const res = await fetch(`/games/${encodeURIComponent(gameId)}/lobbies/${encodeURIComponent(mode)}/join`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ playerId: identity.playerId, displayName: identity.displayName || undefined, ...options })
+  });
+  const data = (await res.json()) as RoomJoinResponse;
+  if (!res.ok) throw apiError(data, res.status);
+  return data;
+}
+
 export async function joinRoom(roomId: string): Promise<RoomJoinResponse> {
   requirePlayerId();
   const res = await fetch(`/rooms/${encodeURIComponent(roomId)}/join`, {
