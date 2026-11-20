@@ -36,7 +36,6 @@ describe("one card bot player", () => {
     state.stageState = {
       discardPile: ["5S", "2S"],
       deck: ["9D", "10C", "QH"],
-      deckCount: 3,
       currentPlayerId: "p1",
       turnDirection: "clockwise",
       activeAttackCount: 2,
@@ -69,7 +68,6 @@ describe("one card bot player", () => {
     state.stageState = {
       discardPile: ["5S"],
       deck: ["9D", "10C", "QH"],
-      deckCount: 3,
       currentPlayerId: "p1",
       turnDirection: "clockwise",
       activeAttackCount: 0,
@@ -95,7 +93,6 @@ describe("one card bot player", () => {
     state.stageState = {
       discardPile: ["5S", "BJ"],
       deck: ["9D", "10C", "QH"],
-      deckCount: 3,
       currentPlayerId: "p1",
       turnDirection: "clockwise",
       activeAttackCount: 5,

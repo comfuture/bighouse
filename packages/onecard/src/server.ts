@@ -10,13 +10,14 @@ import type {
   ServerGamePlugin,
   ValidationResult
 } from "@bighouse/game-sdk/server";
-import { createGameEventId, defineGameDefinition } from "@bighouse/game-sdk/server";
+import { createGameEventId, defineGameDefinition, secureShuffle } from "@bighouse/game-sdk/server";
 import { baseGameMetadata } from "./metadata";
 
 export type CardStageState = {
   discardPile: string[];
   deck: string[];
-  deckCount: number;
+  /** Opening hands by player id, written once per deal. Never sent to clients. */
+  dealtHands: Record<string, string[]>;
   currentPlayerId?: string;
   turnDirection: "clockwise" | "counterclockwise";
   activeAttackCount: number;
@@ -33,19 +34,9 @@ export type CardPlayerState = {
 
 export const gameMetadata = baseGameMetadata;
 
-// Seedable PRNG (Mulberry32) for deterministic initial shuffling
-function seedRandom(seedStr: string) {
-  let h = 2166136261 >>> 0;
-  for (let i = 0; i < seedStr.length; i++) {
-    h = Math.imul(h ^ seedStr.charCodeAt(i), 16777619);
-  }
-  return function () {
-    h += 0xe120fc15;
-    let tmp = Math.imul(h ^ (h >>> 15), 1 | h);
-    tmp = (tmp + Math.imul(tmp ^ (tmp >>> 7), 61 | tmp)) ^ tmp;
-    return ((tmp ^ (tmp >>> 14)) >>> 0) / 4294967296;
-  };
-}
+const HAND_SIZE = 7;
+/** A player holding this many cards is out of the game. */
+const BANKRUPT_HAND_SIZE = 16;
 
 function generateDeck(): string[] {
   const suits = ["S", "H", "C", "D"];
@@ -60,79 +51,44 @@ function generateDeck(): string[] {
   return deck;
 }
 
-function seededShuffle(deck: string[], seed: string): string[] {
-  const rand = seedRandom(seed);
-  const shuffled = [...deck];
-  for (let i = shuffled.length - 1; i > 0; i--) {
-    const j = Math.floor(rand() * (i + 1));
-    const temp = shuffled[i]!;
-    shuffled[i] = shuffled[j]!;
-    shuffled[j] = temp;
-  }
-  return shuffled;
-}
-
 export const oneCardDefinition = defineGameDefinition(gameMetadata, {
   initialStageState(context): JsonObject {
-    const seed = String(context.room.config?.seed ?? (context.room.roomId + "_" + context.room.createdAt));
-    let fullDeck = seededShuffle(generateDeck(), seed);
-
-    const N = context.players.length;
-    if (N === 0) {
-      return {
-        discardPile: [],
-        deck: [],
-        deckCount: 0,
-        turnDirection: "clockwise",
-        activeAttackCount: 0,
-        eliminatedPlayerIds: [],
-        hasExtraTurn: false
-      } satisfies CardStageState;
-    }
-
-    // Deal 7 cards to each player seat (initial hands are sliced deterministically by seat)
-    const dealtCount = N * 7;
-    const initialDeck = fullDeck.slice(dealtCount);
-
-    // Find the first open card that is NOT a Joker
-    let discardPile: string[] = [];
-    let deck: string[] = [];
-    let openCardIndex = 0;
-    for (let i = 0; i < initialDeck.length; i++) {
-      const card = initialDeck[i]!;
-      if (card !== "BJ" && card !== "CJ") {
-        discardPile.push(card);
-        openCardIndex = i;
-        break;
-      }
-    }
-    // If somehow all are Jokers (impossible with 54-card single deck), take first
-    if (discardPile.length === 0) {
-      discardPile.push(initialDeck[0]!);
-      openCardIndex = 0;
-    }
-    // Reconstruct remaining deck without the open card
-    deck = initialDeck.filter((_, idx) => idx !== openCardIndex);
-
-    const firstPlayerId = context.players[0]?.playerId;
-    return {
-      discardPile,
-      deck,
-      deckCount: deck.length,
-      ...(firstPlayerId ? { currentPlayerId: firstPlayerId } : {}),
+    const base = {
+      discardPile: [],
+      deck: [],
+      dealtHands: {},
       turnDirection: "clockwise",
       activeAttackCount: 0,
       eliminatedPlayerIds: [],
       hasExtraTurn: false
     } satisfies CardStageState;
+    const firstPlayer = context.players[0];
+    if (!firstPlayer) {
+      return base;
+    }
+
+    // Every game is dealt from a fresh, unpredictable shuffle. The hands are
+    // parked in the stage because initialPlayerState runs once per seat afterwards.
+    const deck = secureShuffle(generateDeck());
+    const dealtHands = Object.fromEntries(
+      context.players.map((player) => [player.playerId, deck.splice(deck.length - HAND_SIZE, HAND_SIZE)])
+    );
+    // The open card is the first one that is not a Joker.
+    const openIndex = deck.findIndex((card) => card !== "BJ" && card !== "CJ");
+    const [openCard] = deck.splice(openIndex, 1);
+
+    return {
+      ...base,
+      discardPile: [openCard!],
+      deck,
+      dealtHands,
+      currentPlayerId: firstPlayer.playerId
+    } satisfies CardStageState;
   },
 
   initialPlayerState(player, context): JsonObject {
-    const seed = String(context.room.config?.seed ?? (context.room.roomId + "_" + context.room.createdAt));
-    const fullDeck = seededShuffle(generateDeck(), seed);
-    const seat = player.seat;
-    const hand = fullDeck.slice(seat * 7, (seat + 1) * 7);
-    return { hand } satisfies CardPlayerState;
+    const dealtHands = (context.stageState as Partial<CardStageState> | undefined)?.dealtHands;
+    return { hand: [...(dealtHands?.[player.playerId] ?? [])] } satisfies CardPlayerState;
   },
 
   validateAction(context: GameContext, action: ClientGameAction): ValidationResult {
@@ -291,16 +247,13 @@ export const oneCardDefinition = defineGameDefinition(gameMetadata, {
           // Recycle deck
           const recycled = stage.discardPile.slice(0, -1);
           if (recycled.length > 0) {
-            // Shuffle recycled
-            const shuffled = seededShuffle(recycled, `${context.now}_${i}`);
-            stage.deck = shuffled;
+            stage.deck = secureShuffle(recycled);
             stage.discardPile = [stage.discardPile[stage.discardPile.length - 1]!];
-            stage.deckCount = stage.deck.length;
             events.push({
               id: createGameEventId(),
               type: "onecard.deckRecycled",
               visibility: "public",
-              payload: { deckCount: stage.deckCount },
+              payload: { deckCount: stage.deck.length },
               createdAt: context.now
             });
           } else {
@@ -315,7 +268,6 @@ export const oneCardDefinition = defineGameDefinition(gameMetadata, {
       }
 
       playerState.hand.push(...drawnCards);
-      stage.deckCount = stage.deck.length;
 
       // Broadcast draw event privately to drawer
       events.push({
@@ -342,7 +294,7 @@ export const oneCardDefinition = defineGameDefinition(gameMetadata, {
       });
 
       // Check Bankruptcy (Hand length >= 16)
-      if (playerState.hand.length >= 16) {
+      if (playerState.hand.length >= BANKRUPT_HAND_SIZE) {
         stage.eliminatedPlayerIds.push(action.playerId);
         events.push({
           id: createGameEventId(),
