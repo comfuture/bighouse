@@ -1,0 +1,2121 @@
+import type {
+  GameClientContext,
+  GameClientSnapshot,
+  GameEvent,
+  MountedGameClient
+} from "@bighouse/game-sdk/client";
+import {
+  ITEM_CATALOG,
+  MOB_CATALOG,
+  PLAYER_CONFIG,
+  VIEWPORT,
+  WEAPON_CATALOG,
+  WEAPON_ORDER
+} from "./catalogs";
+import { SunnyAudioManager } from "./audio";
+import { gameMetadata } from "./client-metadata";
+import { compileStageForRuntime, type CompiledStage, type RuntimeLadder } from "./map-schema";
+import {
+  aabbOverlap,
+  applyMovingPlatformCarry,
+  findOverlappingLadder,
+  findOverlappingPortal,
+  resolvePlatformLanding,
+  updateMovingPlatforms
+} from "./physics";
+import {
+  loadSunnyImages,
+  SunnyRenderer,
+  type ClientDamageText,
+  type ClientHitEffect,
+  type ClientItemRender,
+  type ClientMobRender,
+  type ClientParticle,
+  type ClientProjectileRender,
+  type LocalPlayerRender
+} from "./renderer";
+import { ALL_STAGES, getStageById } from "./stages/index";
+import { computeDeterministicHit } from "./server";
+import "./style.css";
+import type {
+  MobTemplate,
+  RemotePlayerView,
+  ServerItemState,
+  ServerMobState,
+  WorldPlayerState
+} from "./types";
+
+export { gameMetadata };
+
+type ClientMobEntity = ClientMobRender & {
+  tpl: MobTemplate;
+  homeX: number;
+  homeY: number;
+  patrolMinX: number;
+  patrolMaxX: number;
+  aiTimer: number;
+  aiPhase: string;
+  shootTimer: number;
+  teleportTimer: number;
+};
+
+type ClientProjectile = ClientProjectileRender & {
+  vx: number;
+  vy: number;
+  traveled: number;
+  maxDistance: number;
+  alive: boolean;
+  atk: number;
+  pierceLeft: number;
+  hitIds: Set<string>;
+  slowEffect?: boolean;
+};
+
+type RemotePlayerSmooth = RemotePlayerView & {
+  targetX: number;
+  targetY: number;
+  lastSeenAt: number;
+};
+
+const ACTION_KEYS: Record<string, string[]> = {
+  left: ["ArrowLeft", "KeyA"],
+  right: ["ArrowRight", "KeyD"],
+  up: ["ArrowUp", "KeyW"],
+  down: ["ArrowDown", "KeyS"],
+  jump: ["Space", "KeyC", "KeyK", "AltLeft"],
+  attack: ["KeyX", "KeyZ", "KeyJ", "ControlLeft"],
+  potion: ["KeyF", "KeyV"],
+  weaponPrev: ["KeyQ"],
+  weaponNext: ["KeyE"]
+};
+
+const PREVENT_KEYS = new Set(["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Space"]);
+
+export function mountGame(container: HTMLElement, initialContext: GameClientContext): MountedGameClient {
+  let ctx = initialContext;
+  const actions = {
+    sendAction: initialContext.sendAction,
+    sendSignal: initialContext.sendSignal,
+    sendChat: initialContext.sendChat,
+    shareRoom: initialContext.shareRoom,
+    leaveRoom: initialContext.leaveRoom
+  };
+
+  container.innerHTML = "";
+  const root = document.createElement("div");
+  root.className = "sm-root";
+  root.innerHTML = `
+    <header class="sm-topbar">
+      <div class="sm-brand">
+        <span class="sm-badge" data-el="stage-badge">STAGE 1</span>
+        <h1 class="sm-title" data-el="stage-title">햇살 초원 모험</h1>
+      </div>
+      <div class="sm-actions">
+        <button type="button" class="sm-btn sm-btn-primary" data-act="map">🗺 스테이지 이동</button>
+        <button type="button" class="sm-btn" data-act="chat">💬 채팅</button>
+        <button type="button" class="sm-btn" data-act="mute">🔊 사운드</button>
+        <button type="button" class="sm-btn" data-act="help">📖 가이드</button>
+        <button type="button" class="sm-btn" data-act="share">🔗 초대</button>
+        <button type="button" class="sm-btn" data-act="fullscreen">⛶ 전체화면</button>
+        <button type="button" class="sm-btn" data-act="leave">🚪 나가기</button>
+      </div>
+    </header>
+    <section class="sm-stage-frame" data-el="stage-frame" aria-label="햇살 초원 모험 게임 화면">
+      <canvas class="sm-canvas" width="960" height="576" data-el="canvas"></canvas>
+    </section>
+    <div class="sm-touch-pad" aria-label="터치 조작 패드">
+      <div class="sm-touch-group">
+        <button type="button" class="sm-touch-btn" data-touch="left">◀</button>
+        <button type="button" class="sm-touch-btn" data-touch="up">▲</button>
+        <button type="button" class="sm-touch-btn" data-touch="down">▼</button>
+        <button type="button" class="sm-touch-btn" data-touch="right">▶</button>
+      </div>
+      <div class="sm-touch-group">
+        <button type="button" class="sm-touch-btn" data-touch="potion">🧪</button>
+        <button type="button" class="sm-touch-btn" data-touch="attack">⚔️</button>
+        <button type="button" class="sm-touch-btn" data-touch="jump">JUMP</button>
+      </div>
+    </div>
+    <footer class="sm-footer">
+      <span><strong>이동</strong> ←→ / A D</span>
+      <span><strong>점프</strong> Space / C</span>
+      <span><strong>내려오기</strong> ↓+Space</span>
+      <span><strong>사다리·포털</strong> ↑ / W</span>
+      <span><strong>공격</strong> X / Z</span>
+      <span><strong>포션</strong> F</span>
+      <span><strong>무기</strong> Q / E / 1~0</span>
+    </footer>
+    <dialog class="sm-dialog" closedby="any" data-el="map-dialog" aria-labelledby="sm-map-title">
+      <h2 id="sm-map-title">🗺 월드 지도 (스테이지 1 ~ 10)</h2>
+      <div class="sm-stage-grid" data-el="stage-grid"></div>
+      <form method="dialog" class="sm-dialog-footer">
+        <button value="close" class="sm-btn sm-btn-primary" autofocus>닫기</button>
+      </form>
+    </dialog>
+    <dialog class="sm-dialog" closedby="any" data-el="help-dialog" aria-labelledby="sm-help-title">
+      <h2 id="sm-help-title">📖 햇살 초원 모험 가이드</h2>
+      <ul style="margin:0;padding-left:18px;font-size:0.86rem;line-height:1.55;display:flex;flex-direction:column;gap:7px;">
+        <li><strong>전통 플랫포머 착지</strong>: 점프 상승 중에는 위 발판을 통과하고 착지할 때만 섭니다. <kbd>↓</kbd>+<kbd>Space</kbd>로 한 층 내려올 수 있어요.</li>
+        <li><strong>특수 지형 &amp; 위험 구역</strong>: 탄성 발판(고공 점프), 빙판(미끄럼), 컨베이어(이동), 진흙(감속)을 활용하세요! 바닥의 물·가시·용암·독 늪에 떨어지면 피해를 입고 위로 튕겨 오릅니다.</li>
+        <li><strong>비밀 포털 &amp; 확장 스테이지</strong>: 스테이지가 올라갈수록 화면이 넓어지고(10→20화면) 수직 탑과 격리된 비밀 포털 사냥터가 열립니다!</li>
+        <li><strong>지수 성장 레벨링</strong>: 몹 처치 시 경험치를 얻고 레벨업마다 최대 체력·공격력이 크게 상승합니다. 레벨이 높아지면 하위 스테이지 경험치 효율이 줄어드니 스테이지 2~10으로 이동하세요!</li>
+        <li><strong>동적 리젠 &amp; 2초 무적</strong>: 같은 스테이지의 플레이어 수에 맞춰 몹과 아이템이 빠르게 리젠됩니다. 갓 리젠된 몹은 2초간 점멸하며 공격하거나 공격당하지 않습니다.</li>
+        <li><strong>자동 영구 저장</strong>: 레벨, 경험치, 무기, 마지막 스테이지와 위치가 서버에 자동 저장되어 재접속 시 그대로 이어집니다.</li>
+      </ul>
+      <form method="dialog" class="sm-dialog-footer">
+        <button value="close" class="sm-btn sm-btn-primary" autofocus>확인</button>
+      </form>
+    </dialog>
+    <aside class="sm-chat-box" data-el="chat-box" hidden>
+      <div class="sm-chat-header">
+        <span>💬 월드 채팅</span>
+        <button type="button" class="sm-btn" data-act="close-chat">✕</button>
+      </div>
+      <div class="sm-chat-log" data-el="chat-log"></div>
+      <form class="sm-chat-form" data-el="chat-form">
+        <input type="text" placeholder="메시지를 입력하세요..." maxlength="200" data-el="chat-input" />
+        <button type="submit" class="sm-btn sm-btn-primary">전송</button>
+      </form>
+    </aside>
+  `;
+  container.appendChild(root);
+
+  const canvas = root.querySelector<HTMLCanvasElement>('[data-el="canvas"]')!;
+  const stageFrame = root.querySelector<HTMLElement>('[data-el="stage-frame"]')!;
+  const stageBadge = root.querySelector<HTMLElement>('[data-el="stage-badge"]')!;
+  const stageTitle = root.querySelector<HTMLElement>('[data-el="stage-title"]')!;
+  const mapDialog = root.querySelector<HTMLDialogElement>('[data-el="map-dialog"]')!;
+  const helpDialog = root.querySelector<HTMLDialogElement>('[data-el="help-dialog"]')!;
+  const stageGrid = root.querySelector<HTMLElement>('[data-el="stage-grid"]')!;
+  const chatBox = root.querySelector<HTMLElement>('[data-el="chat-box"]')!;
+  const chatLog = root.querySelector<HTMLElement>('[data-el="chat-log"]')!;
+  const chatForm = root.querySelector<HTMLFormElement>('[data-el="chat-form"]')!;
+  const chatInput = root.querySelector<HTMLInputElement>('[data-el="chat-input"]')!;
+  const muteBtn = root.querySelector<HTMLButtonElement>('[data-act="mute"]')!;
+
+  // Fallback for closedby="any" light-dismiss when unsupported
+  if (!("closedBy" in HTMLDialogElement.prototype)) {
+    const isOutside = (e: PointerEvent, dlg: HTMLDialogElement) => {
+      const r = dlg.getBoundingClientRect();
+      return e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom;
+    };
+    for (const dlg of [mapDialog, helpDialog]) {
+      let downOut = false;
+      dlg.addEventListener("pointerdown", (e) => {
+        downOut = isOutside(e, dlg);
+      });
+      dlg.addEventListener("pointerup", (e) => {
+        if (downOut && isOutside(e, dlg)) dlg.close();
+      });
+    }
+  }
+  mapDialog.addEventListener("close", () => {
+    mapDialog.returnValue = "";
+  });
+  helpDialog.addEventListener("close", () => {
+    helpDialog.returnValue = "";
+  });
+
+  const audio = new SunnyAudioManager();
+  let renderer: SunnyRenderer | null = null;
+  let destroyed = false;
+  let renderSuspended = false;
+  let rafId: number | null = null;
+  let lastFrameTime = performance.now();
+  let accumulator = 0;
+
+  // Input state
+  const keysDown = new Set<string>();
+  const virtualDown = new Set<string>();
+  const curInput: Record<string, boolean> = {};
+  const prevInput: Record<string, boolean> = {};
+  const justPressed = (act: string) => Boolean(curInput[act]) && !prevInput[act];
+  const justReleased = (act: string) => !curInput[act] && Boolean(prevInput[act]);
+  const isDown = (act: string) => Boolean(curInput[act]);
+
+  // World runtime state
+  let currentStageId = "";
+  let compiledStage: CompiledStage = compileStageForRuntime(getStageById("stage-1"));
+  let stagePlayerCounts: Record<string, number> = { "stage-1": 1 };
+  let stagePlayerCount = 1;
+  let totalPlayersOnline = 1;
+  let highestStageNumber = 1;
+
+  const localPlayer: LocalPlayerRender = {
+    playerId: ctx.playerId,
+    displayName: "모험가",
+    x: 160,
+    y: 660,
+    w: PLAYER_CONFIG.hitboxWidth,
+    h: PLAYER_CONFIG.hitboxHeight,
+    vx: 0,
+    vy: 0,
+    facing: 1,
+    grounded: false,
+    onLadder: false,
+    level: 1,
+    xp: 0,
+    xpToNext: 100,
+    hp: 100,
+    maxHp: 100,
+    baseAtk: 6,
+    potions: 2,
+    coins: 0,
+    score: 0,
+    mobsDefeated: 0,
+    unlockedWeapons: ["wooden_sword"],
+    equippedWeaponId: "wooden_sword",
+    invulnTimer: 0,
+    slowTimer: 0,
+    attackAnimTimer: 0,
+    attackAnimDuration: 0.22,
+    animTimer: 0,
+    squashX: 1,
+    squashY: 1,
+    nearbyPortal: null,
+    nearbySign: null
+  };
+
+  let standingPlatform: CompiledStage["platforms"][number] | CompiledStage["movingPlatforms"][number] | null = null;
+  let currentLadder: RuntimeLadder | null = null;
+  let coyoteTimer = 0;
+  let jumpBufferTimer = 0;
+  let dropThroughTimer = 0;
+  let portalCooldown = 0;
+  let attackCooldown = 0;
+  let hurtStunTimer = 0;
+  let ladderStepTimer = 0;
+  let lastSafeX = 160;
+  let lastSafeY = 660;
+  let poseSendTimer = 0;
+  let checkpointTimer = 0;
+  let lastSavedPosX = 0;
+  let lastSavedPosY = 0;
+  let stageTransitionPending = false;
+  let hitStopTimer = 0;
+  let shakeTimer = 0;
+  let shakeMag = 0;
+  let shakeX = 0;
+  let shakeY = 0;
+  let warpFlash = 0;
+
+  const camera = { x: 0, y: 280, maxX: 0, maxY: 0 };
+  let mobs: ClientMobEntity[] = [];
+  const mobsById = new Map<string, ClientMobEntity>();
+  let items: ClientItemRender[] = [];
+  const itemsById = new Map<string, ClientItemRender>();
+  const remotePlayers = new Map<string, RemotePlayerSmooth>();
+  const projectiles: ClientProjectile[] = [];
+  const damageTexts: ClientDamageText[] = [];
+  const hitEffects: ClientHitEffect[] = [];
+  const particles: ClientParticle[] = [];
+  const seenEventIds = new Set<string>();
+  const pendingItemPickups = new Map<string, number>();
+  // Client-side optimistic prediction tracking (0ms local responsiveness + deduplication)
+  const predictedHitIds = new Set<string>();
+  const predictedPickupIds = new Set<string>();
+  const predictedPotionIds = new Set<string>();
+  const optimisticMobLocks = new Map<string, { hp: number; alive: boolean; expiresAt: number }>();
+  const optimisticItemLocks = new Map<string, number>();
+  let localPredSeq = 0;
+  const nextPredId = (prefix: string) => `${prefix}_${++localPredSeq}_${Date.now().toString(36)}`;
+
+  function spawnText(
+    x: number,
+    y: number,
+    text: string,
+    kind: ClientDamageText["kind"] = "normal"
+  ): void {
+    const colorMap: Record<ClientDamageText["kind"], [string, string, number]> = {
+      normal: ["#FFF176", "#5D3A1A", 20],
+      crit: ["#FFD740", "#B71C1C", 26],
+      playerHurt: ["#FF5252", "#4A0000", 20],
+      heal: ["#69F0AE", "#1B5E20", 19],
+      exp: ["#CE93D8", "#311B92", 16],
+      levelup: ["#FFD740", "#5D3A1A", 24],
+      info: ["#FFF59D", "#5D3A1A", 16]
+    };
+    const [color, stroke, fontSize] = colorMap[kind];
+    damageTexts.push({
+      x: x + (Math.random() - 0.5) * 14,
+      y,
+      vy: kind === "crit" || kind === "levelup" ? -80 : -62,
+      text,
+      kind,
+      age: 0,
+      duration: kind === "crit" || kind === "levelup" ? 1.15 : 0.9,
+      color,
+      stroke,
+      fontSize
+    });
+  }
+
+  function spawnHitBurst(x: number, y: number, color: string, isCrit: boolean): void {
+    hitEffects.push({
+      type: "starburst",
+      x,
+      y,
+      color,
+      isCrit,
+      radius: isCrit ? 34 : 24,
+      rotation: Math.random() * Math.PI,
+      age: 0,
+      duration: isCrit ? 0.28 : 0.2
+    });
+    const count = isCrit ? 12 : 7;
+    for (let i = 0; i < count; i++) {
+      const ang = (Math.PI * 2 * i) / count + (Math.random() - 0.5) * 0.4;
+      const spd = (isCrit ? 170 : 115) + Math.random() * 100;
+      particles.push({
+        x,
+        y,
+        vx: Math.cos(ang) * spd,
+        vy: Math.sin(ang) * spd - 40,
+        gravity: 400,
+        size: isCrit ? 5 + Math.random() * 3 : 3.5 + Math.random() * 2.5,
+        color: i % 2 === 0 ? color : "#FFFFFF",
+        age: 0,
+        duration: 0.32 + Math.random() * 0.16,
+        shape: isCrit && i % 2 === 0 ? "star" : "circle"
+      });
+    }
+  }
+
+  function spawnLevelUpEffect(x: number, y: number, level: number): void {
+    hitEffects.push({
+      type: "levelup_pillar",
+      x,
+      y,
+      level,
+      age: 0,
+      duration: 1.75
+    });
+    for (let i = 0; i < 28; i++) {
+      const ang = (Math.PI * 2 * i) / 28;
+      const spd = 85 + Math.random() * 170;
+      particles.push({
+        x,
+        y: y - 24,
+        vx: Math.cos(ang) * spd,
+        vy: Math.sin(ang) * spd - 120,
+        gravity: 240,
+        size: 5 + Math.random() * 4,
+        color: i % 2 === 0 ? "#FFD740" : "#FFFFFF",
+        age: 0,
+        duration: 0.65 + Math.random() * 0.45,
+        shape: "star"
+      });
+    }
+  }
+
+  function spawnSparkles(x: number, y: number, color: string, count = 10): void {
+    for (let i = 0; i < count; i++) {
+      const ang = Math.random() * Math.PI * 2;
+      const spd = 50 + Math.random() * 95;
+      particles.push({
+        x,
+        y,
+        vx: Math.cos(ang) * spd,
+        vy: Math.sin(ang) * spd - 45,
+        gravity: 160,
+        size: 4 + Math.random() * 3,
+        color,
+        age: 0,
+        duration: 0.38 + Math.random() * 0.2,
+        shape: "star"
+      });
+    }
+  }
+
+  function triggerShake(mag: number, dur: number): void {
+    shakeMag = Math.max(shakeMag, mag);
+    shakeTimer = Math.max(shakeTimer, dur);
+  }
+
+  function loadStageLocal(stageId: string, spawnX?: number, spawnY?: number): void {
+    const norm = getStageById(stageId);
+    compiledStage = compileStageForRuntime(norm);
+    currentStageId = norm.meta.id;
+    stageBadge.textContent = `STAGE ${norm.meta.stageNumber}`;
+    stageTitle.textContent = ctx.room.roomName ? `${ctx.room.roomName} · ${norm.meta.name}` : norm.meta.name;
+
+    mobs = [];
+    mobsById.clear();
+    for (const ms of compiledStage.mobSpawns) {
+      const tpl = MOB_CATALOG[ms.templateId]!;
+      const startY = tpl.flying ? ms.y - tpl.height - 76 : ms.y - tpl.height;
+      const mob: ClientMobEntity = {
+        id: ms.id,
+        tpl,
+        name: tpl.name,
+        level: tpl.level,
+        spriteKey: tpl.spriteKey,
+        primaryColor: tpl.primaryColor,
+        w: tpl.width,
+        h: tpl.height,
+        x: ms.x - tpl.width * 0.5,
+        y: startY,
+        homeX: ms.x - tpl.width * 0.5,
+        homeY: startY,
+        vx: 0,
+        vy: 0,
+        facing: ms.facing,
+        grounded: !tpl.flying,
+        alive: true,
+        hp: tpl.hp,
+        maxHp: tpl.hp,
+        displayHp: tpl.hp,
+        inCombat: false,
+        spawnProtectUntil: 0,
+        hitFlashTimer: 0,
+        hitStunTimer: 0,
+        animTimer: Math.random() * 10,
+        drawScale: tpl.drawScale,
+        hasCrown: Boolean(tpl.hasCrown),
+        squashX: 1,
+        squashY: 1,
+        patrolMinX: ms.patrolMinX,
+        patrolMaxX: ms.patrolMaxX,
+        aiTimer: 0.6 + Math.random() * 0.9,
+        aiPhase: "idle",
+        shootTimer: 1.2 + Math.random() * 1.2,
+        teleportTimer: 2.2 + Math.random() * 1.4
+      };
+      mobs.push(mob);
+      mobsById.set(mob.id, mob);
+    }
+
+    items = [];
+    itemsById.clear();
+    for (const is of compiledStage.itemSpawns) {
+      const item: ClientItemRender = {
+        id: is.id,
+        templateId: is.templateId,
+        x: is.x,
+        y: is.y,
+        available: true,
+        bobPhase: is.bobPhase
+      };
+      items.push(item);
+      itemsById.set(item.id, item);
+    }
+
+    remotePlayers.clear();
+    projectiles.length = 0;
+    pendingItemPickups.clear();
+    optimisticMobLocks.clear();
+    optimisticItemLocks.clear();
+
+    if (spawnX !== undefined && spawnY !== undefined) {
+      localPlayer.x = spawnX;
+      localPlayer.y = spawnY;
+      localPlayer.vx = 0;
+      localPlayer.vy = 0;
+      localPlayer.grounded = false;
+      localPlayer.onLadder = false;
+      standingPlatform = null;
+      currentLadder = null;
+      lastSafeX = spawnX;
+      lastSafeY = spawnY;
+    }
+
+    camera.maxX = Math.max(0, compiledStage.meta.worldWidth - VIEWPORT.width);
+    camera.maxY = Math.max(0, compiledStage.meta.worldHeight - VIEWPORT.height);
+    camera.x = Math.max(0, Math.min(camera.maxX, localPlayer.x - VIEWPORT.width * 0.42));
+    camera.y = Math.max(0, Math.min(camera.maxY, localPlayer.y - VIEWPORT.height * 0.55));
+    warpFlash = 0.25;
+  }
+
+  function applySnapshot(snap: GameClientSnapshot): void {
+    const priv = snap.privateView as Partial<WorldPlayerState>;
+    const pub = snap.publicView as {
+      stageId?: string;
+      stagePlayerCount?: number;
+      totalPlayersOnline?: number;
+      stagePlayerCounts?: Record<string, number>;
+      mobs?: Record<string, ServerMobState>;
+      items?: Record<string, ServerItemState>;
+      nearbyPlayers?: RemotePlayerView[];
+    };
+
+    const seat = snap.room.players.find((p) => p.playerId === snap.playerId);
+    localPlayer.displayName = priv.displayName || seat?.displayName || localPlayer.displayName;
+    if (typeof priv.level === "number") localPlayer.level = priv.level;
+    if (typeof priv.xp === "number") localPlayer.xp = priv.xp;
+    if (typeof priv.xpToNext === "number") localPlayer.xpToNext = priv.xpToNext;
+    if (typeof priv.maxHp === "number") localPlayer.maxHp = priv.maxHp;
+    if (typeof priv.hp === "number") localPlayer.hp = priv.hp;
+    if (typeof priv.baseAtk === "number") localPlayer.baseAtk = priv.baseAtk;
+    if (typeof priv.potions === "number") localPlayer.potions = priv.potions;
+    if (typeof priv.coins === "number") localPlayer.coins = priv.coins;
+    if (typeof priv.score === "number") localPlayer.score = priv.score;
+    if (typeof priv.mobsDefeated === "number") localPlayer.mobsDefeated = priv.mobsDefeated;
+    if (Array.isArray(priv.unlockedWeapons)) localPlayer.unlockedWeapons = [...priv.unlockedWeapons];
+    if (typeof priv.equippedWeaponId === "string") localPlayer.equippedWeaponId = priv.equippedWeaponId;
+    if (typeof priv.highestStageNumber === "number") highestStageNumber = priv.highestStageNumber;
+
+    const targetStageId = priv.stageId || pub.stageId || "stage-1";
+    const stageChanged = targetStageId !== currentStageId;
+    if (stageChanged) {
+      stageTransitionPending = false;
+      loadStageLocal(
+        targetStageId,
+        typeof priv.x === "number" ? priv.x : compiledStage.spawn.x,
+        typeof priv.y === "number" ? priv.y : compiledStage.spawn.y - localPlayer.h
+      );
+      lastSavedPosX = localPlayer.x;
+      lastSavedPosY = localPlayer.y;
+    }
+
+    if (typeof pub.stagePlayerCount === "number") stagePlayerCount = pub.stagePlayerCount;
+    if (typeof pub.totalPlayersOnline === "number") totalPlayersOnline = pub.totalPlayersOnline;
+    if (pub.stagePlayerCounts) stagePlayerCounts = pub.stagePlayerCounts;
+
+    // Sync mobs from authoritative server stage view (respecting active optimistic hit locks)
+    if (pub.mobs) {
+      const nowLocal = Date.now();
+      const serverTimeOffset = nowLocal - snap.serverTime;
+      for (const [id, sm] of Object.entries(pub.mobs)) {
+        const mob = mobsById.get(id);
+        if (!mob) continue;
+        const lock = optimisticMobLocks.get(id);
+        if (lock && nowLocal < lock.expiresAt) {
+          // Only accept lower HP or death from server while our hit is in-flight
+          if (!sm.alive) {
+            mob.alive = false;
+            mob.hp = 0;
+            mob.inCombat = false;
+            optimisticMobLocks.delete(id);
+          } else {
+            mob.hp = Math.min(mob.hp, sm.hp);
+            mob.alive = lock.alive;
+            mob.inCombat = mob.inCombat || sm.inCombat;
+          }
+        } else {
+          if (lock) optimisticMobLocks.delete(id);
+          mob.alive = sm.alive;
+          mob.hp = sm.hp;
+          mob.maxHp = sm.maxHp;
+          if (mob.displayHp < sm.hp) mob.displayHp = sm.hp;
+          mob.inCombat = sm.inCombat;
+        }
+        mob.spawnProtectUntil = sm.spawnProtectUntil > 0 ? sm.spawnProtectUntil + serverTimeOffset : 0;
+      }
+    }
+
+    // Sync items (respecting active optimistic pickup locks so items never flicker back)
+    if (pub.items) {
+      const nowLocal = Date.now();
+      for (const [id, si] of Object.entries(pub.items)) {
+        const item = itemsById.get(id);
+        if (!item) continue;
+        const lockUntil = optimisticItemLocks.get(id);
+        if (lockUntil && nowLocal < lockUntil && si.available) {
+          continue;
+        }
+        if (!si.available && lockUntil) optimisticItemLocks.delete(id);
+        item.available = si.available;
+      }
+    }
+
+    // Sync nearby players on the same stage
+    if (Array.isArray(pub.nearbyPlayers)) {
+      const present = new Set<string>();
+      const now = Date.now();
+      for (const rp of pub.nearbyPlayers) {
+        if (rp.playerId === snap.playerId || rp.stageId !== currentStageId) continue;
+        present.add(rp.playerId);
+        const existing = remotePlayers.get(rp.playerId);
+        if (existing) {
+          existing.displayName = rp.displayName;
+          existing.level = rp.level;
+          existing.hp = rp.hp;
+          existing.maxHp = rp.maxHp;
+          existing.equippedWeaponId = rp.equippedWeaponId;
+          existing.facing = rp.facing;
+          existing.animState = rp.animState;
+          existing.targetX = rp.x;
+          existing.targetY = rp.y;
+          existing.vx = rp.vx;
+          existing.vy = rp.vy;
+          existing.lastSeenAt = now;
+        } else {
+          remotePlayers.set(rp.playerId, {
+            ...rp,
+            targetX: rp.x,
+            targetY: rp.y,
+            lastSeenAt: now
+          });
+        }
+      }
+      if (stageChanged) {
+        for (const pid of [...remotePlayers.keys()]) {
+          if (!present.has(pid)) remotePlayers.delete(pid);
+        }
+      }
+    }
+
+    // Process recent events deduplicated by id
+    if (snap.events) {
+      for (const ev of snap.events) {
+        if (seenEventIds.has(ev.id)) continue;
+        seenEventIds.add(ev.id);
+        if (seenEventIds.size > 240) {
+          const first = seenEventIds.values().next().value;
+          if (first) seenEventIds.delete(first);
+        }
+        handleServerEvent(ev, snap.serverTime);
+      }
+    }
+
+    renderChat(snap);
+    if (mapDialog.open) renderStageMapDialog();
+  }
+
+  function handleServerEvent(ev: GameEvent, serverTime: number): void {
+    const p = ev.payload;
+    if (typeof p.stageId === "string" && p.stageId !== currentStageId) return;
+    const nowOffset = Date.now() - serverTime;
+
+    if (ev.type === "sunny.playerPose") {
+      const pid = String(p.playerId ?? "");
+      if (!pid || pid === ctx.playerId) return;
+      const existing = remotePlayers.get(pid);
+      const now = Date.now();
+      if (existing) {
+        existing.targetX = Number(p.x ?? existing.targetX);
+        existing.targetY = Number(p.y ?? existing.targetY);
+        existing.vx = Number(p.vx ?? 0);
+        existing.vy = Number(p.vy ?? 0);
+        existing.facing = Number(p.facing ?? 1);
+        existing.animState = (p.animState as RemotePlayerView["animState"]) ?? "idle";
+        existing.level = Number(p.level ?? existing.level);
+        existing.displayName = String(p.displayName ?? existing.displayName);
+        existing.equippedWeaponId = String(p.equippedWeaponId ?? existing.equippedWeaponId);
+        existing.lastSeenAt = now;
+      } else {
+        remotePlayers.set(pid, {
+          playerId: pid,
+          displayName: String(p.displayName ?? "모험가"),
+          stageId: currentStageId,
+          x: Number(p.x ?? 160),
+          y: Number(p.y ?? 660),
+          targetX: Number(p.x ?? 160),
+          targetY: Number(p.y ?? 660),
+          vx: Number(p.vx ?? 0),
+          vy: Number(p.vy ?? 0),
+          facing: Number(p.facing ?? 1),
+          animState: (p.animState as RemotePlayerView["animState"]) ?? "idle",
+          level: Number(p.level ?? 1),
+          hp: Number(p.hp ?? 100),
+          maxHp: Number(p.maxHp ?? 100),
+          equippedWeaponId: String(p.equippedWeaponId ?? "wooden_sword"),
+          lastSeenAt: now
+        });
+      }
+      return;
+    }
+
+    if (ev.type === "sunny.playerJoined") {
+      if (typeof p.stagePlayerCount === "number") stagePlayerCount = p.stagePlayerCount;
+      const joined = p.player as RemotePlayerView | undefined;
+      if (joined && joined.playerId !== ctx.playerId) {
+        remotePlayers.set(joined.playerId, {
+          ...joined,
+          targetX: joined.x,
+          targetY: joined.y,
+          lastSeenAt: Date.now()
+        });
+        spawnSparkles(joined.x + 14, joined.y + 20, "#80DEEA", 10);
+      }
+      return;
+    }
+
+    if (ev.type === "sunny.playerLeft") {
+      if (typeof p.stagePlayerCount === "number") stagePlayerCount = p.stagePlayerCount;
+      const pid = String(p.playerId ?? "");
+      remotePlayers.delete(pid);
+      return;
+    }
+
+    if (ev.type === "sunny.mobHit") {
+      const mob = mobsById.get(String(p.mobId ?? ""));
+      if (!mob) return;
+      const clientHitId = typeof p.clientHitId === "string" ? p.clientHitId : "";
+      const wasPredictedByMe = p.attackerId === ctx.playerId && clientHitId !== "" && predictedHitIds.has(clientHitId);
+      if (wasPredictedByMe) {
+        predictedHitIds.delete(clientHitId);
+        // Reconcile HP gently without replaying duplicate VFX/SFX/knockback
+        const srvHp = Number(p.hp ?? mob.hp);
+        if (srvHp < mob.hp) mob.hp = srvHp;
+        if (srvHp <= 0) {
+          mob.alive = false;
+          mob.inCombat = false;
+          optimisticMobLocks.delete(mob.id);
+        }
+        return;
+      }
+
+      const dmg = Number(p.damage ?? 0);
+      const isCrit = Boolean(p.isCrit);
+      const knockDir = Number(p.knockDir ?? 1);
+      const kbX = Number(p.knockbackX ?? 200) * (1 - mob.tpl.knockbackResist);
+      const kbY = Number(p.knockbackY ?? -160) * (1 - mob.tpl.knockbackResist);
+
+      mob.hp = Number(p.hp ?? mob.hp);
+      mob.inCombat = true;
+      mob.hitFlashTimer = 0.14;
+      mob.hitStunTimer = isCrit ? 0.28 : 0.2;
+      mob.vx = knockDir * kbX;
+      mob.vy = kbY;
+      mob.grounded = false;
+      mob.facing = -knockDir;
+      mob.squashX = 1.24;
+      mob.squashY = 0.78;
+
+      spawnHitBurst(mob.x + mob.w * 0.5, mob.y + mob.h * 0.45, isCrit ? "#FFD740" : "#FFE082", isCrit);
+      spawnText(mob.x + mob.w * 0.5, mob.y - 12, isCrit ? `${dmg}!` : `${dmg}`, isCrit ? "crit" : "normal");
+
+      if (p.attackerId === ctx.playerId) {
+        hitStopTimer = isCrit ? 0.05 : 0.032;
+        triggerShake(isCrit ? 6 : 3, isCrit ? 0.15 : 0.09);
+        audio.playSfx(isCrit ? "sfx_crit" : "sfx_hit", 0.06);
+      }
+      return;
+    }
+
+    if (ev.type === "sunny.mobDefeated") {
+      const mob = mobsById.get(String(p.mobId ?? ""));
+      if (mob) {
+        const alreadyLocallyDead = !mob.alive;
+        mob.alive = false;
+        mob.hp = 0;
+        mob.inCombat = false;
+        optimisticMobLocks.delete(mob.id);
+        if (!alreadyLocallyDead) {
+          spawnSparkles(mob.x + mob.w * 0.5, mob.y + mob.h * 0.5, mob.primaryColor, 16);
+        }
+        if (p.killerPlayerId === ctx.playerId) {
+          const gainedXp = Number(p.gainedXp ?? 0);
+          const eff = Number(p.xpEfficiency ?? 1);
+          const effSuffix = eff < 0.5 ? " (효율↓)" : "";
+          spawnText(mob.x + mob.w * 0.5, mob.y - 30, `+${gainedXp} EXP${effSuffix}`, "exp");
+          if (!alreadyLocallyDead) {
+            audio.playSfx("sfx_mob_defeat", 0.05);
+          }
+        }
+      }
+      return;
+    }
+
+    if (ev.type === "sunny.mobsRespawned") {
+      const list = (p.mobs as Array<{ id: string; hp: number; maxHp: number; spawnProtectUntil: number }>) ?? [];
+      for (const rm of list) {
+        const mob = mobsById.get(rm.id);
+        if (!mob) continue;
+        optimisticMobLocks.delete(rm.id);
+        mob.alive = true;
+        mob.hp = rm.hp;
+        mob.maxHp = rm.maxHp;
+        mob.displayHp = rm.hp;
+        mob.inCombat = false;
+        mob.x = mob.homeX;
+        mob.y = mob.homeY;
+        mob.vx = 0;
+        mob.vy = 0;
+        mob.hitStunTimer = 0;
+        mob.spawnProtectUntil = rm.spawnProtectUntil + nowOffset;
+        spawnSparkles(mob.x + mob.w * 0.5, mob.y + mob.h * 0.5, "#80DEEA", 10);
+      }
+      return;
+    }
+
+    if (ev.type === "sunny.itemCollected") {
+      const item = itemsById.get(String(p.itemId ?? ""));
+      const clientPickupId = typeof p.clientPickupId === "string" ? p.clientPickupId : "";
+      const wasPredicted = p.collectorId === ctx.playerId && clientPickupId !== "" && predictedPickupIds.has(clientPickupId);
+      if (wasPredicted) predictedPickupIds.delete(clientPickupId);
+      if (item) {
+        item.available = false;
+        optimisticItemLocks.delete(item.id);
+        if (p.collectorId === ctx.playerId && !wasPredicted) {
+          const tpl = ITEM_CATALOG[item.templateId];
+          if (tpl) {
+            spawnSparkles(item.x, item.y, tpl.glowColor, 10);
+            audio.playSfx(tpl.sfx, 0.05);
+            if (tpl.category === "potion") spawnText(item.x, item.y - 12, "포션 +1!", "info");
+            else if (tpl.category === "max_hp") spawnText(item.x, item.y - 16, `최대체력 +${tpl.maxHpBonus}!`, "heal");
+            else if (tpl.category === "heal") spawnText(item.x, item.y - 12, `+${tpl.healAmount} HP`, "heal");
+          }
+        }
+      }
+      return;
+    }
+
+    if (ev.type === "sunny.itemsRespawned") {
+      const ids = (p.itemIds as string[]) ?? [];
+      for (const id of ids) {
+        optimisticItemLocks.delete(id);
+        const item = itemsById.get(id);
+        if (item) item.available = true;
+      }
+      return;
+    }
+
+    if (ev.type === "sunny.weaponUnlocked") {
+      const clientPickupId = typeof p.clientPickupId === "string" ? p.clientPickupId : "";
+      const wasPredicted = clientPickupId !== "" && predictedPickupIds.has(clientPickupId);
+      if (wasPredicted) {
+        predictedPickupIds.delete(clientPickupId);
+        return;
+      }
+      const wName = String(p.weaponName ?? "새 무기");
+      spawnText(localPlayer.x + 14, localPlayer.y - 24, `★ ${wName} 획득!`, "crit");
+      spawnSparkles(localPlayer.x + 14, localPlayer.y + 12, "#FFD740", 16);
+      audio.playSfx("sfx_potion", 0);
+      return;
+    }
+
+    if (ev.type === "sunny.playerHealed" && p.playerId === ctx.playerId) {
+      const clientPotionId = typeof p.clientPotionId === "string" ? p.clientPotionId : "";
+      const wasPredicted = clientPotionId !== "" && predictedPotionIds.has(clientPotionId);
+      if (wasPredicted) {
+        predictedPotionIds.delete(clientPotionId);
+        return;
+      }
+      const amt = Number(p.amount ?? 0);
+      if (amt > 0) {
+        spawnText(localPlayer.x + 14, localPlayer.y - 12, `+${amt} HP`, "heal");
+        spawnSparkles(localPlayer.x + 14, localPlayer.y + 18, "#69F0AE", 10);
+        audio.playSfx("sfx_potion", 0);
+      }
+      return;
+    }
+
+    if (ev.type === "sunny.playerRespawned" && p.playerId === ctx.playerId) {
+      localPlayer.x = Number(p.x ?? compiledStage.spawn.x);
+      localPlayer.y = Number(p.y ?? compiledStage.spawn.y - localPlayer.h);
+      localPlayer.vx = 0;
+      localPlayer.vy = 0;
+      localPlayer.invulnTimer = 2.0;
+      spawnText(localPlayer.x + 14, localPlayer.y - 20, "부활!", "info");
+      spawnSparkles(localPlayer.x + 14, localPlayer.y + 20, "#FFD740", 16);
+      return;
+    }
+
+    if (ev.type === "sunny.levelUp") {
+      const pid = String(p.playerId ?? "");
+      const newLv = Number(p.level ?? 1);
+      if (pid === ctx.playerId) {
+        spawnLevelUpEffect(localPlayer.x + localPlayer.w * 0.5, localPlayer.y + localPlayer.h, newLv);
+        spawnText(
+          localPlayer.x + localPlayer.w * 0.5,
+          localPlayer.y - 52,
+          `최대체력 ${p.maxHp} · 공격력 ${p.baseAtk}`,
+          "info"
+        );
+        triggerShake(5, 0.2);
+        audio.playSfx("sfx_level_up", 0);
+      } else {
+        const rp = remotePlayers.get(pid);
+        if (rp) {
+          rp.level = newLv;
+          spawnLevelUpEffect(rp.x + 14, rp.y + 42, newLv);
+        }
+      }
+    }
+  }
+
+  function renderStageMapDialog(): void {
+    stageGrid.textContent = "";
+    for (const st of ALL_STAGES) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      const isCurrent = st.meta.id === currentStageId;
+      const unlocked =
+        st.meta.stageNumber <= highestStageNumber + 1 || localPlayer.level >= st.meta.minEntryLevel;
+      btn.className = `sm-stage-card${isCurrent ? " is-current" : ""}`;
+      btn.disabled = !unlocked || isCurrent;
+      const playersHere = stagePlayerCounts[st.meta.id] ?? 0;
+      const screens = Math.round(st.meta.widthTiles / st.meta.screenWidthTiles);
+      const tallTag = st.meta.heightTiles >= 24 ? " · 고층" : "";
+      const title = document.createElement("strong");
+      title.textContent = `${st.meta.name}${isCurrent ? " (현재)" : ""}`;
+      const meta = document.createElement("span");
+      meta.textContent = unlocked
+        ? `${screens}화면${tallTag} · 권장 Lv.${st.meta.recommendedMinLevel}~${st.meta.recommendedMaxLevel} · 접속 ${playersHere}명`
+        : `🔒 Lv.${st.meta.minEntryLevel} 이상 해금 (${screens}화면${tallTag})`;
+      btn.append(title, meta);
+      btn.addEventListener("click", () => {
+        if (!unlocked || isCurrent) return;
+        audio.playSfx("sfx_portal", 0);
+        stageTransitionPending = true;
+        actions.sendAction({ type: "changeStage", payload: { targetStageId: st.meta.id } });
+        mapDialog.close();
+      });
+      stageGrid.appendChild(btn);
+    }
+  }
+
+  function renderChat(snap: GameClientSnapshot): void {
+    chatLog.textContent = "";
+    for (const msg of snap.chatMessages.slice(-60)) {
+      const row = document.createElement("div");
+      const name = document.createElement("strong");
+      name.textContent = `${msg.displayName || msg.playerId.slice(-4)}: `;
+      const body = document.createElement("span");
+      body.textContent = msg.body;
+      row.append(name, body);
+      chatLog.appendChild(row);
+    }
+    chatLog.scrollTop = chatLog.scrollHeight;
+  }
+
+  // Toolbar event handlers
+  root.querySelector('[data-act="map"]')?.addEventListener("click", () => {
+    void audio.unlock();
+    renderStageMapDialog();
+    mapDialog.showModal();
+  });
+  root.querySelector('[data-act="help"]')?.addEventListener("click", () => {
+    void audio.unlock();
+    helpDialog.showModal();
+  });
+  muteBtn.addEventListener("click", async () => {
+    await audio.unlock();
+    const muted = audio.toggleMute();
+    muteBtn.textContent = muted ? "🔇 음소거" : "🔊 사운드";
+  });
+  root.querySelector('[data-act="chat"]')?.addEventListener("click", () => {
+    chatBox.hidden = !chatBox.hidden;
+    if (!chatBox.hidden) chatInput.focus();
+  });
+  root.querySelector('[data-act="close-chat"]')?.addEventListener("click", () => {
+    chatBox.hidden = true;
+  });
+  root.querySelector('[data-act="share"]')?.addEventListener("click", () => actions.shareRoom());
+  root.querySelector('[data-act="fullscreen"]')?.addEventListener("click", () => {
+    container.dispatchEvent(new CustomEvent("bighouse-toggle-fullscreen", { bubbles: true }));
+  });
+  root.querySelector('[data-act="leave"]')?.addEventListener("click", () => {
+    actions.sendAction({ type: "checkpoint", payload: { x: Math.round(localPlayer.x), y: Math.round(localPlayer.y) } });
+    actions.leaveRoom();
+  });
+  chatForm.addEventListener("submit", (e) => {
+    e.preventDefault();
+    const text = chatInput.value.trim();
+    if (!text) return;
+    actions.sendChat(text);
+    chatInput.value = "";
+  });
+
+  // Keyboard listeners
+  const onKeyDown = (e: KeyboardEvent) => {
+    if (document.activeElement === chatInput || mapDialog.open || helpDialog.open) return;
+    if (PREVENT_KEYS.has(e.code)) e.preventDefault();
+    void audio.unlock();
+    keysDown.add(e.code);
+
+    // Quick weapon selection 1..9, 0
+    if (e.code.startsWith("Digit")) {
+      const digit = Number(e.code.slice(5));
+      const idx = digit === 0 ? 9 : digit - 1;
+      const wid = WEAPON_ORDER[idx];
+      if (wid && localPlayer.unlockedWeapons.includes(wid) && localPlayer.equippedWeaponId !== wid) {
+        localPlayer.equippedWeaponId = wid;
+        actions.sendAction({ type: "switchWeapon", payload: { weaponId: wid } });
+      }
+    }
+  };
+  const onKeyUp = (e: KeyboardEvent) => {
+    keysDown.delete(e.code);
+  };
+  const onBlur = () => {
+    keysDown.clear();
+    virtualDown.clear();
+  };
+  window.addEventListener("keydown", onKeyDown);
+  window.addEventListener("keyup", onKeyUp);
+  window.addEventListener("blur", onBlur);
+
+  // Touch buttons
+  for (const btn of root.querySelectorAll<HTMLButtonElement>("[data-touch]")) {
+    const act = btn.dataset.touch!;
+    const press = (e: Event) => {
+      e.preventDefault();
+      void audio.unlock();
+      virtualDown.add(act);
+    };
+    const rel = (e: Event) => {
+      e.preventDefault();
+      virtualDown.delete(act);
+    };
+    btn.addEventListener("pointerdown", press);
+    btn.addEventListener("pointerup", rel);
+    btn.addEventListener("pointercancel", rel);
+    btn.addEventListener("pointerleave", rel);
+  }
+
+  function pollInput(): void {
+    for (const [act, codes] of Object.entries(ACTION_KEYS)) {
+      prevInput[act] = Boolean(curInput[act]);
+      let down = virtualDown.has(act);
+      if (!down) {
+        for (const c of codes) {
+          if (keysDown.has(c)) {
+            down = true;
+            break;
+          }
+        }
+      }
+      curInput[act] = down;
+    }
+  }
+
+  function stepSimulation(dt: number): void {
+    const now = Date.now();
+    pollInput();
+
+    if (shakeTimer > 0) {
+      shakeTimer = Math.max(0, shakeTimer - dt);
+      const amp = shakeMag * (shakeTimer / 0.18);
+      shakeX = (Math.random() * 2 - 1) * amp;
+      shakeY = (Math.random() * 2 - 1) * amp;
+    } else {
+      shakeX = 0;
+      shakeY = 0;
+    }
+
+    if (warpFlash > 0) warpFlash = Math.max(0, warpFlash - dt);
+    if (hitStopTimer > 0) {
+      hitStopTimer = Math.max(0, hitStopTimer - dt);
+      updateEffects(dt * 0.35);
+      return;
+    }
+
+    updateMovingPlatforms(compiledStage.movingPlatforms, dt);
+    stepLocalPlayer(dt, now);
+    stepMobs(dt, now);
+    stepProjectiles(dt, now);
+    stepRemotePlayers(dt, now);
+    checkItemPickups(now);
+    updateEffects(dt);
+    updateCamera(dt);
+    sendPeriodicSync(dt);
+  }
+
+  function stepLocalPlayer(dt: number, now: number): void {
+    const p = localPlayer;
+    p.animTimer += dt;
+    if (p.invulnTimer > 0) p.invulnTimer = Math.max(0, p.invulnTimer - dt);
+    if (p.slowTimer > 0) p.slowTimer = Math.max(0, p.slowTimer - dt);
+    if (hurtStunTimer > 0) hurtStunTimer = Math.max(0, hurtStunTimer - dt);
+    if (attackCooldown > 0) attackCooldown = Math.max(0, attackCooldown - dt);
+    if (p.attackAnimTimer > 0) p.attackAnimTimer = Math.max(0, p.attackAnimTimer - dt);
+    if (dropThroughTimer > 0) dropThroughTimer = Math.max(0, dropThroughTimer - dt);
+    if (portalCooldown > 0) portalCooldown = Math.max(0, portalCooldown - dt);
+
+    p.squashX += (1 - p.squashX) * Math.min(1, dt * 15);
+    p.squashY += (1 - p.squashY) * Math.min(1, dt * 15);
+
+    // Weapon cycle & potion
+    if (justPressed("weaponPrev") || justPressed("weaponNext")) {
+      if (p.unlockedWeapons.length > 1) {
+        const delta = justPressed("weaponNext") ? 1 : -1;
+        const idx = p.unlockedWeapons.indexOf(p.equippedWeaponId);
+        const nextWid = p.unlockedWeapons[(idx + delta + p.unlockedWeapons.length) % p.unlockedWeapons.length]!;
+        p.equippedWeaponId = nextWid;
+        actions.sendAction({ type: "switchWeapon", payload: { weaponId: nextWid } });
+      }
+    }
+    if (justPressed("potion") && p.potions > 0 && p.hp < p.maxHp) {
+      // 0ms optimistic potion heal + server sync
+      const clientPotionId = nextPredId("pot");
+      predictedPotionIds.add(clientPotionId);
+      const healAmt = Math.max(
+        PLAYER_CONFIG.minPotionHeal,
+        Math.round(p.maxHp * PLAYER_CONFIG.potionHealRatio)
+      );
+      const before = p.hp;
+      p.potions = Math.max(0, p.potions - 1);
+      p.hp = Math.min(p.maxHp, p.hp + healAmt);
+      const actual = p.hp - before;
+      if (actual > 0) {
+        spawnText(p.x + p.w * 0.5, p.y - 12, `+${actual} HP`, "heal");
+        spawnSparkles(p.x + p.w * 0.5, p.y + p.h * 0.4, "#69F0AE", 10);
+        audio.playSfx("sfx_potion", 0);
+      }
+      actions.sendAction({ type: "usePotion", payload: { clientPotionId } });
+    }
+
+    if (p.grounded && !p.onLadder && standingPlatform) {
+      applyMovingPlatformCarry({
+        x: p.x,
+        y: p.y,
+        w: p.w,
+        h: p.h,
+        vx: p.vx,
+        vy: p.vy,
+        grounded: p.grounded,
+        standingPlatform
+      });
+      const mp = standingPlatform as CompiledStage["movingPlatforms"][number];
+      if (mp.dx || mp.dy) {
+        p.x += mp.dx;
+        p.y += mp.dy;
+      }
+    }
+
+    p.nearbyPortal = findOverlappingPortal(p, compiledStage.portals);
+    p.nearbySign = null;
+    for (const d of compiledStage.decorations) {
+      if (d.kind === "sign" && d.text) {
+        if (Math.hypot(p.x + p.w * 0.5 - (d.x + 24), p.y + p.h * 0.5 - (d.y + 24)) < 68) {
+          p.nearbySign = d;
+          break;
+        }
+      }
+    }
+
+    // Portal interaction
+    if (p.nearbyPortal && portalCooldown <= 0 && justPressed("up") && !p.onLadder && !stageTransitionPending) {
+      const pt = p.nearbyPortal;
+      if (pt.kind === "next_stage" || pt.kind === "prev_stage") {
+        if (pt.requiredLevel !== undefined && p.level < pt.requiredLevel) {
+          spawnText(p.x + p.w * 0.5, p.y - 24, `Lv.${pt.requiredLevel}+ 필요!`, "playerHurt");
+        } else if (pt.targetStageId) {
+          stageTransitionPending = true;
+          portalCooldown = 1.0;
+          audio.playSfx("sfx_portal", 0);
+          spawnSparkles(p.x + p.w * 0.5, p.y + p.h * 0.5, pt.color, 18);
+          actions.sendAction({ type: "changeStage", payload: { targetStageId: pt.targetStageId } });
+          return;
+        }
+      } else if (pt.kind === "goal") {
+        portalCooldown = 2.0;
+        audio.playBgm("bgm_clear", false);
+        spawnLevelUpEffect(p.x + p.w * 0.5, p.y + p.h, p.level);
+        spawnText(p.x + p.w * 0.5, p.y - 60, "★ 별빛 정상 제패! ★", "levelup");
+      } else if (pt.targetPortalId) {
+        const target = compiledStage.portalsById.get(pt.targetPortalId);
+        if (target) {
+          spawnSparkles(p.x + p.w * 0.5, p.y + p.h * 0.5, pt.color, 14);
+          p.x = target.x + target.w * 0.5 - p.w * 0.5;
+          p.y = target.y + target.h - p.h - 2;
+          p.vx = 0;
+          p.vy = 0;
+          p.grounded = false;
+          standingPlatform = null;
+          portalCooldown = PLAYER_CONFIG.portalCooldown;
+          warpFlash = 0.25;
+          spawnSparkles(p.x + p.w * 0.5, p.y + p.h * 0.5, target.color, 14);
+          audio.playSfx("sfx_portal", 0.04);
+          return;
+        }
+      }
+    }
+
+    // Ladder grab
+    const overlapLad = findOverlappingLadder(p, compiledStage.ladders, 10);
+    if (!p.onLadder && overlapLad && hurtStunTimer <= 0) {
+      const wantsUp = isDown("up") && !p.nearbyPortal;
+      const wantsDown = isDown("down") && p.y + p.h <= overlapLad.y + overlapLad.h - 6;
+      if (wantsUp || wantsDown) {
+        p.onLadder = true;
+        currentLadder = overlapLad;
+        p.grounded = false;
+        standingPlatform = null;
+        p.vx = 0;
+        p.vy = 0;
+        p.x = overlapLad.centerX - p.w * 0.5;
+      }
+    }
+
+    if (p.onLadder && currentLadder) {
+      const l = currentLadder;
+      const moveY = (isDown("down") ? 1 : 0) - (isDown("up") ? 1 : 0);
+      p.vy = moveY * PLAYER_CONFIG.climbSpeed;
+      p.vx = 0;
+      p.x += (l.centerX - p.w * 0.5 - p.x) * Math.min(1, dt * 18);
+      p.y += p.vy * dt;
+
+      if (moveY !== 0) {
+        ladderStepTimer += dt;
+        if (ladderStepTimer >= 0.24) {
+          ladderStepTimer = 0;
+          audio.playSfx("sfx_ladder", 0.06);
+        }
+      }
+      if (justPressed("jump")) {
+        p.onLadder = false;
+        currentLadder = null;
+        if (isDown("left")) {
+          p.vx = -PLAYER_CONFIG.moveSpeed * 0.85;
+          p.facing = -1;
+        } else if (isDown("right")) {
+          p.vx = PLAYER_CONFIG.moveSpeed * 0.85;
+          p.facing = 1;
+        }
+        p.vy = PLAYER_CONFIG.jumpVelocity * 0.92;
+        audio.playSfx("sfx_jump", 0.05);
+      } else if (p.y + p.h <= l.y + 4 && moveY < 0) {
+        p.y = l.y - p.h;
+        p.vy = 0;
+        p.onLadder = false;
+        currentLadder = null;
+        p.grounded = true;
+      } else if (p.y + p.h >= l.y + l.h && moveY > 0) {
+        p.y = l.y + l.h - p.h;
+        p.vy = 0;
+        p.onLadder = false;
+        currentLadder = null;
+      }
+      handleLocalAttack(now);
+      return;
+    }
+
+    // Horizontal run with special platform surfaces (ice, mud, conveyor) & slow debuff
+    const standingSurface = p.grounded && standingPlatform ? standingPlatform.surface : "normal";
+    const mudMult = standingSurface === "mud" ? 0.64 : 1.0;
+    const speedMult = (p.slowTimer > 0 ? 0.6 : 1.0) * mudMult;
+    const maxSpd = PLAYER_CONFIG.moveSpeed * speedMult;
+    const moveDir = (isDown("right") ? 1 : 0) - (isDown("left") ? 1 : 0);
+    if (hurtStunTimer <= 0) {
+      if (moveDir !== 0) {
+        p.facing = moveDir;
+        const baseAccel = p.grounded ? PLAYER_CONFIG.groundAccel : PLAYER_CONFIG.airAccel;
+        const accel = standingSurface === "ice" ? baseAccel * 0.48 : baseAccel;
+        p.vx += moveDir * accel * dt;
+        if (Math.abs(p.vx) > maxSpd) p.vx = Math.sign(p.vx) * maxSpd;
+      } else if (p.grounded) {
+        const frictionMult = standingSurface === "ice" ? 0.14 : 1.0;
+        const decel = PLAYER_CONFIG.groundFriction * frictionMult * dt;
+        if (Math.abs(p.vx) <= decel) p.vx = 0;
+        else p.vx -= Math.sign(p.vx) * decel;
+      } else {
+        p.vx *= Math.pow(0.25, dt);
+      }
+    }
+
+    // Conveyor belt horizontal drift when standing on a conveyor platform
+    if (p.grounded && (standingSurface === "conveyor_right" || standingSurface === "conveyor_left")) {
+      const beltDir = standingSurface === "conveyor_right" ? 1 : -1;
+      p.x += beltDir * 118 * dt;
+    }
+
+    if (p.grounded) coyoteTimer = PLAYER_CONFIG.coyoteTime;
+    else coyoteTimer = Math.max(0, coyoteTimer - dt);
+
+    if (justPressed("jump")) jumpBufferTimer = PLAYER_CONFIG.jumpBufferTime;
+    else jumpBufferTimer = Math.max(0, jumpBufferTimer - dt);
+
+    if (jumpBufferTimer > 0 && hurtStunTimer <= 0) {
+      if (p.grounded && isDown("down") && standingPlatform && standingPlatform.oneWay) {
+        dropThroughTimer = PLAYER_CONFIG.dropThroughDuration;
+        p.grounded = false;
+        standingPlatform = null;
+        p.y += 4;
+        p.vy = 60;
+        jumpBufferTimer = 0;
+        coyoteTimer = 0;
+      } else if (coyoteTimer > 0) {
+        p.vy = PLAYER_CONFIG.jumpVelocity;
+        p.grounded = false;
+        standingPlatform = null;
+        jumpBufferTimer = 0;
+        coyoteTimer = 0;
+        p.squashX = 0.8;
+        p.squashY = 1.24;
+        audio.playSfx("sfx_jump", 0.05);
+      }
+    }
+
+    if (justReleased("jump") && p.vy < -220) {
+      p.vy *= PLAYER_CONFIG.jumpCutMultiplier;
+    }
+
+    const prevBottom = p.y + p.h;
+    p.x += p.vx * dt;
+    p.vy = Math.min(PLAYER_CONFIG.maxFallSpeed, p.vy + PLAYER_CONFIG.gravity * dt);
+    p.y += p.vy * dt;
+
+    if (p.x < 4) {
+      p.x = 4;
+      if (p.vx < 0) p.vx = 0;
+    } else if (p.x + p.w > compiledStage.meta.worldWidth - 4) {
+      p.x = compiledStage.meta.worldWidth - 4 - p.w;
+      if (p.vx > 0) p.vx = 0;
+    }
+
+    const wasGrounded = p.grounded;
+    const fallSpd = p.vy;
+    const actor = {
+      x: p.x,
+      y: p.y,
+      w: p.w,
+      h: p.h,
+      vx: p.vx,
+      vy: p.vy,
+      grounded: p.grounded,
+      standingPlatform
+    };
+    const landed = resolvePlatformLanding(
+      actor,
+      prevBottom,
+      compiledStage.platforms,
+      compiledStage.movingPlatforms,
+      dropThroughTimer > 0
+    );
+    p.y = actor.y;
+    p.vy = actor.vy;
+    p.grounded = actor.grounded;
+    standingPlatform = actor.standingPlatform;
+
+    // Bouncy spring pad: launches player high into the air immediately on landing!
+    if (p.grounded && standingPlatform && standingPlatform.surface === "bouncy") {
+      p.vy = -850;
+      p.grounded = false;
+      standingPlatform = null;
+      p.squashX = 0.72;
+      p.squashY = 1.34;
+      spawnSparkles(p.x + p.w * 0.5, p.y + p.h, "#FF80AB", 10);
+      audio.playSfx("sfx_jump", 0.04);
+    } else if (landed && !wasGrounded) {
+      p.squashX = 1.2;
+      p.squashY = 0.82;
+      if (fallSpd > 240) audio.playSfx("sfx_land", 0.06);
+    }
+
+    if (
+      p.grounded &&
+      standingPlatform &&
+      !("waypoints" in standingPlatform) &&
+      standingPlatform.surface !== "bouncy"
+    ) {
+      lastSafeX = Math.max(standingPlatform.x + 12, Math.min(standingPlatform.x + standingPlatform.w - p.w - 12, p.x));
+      lastSafeY = p.y;
+    }
+
+    // Environmental hazards (water, spikes, lava, poison): damage + launch upward out of hazard!
+    stepHazards();
+
+    // Pit recovery
+    if (p.y > compiledStage.meta.worldHeight + 80) {
+      p.x = lastSafeX;
+      p.y = lastSafeY - 12;
+      p.vx = 0;
+      p.vy = 0;
+      hurtLocalPlayer(Math.max(15, Math.round(p.maxHp * 0.14)), p.x + p.w * 0.5);
+    }
+
+    handleLocalAttack(now);
+  }
+
+  function stepHazards(): void {
+    const p = localPlayer;
+    for (const hz of compiledStage.hazards) {
+      if (!aabbOverlap(p, hz)) continue;
+      const cx = p.x + p.w * 0.5;
+      const cy = p.y + p.h * 0.75;
+      const isDeepPit = hz.h >= 60;
+      const toSafeDir = lastSafeX >= p.x ? 1 : -1;
+
+      if (p.invulnTimer <= 0) {
+        const dmg = Math.max(10, Math.round(p.maxHp * hz.damageRatio));
+        hurtLocalPlayer(dmg, cx - toSafeDir * 24);
+        const palette: Record<typeof hz.kind, { color: string; label: string }> = {
+          water: { color: "#4FC3F7", label: "첨벙!" },
+          spikes: { color: "#CFD8DC", label: "아야!" },
+          lava: { color: "#FF6D00", label: "앗 뜨거!" },
+          poison: { color: "#B2FF59", label: "독 늪!" }
+        };
+        const info = palette[hz.kind];
+        spawnSparkles(cx, cy, info.color, 14);
+        spawnText(cx, p.y - 26, info.label, "playerHurt");
+        if (hz.kind === "poison") {
+          p.slowTimer = Math.max(p.slowTimer, 1.6);
+        }
+      }
+
+      // Always spring player cleanly back up out of the hazard (even during invuln frames)
+      p.y = Math.min(p.y, hz.y - p.h + 12);
+      p.vy = Math.min(p.vy, hz.bounceVy);
+      if (isDeepPit) {
+        p.vx = toSafeDir * Math.max(Math.abs(p.vx), 165);
+      }
+      p.grounded = false;
+      standingPlatform = null;
+      p.squashX = 0.78;
+      p.squashY = 1.26;
+      break;
+    }
+  }
+
+  function applyOptimisticMobHit(mob: ClientMobEntity, knockDir: number, now: number): void {
+    const p = localPlayer;
+    const w = WEAPON_CATALOG[p.equippedWeaponId] ?? WEAPON_CATALOG.wooden_sword!;
+    const clientHitId = nextPredId("hit");
+    const damageRoll = Math.random();
+    const { damage, isCrit } = computeDeterministicHit(p.baseAtk + w.atk, w.critChance, w.critMult, damageRoll);
+
+    predictedHitIds.add(clientHitId);
+    if (predictedHitIds.size > 120) {
+      const first = predictedHitIds.values().next().value;
+      if (first) predictedHitIds.delete(first);
+    }
+
+    // Immediate 0ms local visual & physical feedback!
+    const resist = 1 - mob.tpl.knockbackResist;
+    mob.hp = Math.max(0, mob.hp - damage);
+    mob.inCombat = true;
+    mob.hitFlashTimer = 0.14;
+    mob.hitStunTimer = isCrit ? 0.28 : 0.2;
+    mob.vx = knockDir * w.knockbackX * resist;
+    mob.vy = w.knockbackY * resist;
+    mob.grounded = false;
+    mob.facing = -knockDir;
+    mob.squashX = 1.24;
+    mob.squashY = 0.78;
+
+    spawnHitBurst(mob.x + mob.w * 0.5, mob.y + mob.h * 0.45, isCrit ? "#FFD740" : w.slashColor, isCrit);
+    spawnText(mob.x + mob.w * 0.5, mob.y - 12, isCrit ? `${damage}!` : `${damage}`, isCrit ? "crit" : "normal");
+    hitStopTimer = isCrit ? 0.05 : 0.032;
+    triggerShake(isCrit ? 6 : 3, isCrit ? 0.15 : 0.09);
+    audio.playSfx(isCrit ? "sfx_crit" : "sfx_hit", 0.06);
+
+    if (mob.hp <= 0) {
+      mob.alive = false;
+      mob.inCombat = false;
+      spawnSparkles(mob.x + mob.w * 0.5, mob.y + mob.h * 0.5, mob.primaryColor, 16);
+      audio.playSfx("sfx_mob_defeat", 0.05);
+    }
+
+    optimisticMobLocks.set(mob.id, {
+      hp: mob.hp,
+      alive: mob.alive,
+      expiresAt: now + 950
+    });
+
+    // Sync to server for authoritative XP, cooperative rewards, and multiplayer broadcast
+    actions.sendAction({
+      type: "attackMob",
+      payload: { mobId: mob.id, knockDir, clientHitId, damageRoll }
+    });
+  }
+
+  function handleLocalAttack(now: number): void {
+    const p = localPlayer;
+    if (!justPressed("attack") || attackCooldown > 0 || hurtStunTimer > 0) return;
+    const w = WEAPON_CATALOG[p.equippedWeaponId] ?? WEAPON_CATALOG.wooden_sword!;
+    attackCooldown = w.cooldown;
+    p.attackAnimDuration = Math.min(0.24, w.cooldown * 0.78);
+    p.attackAnimTimer = p.attackAnimDuration;
+    p.squashX = 1.14;
+    p.squashY = 0.9;
+    audio.playSfx(w.sfx, 0.06);
+
+    const slashX = p.facing > 0 ? p.x + p.w * 0.7 : p.x + p.w * 0.3;
+    hitEffects.push({
+      type: "slash",
+      x: slashX,
+      y: p.y + p.h * 0.48,
+      facing: p.facing,
+      reach: w.reach,
+      color: w.slashColor,
+      age: 0,
+      duration: 0.16
+    });
+
+    const hitbox = {
+      x: p.facing > 0 ? p.x + p.w * 0.35 : p.x + p.w * 0.65 - w.reach,
+      y: p.y + p.h * 0.5 - w.height * 0.52,
+      w: w.reach,
+      h: w.height
+    };
+
+    for (const mob of mobs) {
+      if (!mob.alive) continue;
+      // 2-second spawn protection: cannot damage blinking newly respawned mobs!
+      if (now < mob.spawnProtectUntil) continue;
+      if (aabbOverlap(hitbox, mob)) {
+        applyOptimisticMobHit(mob, p.facing, now);
+      }
+    }
+
+    if (w.type === "ranged") {
+      projectiles.push({
+        x: p.x + p.w * 0.5 + p.facing * 18 - 11,
+        y: p.y + p.h * 0.5 - 13,
+        w: 22,
+        h: 22,
+        vx: p.facing * (w.projectileSpeed ?? 560),
+        vy: 0,
+        traveled: 0,
+        maxDistance: w.projectileRange ?? 360,
+        alive: true,
+        atk: p.baseAtk + w.atk,
+        pierceLeft: w.pierce ?? 1,
+        hitIds: new Set(),
+        color: w.slashColor,
+        accentColor: w.accentColor,
+        spin: 0,
+        isEnemy: false
+      });
+    }
+  }
+
+  function hurtLocalPlayer(amount: number, sourceX: number): void {
+    const p = localPlayer;
+    if (p.invulnTimer > 0) return;
+    p.invulnTimer = PLAYER_CONFIG.invulnDuration;
+    hurtStunTimer = 0.22;
+    p.onLadder = false;
+    currentLadder = null;
+    const knockDir = p.x + p.w * 0.5 >= sourceX ? 1 : -1;
+    p.vx = knockDir * PLAYER_CONFIG.knockbackVx;
+    p.vy = PLAYER_CONFIG.knockbackVy;
+    p.grounded = false;
+    standingPlatform = null;
+    p.hp = Math.max(0, p.hp - amount);
+    spawnText(p.x + p.w * 0.5, p.y - 10, `-${amount}`, "playerHurt");
+    spawnHitBurst(p.x + p.w * 0.5, p.y + p.h * 0.5, "#FF5252", false);
+    audio.playSfx("sfx_player_hurt", 0.04);
+    triggerShake(6, 0.16);
+    actions.sendAction({ type: "playerHurt", payload: { amount } });
+  }
+
+  function spawnEnemyShot(mob: ClientMobEntity, targetX: number, targetY: number): void {
+    const r = mob.tpl.rangedAttack;
+    if (!r) return;
+    const mx = mob.x + mob.w * 0.5;
+    const my = mob.y + mob.h * 0.45;
+    const baseAngle = Math.atan2(targetY - my, targetX - mx);
+    const count = r.spreadCount ?? 1;
+    const spreadStep = count === 3 ? 0.24 : count === 2 ? 0.18 : 0;
+    for (let i = 0; i < count; i++) {
+      const offset = (i - (count - 1) * 0.5) * spreadStep;
+      const ang = baseAngle + offset;
+      projectiles.push({
+        x: mx - 8,
+        y: my - 8,
+        w: 16,
+        h: 16,
+        vx: Math.cos(ang) * r.speed,
+        vy: Math.sin(ang) * r.speed,
+        traveled: 0,
+        maxDistance: 440,
+        alive: true,
+        atk: Math.round(mob.tpl.atk * 0.85),
+        pierceLeft: 1,
+        hitIds: new Set(),
+        color: r.color,
+        accentColor: mob.primaryColor,
+        spin: 0,
+        isEnemy: true,
+        ...(r.slowEffect ? { slowEffect: true } : {})
+      });
+    }
+  }
+
+  function stepMobs(dt: number, now: number): void {
+    const px = localPlayer.x + localPlayer.w * 0.5;
+    const py = localPlayer.y + localPlayer.h * 0.5;
+
+    for (const mob of mobs) {
+      if (!mob.alive) continue;
+      mob.animTimer += dt;
+      if (mob.hitFlashTimer > 0) mob.hitFlashTimer = Math.max(0, mob.hitFlashTimer - dt);
+      if (mob.hitStunTimer > 0) mob.hitStunTimer = Math.max(0, mob.hitStunTimer - dt);
+      if (mob.displayHp > mob.hp) {
+        mob.displayHp = Math.max(mob.hp, mob.displayHp - mob.maxHp * 1.4 * dt);
+      }
+      mob.squashX += (1 - mob.squashX) * Math.min(1, dt * 14);
+      mob.squashY += (1 - mob.squashY) * Math.min(1, dt * 14);
+
+      const isProtected = now < mob.spawnProtectUntil;
+      const mx = mob.x + mob.w * 0.5;
+      const my = mob.y + mob.h * 0.5;
+      const dx = px - mx;
+      const dy = py - my;
+      const dist = Math.hypot(dx, dy);
+      const seesPlayer = !isProtected && Math.abs(dx) <= mob.tpl.aggroRange && Math.abs(dy) <= (mob.tpl.flying ? 260 : 105);
+
+      if (seesPlayer && !mob.inCombat && dist <= mob.tpl.aggroRange * 0.82) {
+        mob.inCombat = true;
+      }
+
+      // Unique movement AI for all 16 monster patterns
+      if (mob.hitStunTimer > 0) {
+        mob.vx *= Math.pow(0.06, dt);
+      } else if (isProtected) {
+        // Gentle idle bob while blinking in 2-second spawn protection (never attacks!)
+        mob.vx = 0;
+        if (mob.tpl.flying) {
+          mob.y = mob.homeY + Math.sin(mob.animTimer * 4) * 6;
+        }
+      } else {
+        updateMobAi(mob, dt, dx, dy, seesPlayer, px, py);
+      }
+
+      // Physics integration
+      if (mob.tpl.flying) {
+        mob.x += mob.vx * dt;
+        mob.y += mob.vy * dt;
+        mob.x = Math.max(mob.patrolMinX, Math.min(mob.patrolMaxX - mob.w, mob.x));
+        mob.y = Math.max(48, Math.min(compiledStage.meta.worldHeight - 140, mob.y));
+        mob.grounded = false;
+      } else {
+        const prevBottom = mob.y + mob.h;
+        mob.x += mob.vx * dt;
+        mob.vy = Math.min(PLAYER_CONFIG.maxFallSpeed, mob.vy + PLAYER_CONFIG.gravity * dt);
+        mob.y += mob.vy * dt;
+        const actor = {
+          x: mob.x,
+          y: mob.y,
+          w: mob.w,
+          h: mob.h,
+          vx: mob.vx,
+          vy: mob.vy,
+          grounded: mob.grounded,
+          standingPlatform: null as CompiledStage["platforms"][number] | null
+        };
+        resolvePlatformLanding(actor, prevBottom, compiledStage.platforms, compiledStage.movingPlatforms, false);
+        mob.y = actor.y;
+        mob.vy = actor.vy;
+        mob.grounded = actor.grounded;
+        if (mob.hitStunTimer <= 0 && mob.grounded) {
+          if (mob.x < mob.patrolMinX) {
+            mob.x = mob.patrolMinX;
+            mob.facing = 1;
+          } else if (mob.x + mob.w > mob.patrolMaxX) {
+            mob.x = mob.patrolMaxX - mob.w;
+            mob.facing = -1;
+          }
+        }
+      }
+
+      // Contact damage (blocked during 2-second spawn protection or hitstun!)
+      if (!isProtected && mob.hitStunTimer <= 0 && localPlayer.invulnTimer <= 0) {
+        const box = { x: mob.x + 5, y: mob.y + 5, w: mob.w - 10, h: mob.h - 6 };
+        if (aabbOverlap(localPlayer, box)) {
+          mob.inCombat = true;
+          hurtLocalPlayer(mob.tpl.atk, mob.x + mob.w * 0.5);
+        }
+      }
+    }
+  }
+
+  function updateMobAi(
+    mob: ClientMobEntity,
+    dt: number,
+    dx: number,
+    dy: number,
+    seesPlayer: boolean,
+    px: number,
+    py: number
+  ): void {
+    const ai = mob.tpl.ai;
+    const spd = mob.tpl.speed;
+
+    // Ranged monsters fire periodic projectiles when seeing player
+    if (mob.tpl.rangedAttack && seesPlayer) {
+      mob.shootTimer -= dt;
+      if (mob.shootTimer <= 0) {
+        mob.shootTimer = mob.tpl.rangedAttack.cooldownSec * (0.85 + Math.random() * 0.3);
+        mob.facing = dx >= 0 ? 1 : -1;
+        spawnEnemyShot(mob, px, py);
+      }
+    }
+
+    if (ai === "patrol") {
+      mob.vx = mob.facing * spd;
+    } else if (ai === "dash" || ai === "charge") {
+      if (seesPlayer && Math.abs(dx) > 18) {
+        mob.facing = dx >= 0 ? 1 : -1;
+        mob.vx = mob.facing * (mob.tpl.dashSpeed ?? spd * 2);
+      } else {
+        mob.vx = mob.facing * spd;
+      }
+    } else if (ai === "hopper" || ai === "double_hop" || ai === "elastic_slime" || ai === "golem_stomp") {
+      mob.aiTimer -= dt;
+      if (seesPlayer && mob.grounded && Math.abs(dx) > 20) mob.facing = dx >= 0 ? 1 : -1;
+      mob.vx = mob.facing * (mob.grounded ? spd * 0.72 : spd * 1.25);
+      if (mob.grounded && mob.aiTimer <= 0) {
+        mob.vy = mob.tpl.hopVelocity ?? -390;
+        mob.grounded = false;
+        mob.squashX = 0.8;
+        mob.squashY = 1.24;
+        mob.aiTimer = (mob.tpl.hopInterval ?? 1.4) * (0.85 + Math.random() * 0.25);
+        if (ai === "double_hop") mob.aiPhase = "can_double";
+      } else if (ai === "double_hop" && !mob.grounded && mob.aiPhase === "can_double" && mob.vy > -40) {
+        mob.vy = -340;
+        mob.aiPhase = "done";
+        mob.squashX = 0.84;
+        mob.squashY = 1.2;
+      }
+    } else if (ai === "lunge" || ai === "backstep") {
+      mob.aiTimer -= dt;
+      if (mob.aiPhase === "windup") {
+        mob.vx = ai === "backstep" ? -mob.facing * spd * 1.15 : 0;
+        mob.squashX = 1.22;
+        mob.squashY = 0.8;
+        if (mob.aiTimer <= 0) {
+          mob.aiPhase = "lunge";
+          mob.aiTimer = 0.3;
+          mob.vx = mob.facing * (mob.tpl.lungeSpeed ?? mob.tpl.dashSpeed ?? spd * 2.2);
+        }
+        return;
+      }
+      if (mob.aiPhase === "lunge") {
+        if (mob.aiTimer <= 0) {
+          mob.aiPhase = "recover";
+          mob.aiTimer = 0.5;
+        }
+        return;
+      }
+      if (mob.aiPhase === "recover") {
+        mob.vx *= Math.pow(0.08, dt);
+        if (mob.aiTimer <= 0) mob.aiPhase = "idle";
+        return;
+      }
+      if (seesPlayer && Math.abs(dx) < 175 && mob.grounded) {
+        mob.facing = dx >= 0 ? 1 : -1;
+        mob.aiPhase = "windup";
+        mob.aiTimer = 0.28;
+        return;
+      }
+      mob.vx = mob.facing * spd;
+    } else if (ai === "web_spider" || ai === "fire_drake") {
+      mob.aiTimer -= dt;
+      if (seesPlayer && mob.grounded) mob.facing = dx >= 0 ? 1 : -1;
+      mob.vx = mob.facing * spd;
+      if (mob.grounded && mob.aiTimer <= 0 && seesPlayer) {
+        mob.vy = mob.tpl.hopVelocity ?? -420;
+        mob.grounded = false;
+        mob.aiTimer = mob.tpl.hopInterval ?? 1.8;
+      }
+    } else if (ai === "swoop" || ai === "sonic_bat" || ai === "griffin_dive" || ai === "star_dragon") {
+      // Airborne sinusoidal / figure-8 patrol + swooping dives!
+      if (seesPlayer) {
+        mob.facing = dx >= 0 ? 1 : -1;
+        const targetY = ai === "sonic_bat" ? py - 90 + Math.sin(mob.animTimer * 5) * 35 : py - 32;
+        const distNow = Math.max(1, Math.hypot(dx, targetY - mob.y));
+        const diveMult = ai === "griffin_dive" || ai === "star_dragon" ? 1.35 : 1.15;
+        mob.vx = (dx / distNow) * spd * diveMult;
+        mob.vy = ((targetY - mob.y) / distNow) * spd * diveMult;
+      } else {
+        mob.vx = mob.facing * spd;
+        if (mob.x <= mob.patrolMinX + 16) mob.facing = 1;
+        if (mob.x + mob.w >= mob.patrolMaxX - 16) mob.facing = -1;
+        const desiredY = mob.homeY + Math.sin(mob.animTimer * 3.2) * 32;
+        mob.vy = (desiredY - mob.y) * 4;
+      }
+    } else if (ai === "teleport_wisp") {
+      mob.teleportTimer -= dt;
+      if (seesPlayer && mob.teleportTimer <= 0) {
+        mob.teleportTimer = 3.0;
+        spawnSparkles(mob.x + mob.w * 0.5, mob.y + mob.h * 0.5, "#8C9EFF", 10);
+        const side = dx >= 0 ? -1 : 1;
+        mob.x = Math.max(mob.patrolMinX, Math.min(mob.patrolMaxX - mob.w, px + side * 120));
+        mob.y = Math.max(80, py - 68);
+        mob.facing = -side;
+        spawnSparkles(mob.x + mob.w * 0.5, mob.y + mob.h * 0.5, "#FFFFFF", 10);
+      } else {
+        mob.vx = mob.facing * spd * 0.65;
+        if (mob.x <= mob.patrolMinX + 12) mob.facing = 1;
+        if (mob.x + mob.w >= mob.patrolMaxX - 12) mob.facing = -1;
+        mob.vy = (mob.homeY + Math.sin(mob.animTimer * 4) * 28 - mob.y) * 3;
+      }
+    }
+
+    if (!mob.tpl.flying && mob.grounded) {
+      if (mob.x + mob.w * 0.5 <= mob.patrolMinX + 12) mob.facing = 1;
+      if (mob.x + mob.w * 0.5 >= mob.patrolMaxX - 12) mob.facing = -1;
+    }
+  }
+
+  function stepProjectiles(dt: number, now: number): void {
+    for (let i = projectiles.length - 1; i >= 0; i--) {
+      const p = projectiles[i]!;
+      const dx = p.vx * dt;
+      const dy = p.vy * dt;
+      p.x += dx;
+      p.y += dy;
+      p.traveled += Math.hypot(dx, dy);
+      p.spin += dt * 11 * (p.vx >= 0 ? 1 : -1);
+
+      if (p.isEnemy) {
+        if (aabbOverlap(p, localPlayer)) {
+          if (p.slowEffect) {
+            localPlayer.slowTimer = 2.0;
+            spawnText(localPlayer.x + 14, localPlayer.y - 34, "감속!", "info");
+          }
+          hurtLocalPlayer(p.atk, p.x + p.w * 0.5);
+          p.alive = false;
+        }
+      } else {
+        for (const mob of mobs) {
+          if (!mob.alive || now < mob.spawnProtectUntil || p.hitIds.has(mob.id)) continue;
+          if (aabbOverlap(p, mob)) {
+            p.hitIds.add(mob.id);
+            p.pierceLeft -= 1;
+            applyOptimisticMobHit(mob, p.vx >= 0 ? 1 : -1, now);
+            if (p.pierceLeft <= 0) {
+              p.alive = false;
+              break;
+            }
+          }
+        }
+      }
+
+      if (!p.alive || p.traveled >= p.maxDistance) {
+        projectiles.splice(i, 1);
+      }
+    }
+  }
+
+  function stepRemotePlayers(dt: number, now: number): void {
+    const smooth = Math.min(1, dt * 14);
+    for (const [pid, rp] of remotePlayers.entries()) {
+      rp.x += (rp.targetX - rp.x) * smooth;
+      rp.y += (rp.targetY - rp.y) * smooth;
+      if (now - rp.lastSeenAt > 45_000) {
+        remotePlayers.delete(pid);
+      }
+    }
+  }
+
+  function checkItemPickups(now: number): void {
+    const px = localPlayer.x + localPlayer.w * 0.5;
+    const py = localPlayer.y + localPlayer.h * 0.5;
+    for (const item of items) {
+      const tpl = ITEM_CATALOG[item.templateId];
+      if (!tpl) continue;
+      if (tpl.category === "weapon") {
+        if (tpl.weaponId && localPlayer.unlockedWeapons.includes(tpl.weaponId)) continue;
+      } else if (!item.available) {
+        continue;
+      }
+      const lastTry = pendingItemPickups.get(item.id) ?? 0;
+      if (now - lastTry < 1000) continue;
+      if (Math.hypot(px - item.x, py - item.y) <= 34) {
+        pendingItemPickups.set(item.id, now);
+        const clientPickupId = nextPredId("pick");
+        predictedPickupIds.add(clientPickupId);
+        if (predictedPickupIds.size > 120) {
+          const first = predictedPickupIds.values().next().value;
+          if (first) predictedPickupIds.delete(first);
+        }
+
+        // Immediate 0ms optimistic pickup feedback & state update!
+        localPlayer.score += tpl.score;
+        if (tpl.category === "weapon" && tpl.weaponId) {
+          if (!localPlayer.unlockedWeapons.includes(tpl.weaponId)) {
+            localPlayer.unlockedWeapons = [...localPlayer.unlockedWeapons, tpl.weaponId].sort(
+              (a, b) =>
+                WEAPON_ORDER.indexOf(a as (typeof WEAPON_ORDER)[number]) -
+                WEAPON_ORDER.indexOf(b as (typeof WEAPON_ORDER)[number])
+            );
+          }
+          localPlayer.equippedWeaponId = tpl.weaponId;
+          spawnText(item.x, item.y - 24, `★ ${tpl.name} 획득!`, "crit");
+          spawnSparkles(item.x, item.y, tpl.glowColor, 16);
+          audio.playSfx(tpl.sfx, 0);
+        } else {
+          item.available = false;
+          optimisticItemLocks.set(item.id, now + 1500);
+          spawnSparkles(item.x, item.y, tpl.glowColor, 10);
+          audio.playSfx(tpl.sfx, 0.05);
+          if (tpl.category === "coin") {
+            localPlayer.coins += 1;
+          } else if (tpl.category === "heal") {
+            const healAmt = Math.max(tpl.healAmount ?? 30, Math.round(localPlayer.maxHp * 0.25));
+            localPlayer.hp = Math.min(localPlayer.maxHp, localPlayer.hp + healAmt);
+            spawnText(item.x, item.y - 12, `+${healAmt} HP`, "heal");
+          } else if (tpl.category === "potion") {
+            localPlayer.potions += tpl.potionCount ?? 1;
+            spawnText(item.x, item.y - 12, "포션 +1!", "info");
+          } else if (tpl.category === "max_hp") {
+            localPlayer.maxHp += tpl.maxHpBonus ?? 20;
+            localPlayer.hp = Math.min(localPlayer.maxHp, localPlayer.hp + (tpl.healAmount ?? 60));
+            spawnText(item.x, item.y - 16, `최대체력 +${tpl.maxHpBonus}!`, "heal");
+          }
+        }
+
+        // Send to server for cooperative multi-player reconciliation & D1 persistence
+        actions.sendAction({
+          type: "collectItem",
+          payload: { itemId: item.id, clientPickupId }
+        });
+      }
+    }
+  }
+
+  function updateEffects(dt: number): void {
+    for (let i = damageTexts.length - 1; i >= 0; i--) {
+      const d = damageTexts[i]!;
+      d.age += dt;
+      d.y += d.vy * dt;
+      d.vy *= Math.pow(0.25, dt);
+      if (d.age >= d.duration) damageTexts.splice(i, 1);
+    }
+    for (let i = hitEffects.length - 1; i >= 0; i--) {
+      const fx = hitEffects[i]!;
+      fx.age += dt;
+      if (fx.age >= fx.duration) hitEffects.splice(i, 1);
+    }
+    for (let i = particles.length - 1; i >= 0; i--) {
+      const pt = particles[i]!;
+      pt.age += dt;
+      pt.x += pt.vx * dt;
+      pt.y += pt.vy * dt;
+      pt.vy += pt.gravity * dt;
+      if (pt.age >= pt.duration) particles.splice(i, 1);
+    }
+  }
+
+  function updateCamera(dt: number): void {
+    const lookAhead = localPlayer.facing * 54;
+    const targetX = Math.max(0, Math.min(camera.maxX, localPlayer.x + localPlayer.w * 0.5 + lookAhead - VIEWPORT.width * 0.46));
+    const targetY = Math.max(0, Math.min(camera.maxY, localPlayer.y + localPlayer.h * 0.5 - VIEWPORT.height * 0.55));
+    const s = Math.min(1, dt * 6.5);
+    camera.x += (targetX - camera.x) * s;
+    camera.y += (targetY - camera.y) * s;
+  }
+
+  function sendPeriodicSync(dt: number): void {
+    poseSendTimer += dt;
+    if (poseSendTimer >= 0.085 && actions.sendSignal && ctx.connected !== false) {
+      poseSendTimer = 0;
+      const animState =
+        localPlayer.attackAnimTimer > 0
+          ? "attack"
+          : localPlayer.onLadder
+            ? "climb"
+            : !localPlayer.grounded
+              ? "jump"
+              : Math.abs(localPlayer.vx) > 15
+                ? "walk"
+                : "idle";
+      actions.sendSignal({
+        type: "playerPose",
+        payload: {
+          x: Math.round(localPlayer.x),
+          y: Math.round(localPlayer.y),
+          vx: Math.round(localPlayer.vx),
+          vy: Math.round(localPlayer.vy),
+          facing: localPlayer.facing,
+          animState
+        }
+      });
+    }
+
+    // Periodic persistent D1 position checkpoint every 8s when moved
+    checkpointTimer += dt;
+    if (checkpointTimer >= 8.0 && ctx.connected !== false) {
+      checkpointTimer = 0;
+      if (Math.hypot(localPlayer.x - lastSavedPosX, localPlayer.y - lastSavedPosY) > 64) {
+        lastSavedPosX = localPlayer.x;
+        lastSavedPosY = localPlayer.y;
+        actions.sendAction({
+          type: "checkpoint",
+          payload: { x: Math.round(localPlayer.x), y: Math.round(localPlayer.y) }
+        });
+      }
+    }
+  }
+
+  function startLoop(): void {
+    if (destroyed || renderSuspended || rafId !== null) return;
+    lastFrameTime = performance.now();
+    const loop = (now: number) => {
+      if (destroyed || renderSuspended) {
+        rafId = null;
+        return;
+      }
+      const frameDt = Math.min(0.05, Math.max(0, (now - lastFrameTime) / 1000));
+      lastFrameTime = now;
+      accumulator += frameDt;
+      const fixedDt = 1 / 60;
+      while (accumulator >= fixedDt) {
+        stepSimulation(fixedDt);
+        accumulator -= fixedDt;
+      }
+      renderer?.render(
+        {
+          now: Date.now(),
+          stage: compiledStage,
+          camera,
+          shakeX,
+          shakeY,
+          warpFlash,
+          player: localPlayer,
+          remotePlayers: [...remotePlayers.values()],
+          mobs,
+          items,
+          projectiles,
+          damageTexts,
+          hitEffects,
+          particles,
+          stagePlayerCount,
+          totalPlayersOnline
+        },
+        frameDt
+      );
+      rafId = requestAnimationFrame(loop);
+    };
+    rafId = requestAnimationFrame(loop);
+  }
+
+  // Efficient Background Processing: suspend canvas animation when off-screen
+  let intersectionObserver: IntersectionObserver | null = null;
+  const setSuspended = (skip: boolean) => {
+    renderSuspended = skip;
+    if (skip && rafId !== null) {
+      cancelAnimationFrame(rafId);
+      rafId = null;
+    } else if (!skip) {
+      startLoop();
+    }
+  };
+  const onContentVis = (ev: Event) => {
+    setSuspended(Boolean((ev as Event & { skipped?: boolean }).skipped));
+  };
+  if ("contentVisibility" in document.documentElement.style) {
+    stageFrame.addEventListener("contentvisibilityautostatechange", onContentVis);
+  } else if ("IntersectionObserver" in window) {
+    intersectionObserver = new IntersectionObserver(
+      (entries) => {
+        for (const e of entries) setSuspended(!e.isIntersecting);
+      },
+      { rootMargin: "200px" }
+    );
+    intersectionObserver.observe(stageFrame);
+  }
+
+  // Bootstrap assets & initial state
+  applySnapshot(initialContext);
+  void loadSunnyImages().then((imgs) => {
+    if (destroyed) return;
+    renderer = new SunnyRenderer(canvas, imgs);
+    startLoop();
+  });
+
+  return {
+    update(nextContext: GameClientSnapshot) {
+      ctx = { ...ctx, ...nextContext };
+      applySnapshot(nextContext);
+    },
+    destroy() {
+      destroyed = true;
+      if (rafId !== null) cancelAnimationFrame(rafId);
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keyup", onKeyUp);
+      window.removeEventListener("blur", onBlur);
+      stageFrame.removeEventListener("contentvisibilityautostatechange", onContentVis);
+      intersectionObserver?.disconnect();
+      audio.destroy();
+      container.innerHTML = "";
+    }
+  };
+}

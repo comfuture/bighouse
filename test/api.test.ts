@@ -15,6 +15,7 @@ describe("HTTP API", () => {
       "gomoku",
       "indian-poker",
       "onecard",
+      "sunny-meadow",
       "tank-battle",
       "yutnori"
     ]);
@@ -39,6 +40,7 @@ describe("HTTP API", () => {
       "gomoku",
       "indian-poker",
       "onecard",
+      "sunny-meadow",
       "tank-battle",
       "yutnori"
     ]);

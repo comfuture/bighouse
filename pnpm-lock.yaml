@@ -23,6 +23,9 @@ importers:
       '@bighouse/onecard':
         specifier: workspace:*
         version: link:packages/onecard
+      '@bighouse/sunny-meadow':
+        specifier: workspace:*
+        version: link:packages/sunny-meadow
       '@bighouse/tank-battle':
         specifier: workspace:*
         version: link:packages/tank-battle
@@ -85,6 +88,9 @@ importers:
       '@bighouse/onecard':
         specifier: workspace:*
         version: link:../onecard
+      '@bighouse/sunny-meadow':
+        specifier: workspace:*
+        version: link:../sunny-meadow
       '@bighouse/tank-battle':
         specifier: workspace:*
         version: link:../tank-battle
@@ -159,6 +165,19 @@ importers:
         version: 5.9.3
 
   packages/onecard:
+    dependencies:
+      '@bighouse/game-sdk':
+        specifier: workspace:*
+        version: link:../game-sdk
+      '@bighouse/ui':
+        specifier: workspace:*
+        version: link:../ui
+    devDependencies:
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+
+  packages/sunny-meadow:
     dependencies:
       '@bighouse/game-sdk':
         specifier: workspace:*
@@ -291,6 +310,7 @@ packages:
 
   '@cloudflare/vitest-pool-workers@0.16.6':
     resolution: {integrity: sha512-dt8LyDZCqJe95orS0eVmFnKFk7qkUTn1XjM2ppcTJJe67PJK9gt2VzBGk4gS64cxPk7uKoJ201kVtHPq5rQnNQ==}
+    deprecated: '@cloudflare/vitest-pool-workers has been renamed to @cloudflare/vitest-plugin. This package will not receive future updates.'
     peerDependencies:
       '@vitest/runner': ^4.1.0
       '@vitest/snapshot': ^4.1.0
