@@ -246,14 +246,14 @@ export class RoomDO extends DurableObject<Env> {
     let joinEvents: GameEvent[] = [];
     if (isPersistentWorld) {
       state.phase = "active";
-      state.playerStates[player.playerId] = definition.initialPlayerState(player, { room: state.room, now });
+      state.playerStates[player.playerId] = definition.initialPlayerState(player, { room: state.room, now, stageState: state.stageState });
       if (definition.onPlayerJoin) {
         const applied = definition.onPlayerJoin({ state: cloneState(state), now }, player, savedProfile);
         Object.assign(state, applied.state);
         joinEvents = applied.events;
       }
     } else {
-      state.playerStates[player.playerId] = definition.initialPlayerState(player, { room: state.room, now });
+      state.playerStates[player.playerId] = definition.initialPlayerState(player, { room: state.room, now, stageState: state.stageState });
     }
     delete state.emptySince;
     state.updatedAt = now;
@@ -511,7 +511,7 @@ export class RoomDO extends DurableObject<Env> {
         botDifficulty: difficulty
       };
       state.players.push(player);
-      state.playerStates[player.playerId] = definition.initialPlayerState(player, { room: state.room, now });
+      state.playerStates[player.playerId] = definition.initialPlayerState(player, { room: state.room, now, stageState: state.stageState });
     }
     delete state.emptySince;
     state.updatedAt = now;
@@ -1356,7 +1356,7 @@ export class RoomDO extends DurableObject<Env> {
     }
     state.stageState = definition.initialStageState({ room: state.room, players: state.players, now });
     state.playerStates = Object.fromEntries(
-      state.players.map((player) => [player.playerId, definition.initialPlayerState(player, { room: state.room, now })])
+      state.players.map((player) => [player.playerId, definition.initialPlayerState(player, { room: state.room, now, stageState: state.stageState })])
     );
     state.rematchRequests = {};
     delete state.activeInterruption;

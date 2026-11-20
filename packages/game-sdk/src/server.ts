@@ -144,7 +144,12 @@ export type ValidationResult = { ok: true } | { ok: false; code: string; message
 export type GameDefinition = GameMetadata & {
   metadata: GameMetadata;
   initialStageState(context: { room: RoomConfig; players: PlayerSeat[]; now: number }): JsonObject;
-  initialPlayerState(player: PlayerSeat, context: { room: RoomConfig; now: number }): JsonObject;
+  /**
+   * Private state for one seat. `stageState` is the stage built by `initialStageState`
+   * for this game (or the live stage when a player joins later), so a game that deals
+   * from shared randomness can hand each seat its share.
+   */
+  initialPlayerState(player: PlayerSeat, context: { room: RoomConfig; now: number; stageState?: JsonObject }): JsonObject;
   validateAction(context: GameContext, action: ClientGameAction): ValidationResult;
   applyAction(context: GameContext, action: ClientGameAction): ActionResult;
   /** Server-owned membership used by the room's team chat and signal routing. */
@@ -188,6 +193,23 @@ export function defineGameDefinition(metadata: GameMetadata, implementation: Gam
     metadata,
     ...implementation
   };
+}
+
+/** Fisher-Yates shuffle from the platform CSPRNG. Returns a new array; unbiased and unpredictable to clients. */
+export function secureShuffle<T>(items: readonly T[]): T[] {
+  const shuffled = [...items];
+  const random = new Uint32Array(1);
+  for (let i = shuffled.length - 1; i > 0; i -= 1) {
+    const range = i + 1;
+    // Reject the top sliver of the 32-bit range so every index is equally likely.
+    const limit = Math.floor(0x1_0000_0000 / range) * range;
+    do {
+      crypto.getRandomValues(random);
+    } while (random[0]! >= limit);
+    const j = random[0]! % range;
+    [shuffled[i], shuffled[j]] = [shuffled[j]!, shuffled[i]!];
+  }
+  return shuffled;
 }
 
 export function publicEvents(events: GameEvent[]): GameEvent[] {

@@ -36,14 +36,14 @@ describe("One Card Game Logic", () => {
 
     expect(stage.discardPile).toHaveLength(0);
     expect(stage.currentPlayerId).toBeUndefined();
-    expect(stage.deckCount).toBe(stage.deck.length);
+    expect(stage.deck).toHaveLength(0);
   });
 
   it("initializes game state with correct deal and stage deck", () => {
     const state = baseState(2);
     state.stageState = oneCardDefinition.initialStageState({ room: state.room, players: state.players, now: 1 });
-    state.playerStates.p1 = oneCardDefinition.initialPlayerState(state.players[0]!, { room: state.room, now: 1 });
-    state.playerStates.p2 = oneCardDefinition.initialPlayerState(state.players[1]!, { room: state.room, now: 1 });
+    state.playerStates.p1 = oneCardDefinition.initialPlayerState(state.players[0]!, { room: state.room, now: 1, stageState: state.stageState });
+    state.playerStates.p2 = oneCardDefinition.initialPlayerState(state.players[1]!, { room: state.room, now: 1, stageState: state.stageState });
 
     const stage = state.stageState as any;
     expect(stage.discardPile).toHaveLength(1);
@@ -56,16 +56,33 @@ describe("One Card Game Logic", () => {
     expect(p1State.hand).toHaveLength(7);
     expect(p2State.hand).toHaveLength(7);
 
-    // Confirm total deck count + hands + top card = 54
-    const totalCount = stage.deck.length + stage.discardPile.length + p1State.hand.length + p2State.hand.length;
-    expect(totalCount).toBe(54);
+    // Every one of the 54 cards is in exactly one place.
+    const allCards = [...stage.deck, ...stage.discardPile, ...p1State.hand, ...p2State.hand];
+    expect(allCards).toHaveLength(54);
+    expect(new Set(allCards).size).toBe(54);
+  });
+
+  it("deals a different game each time, whatever seed the room config carries", () => {
+    const state = baseState(2);
+    state.room.config = { seed: "chosen-by-client" };
+    const deal = () => JSON.stringify(oneCardDefinition.initialStageState({ room: state.room, players: state.players, now: 1 }));
+    const deals = new Set(Array.from({ length: 5 }, deal));
+    expect(deals.size).toBe(5);
+  });
+
+  it("never exposes the dealt hands or the deck order in the public view", () => {
+    const state = baseState(2);
+    state.stageState = oneCardDefinition.initialStageState({ room: state.room, players: state.players, now: 1 });
+    const publicView = oneCardDefinition.getPublicView({ state, now: 1 }) as any;
+    expect(publicView.dealtHands).toBeUndefined();
+    expect(publicView.deck).toBeUndefined();
   });
 
   it("keeps player hands secure in getPublicView while allowing getPrivateView", () => {
     const state = baseState(2);
     state.stageState = oneCardDefinition.initialStageState({ room: state.room, players: state.players, now: 1 });
-    state.playerStates.p1 = oneCardDefinition.initialPlayerState(state.players[0]!, { room: state.room, now: 1 });
-    state.playerStates.p2 = oneCardDefinition.initialPlayerState(state.players[1]!, { room: state.room, now: 1 });
+    state.playerStates.p1 = oneCardDefinition.initialPlayerState(state.players[0]!, { room: state.room, now: 1, stageState: state.stageState });
+    state.playerStates.p2 = oneCardDefinition.initialPlayerState(state.players[1]!, { room: state.room, now: 1, stageState: state.stageState });
 
     const publicView = oneCardDefinition.getPublicView({ state, now: 1 }) as any;
     expect(publicView.hands.p1.count).toBe(7);
@@ -83,7 +100,6 @@ describe("One Card Game Logic", () => {
     state.stageState = {
       discardPile: ["5S"],
       deck: ["AH"],
-      deckCount: 1,
       currentPlayerId: "p1",
       turnDirection: "clockwise",
       activeAttackCount: 0,
@@ -140,7 +156,6 @@ describe("One Card Game Logic", () => {
     state.stageState = {
       discardPile: ["5S"],
       deck: ["10S", "9S"],
-      deckCount: 2,
       currentPlayerId: "p1",
       turnDirection: "clockwise",
       activeAttackCount: 0,
@@ -209,7 +224,6 @@ describe("One Card Game Logic", () => {
     state.stageState = {
       discardPile: ["5S"],
       deck: ["10S", "9S", "8S", "7S", "6S", "5S", "4S"],
-      deckCount: 7,
       currentPlayerId: "p1",
       turnDirection: "clockwise",
       activeAttackCount: 0,
@@ -273,7 +287,6 @@ describe("One Card Game Logic", () => {
     state.stageState = {
       discardPile: ["5S"],
       deck: ["10S"],
-      deckCount: 1,
       currentPlayerId: "p1",
       turnDirection: "clockwise",
       activeAttackCount: 0,
@@ -330,7 +343,6 @@ describe("One Card Game Logic", () => {
     state.stageState = {
       discardPile: ["5S"],
       deck: ["C1", "C2", "C3", "C4", "C5", "C6", "C7", "C8"],
-      deckCount: 8,
       currentPlayerId: "p1",
       turnDirection: "clockwise",
       activeAttackCount: 0,
@@ -418,7 +430,6 @@ describe("One Card Game Logic", () => {
     state.stageState = {
       discardPile: ["5S", "2S"],
       deck: ["9D", "10C", "QH"],
-      deckCount: 3,
       currentPlayerId: "p2",
       turnDirection: "clockwise",
       activeAttackCount: 2,
@@ -467,7 +478,6 @@ describe("One Card Game Logic", () => {
     state.stageState = {
       discardPile: ["2S", "3S", "4S", "5S"], // 5S is top
       deck: [], // Empty
-      deckCount: 0,
       currentPlayerId: "p1",
       turnDirection: "clockwise",
       activeAttackCount: 0,
@@ -487,7 +497,7 @@ describe("One Card Game Logic", () => {
     // The top card "5S" must remain in discardPile.
     // "2S", "3S", "4S" should be recycled. 1 is drawn, so 2 remain in deck.
     expect(stage.discardPile).toEqual(["5S"]);
-    expect(stage.deckCount).toBe(2);
+    expect(stage.deck).toHaveLength(2);
     expect((result.state.playerStates.p1 as any).hand).toHaveLength(2); // 7S + 1 drawn
   });
 
@@ -496,7 +506,6 @@ describe("One Card Game Logic", () => {
     state.stageState = {
       discardPile: ["5S"],
       deck: Array.from({ length: 20 }, (_, i) => `C${i + 1}`),
-      deckCount: 20,
       currentPlayerId: "p1",
       turnDirection: "clockwise",
       activeAttackCount: 0,
@@ -538,7 +547,6 @@ describe("One Card Game Logic", () => {
     state.stageState = {
       discardPile: ["5S"],
       deck: ["8S", "9S"],
-      deckCount: 2,
       currentPlayerId: "p1",
       turnDirection: "clockwise",
       activeAttackCount: 0,
