@@ -4,6 +4,7 @@ import { gameMetadata as chessMetadata } from "@bighouse/chess/client-metadata";
 import { gameMetadata as gomokuMetadata } from "@bighouse/gomoku/client-metadata";
 import { gameMetadata as indianPokerMetadata } from "@bighouse/indian-poker/client-metadata";
 import { gameMetadata as onecardMetadata } from "@bighouse/onecard/client-metadata";
+import { gameMetadata as sunnyMeadowMetadata } from "@bighouse/sunny-meadow/client-metadata";
 import { gameMetadata as tankBattleMetadata } from "@bighouse/tank-battle/client-metadata";
 
 type ClientGamePlugin = {
@@ -12,6 +13,10 @@ type ClientGamePlugin = {
 };
 
 const clientGamePlugins = {
+  [sunnyMeadowMetadata.gameId]: {
+    metadata: sunnyMeadowMetadata,
+    load: () => import("@bighouse/sunny-meadow/client")
+  },
   [yutnoriMetadata.gameId]: {
     metadata: yutnoriMetadata,
     load: () => import("@bighouse/yutnori/client")
