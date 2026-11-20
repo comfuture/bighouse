@@ -282,6 +282,17 @@ function makeEvent(
   };
 }
 
+/** Keeps a client-reported position inside the stage it is on. */
+function clampToStage(stageId: string, rawX: number, rawY: number): { x: number; y: number } {
+  const stage = getStageById(stageId);
+  const maxX = stage.meta.widthTiles * stage.meta.tileSize - PLAYER_CONFIG.hitboxWidth;
+  const maxY = stage.meta.heightTiles * stage.meta.tileSize;
+  return {
+    x: Math.max(0, Math.min(maxX, Math.round(rawX))),
+    y: Math.max(-120, Math.min(maxY, Math.round(rawY)))
+  };
+}
+
 export const sunnyMeadowDefinition = defineGameDefinition(gameMetadata, {
   initialStageState(): JsonObject {
     return buildInitialWorldState() as unknown as JsonObject;
@@ -398,11 +409,7 @@ export const sunnyMeadowDefinition = defineGameDefinition(gameMetadata, {
       anim === "walk" || anim === "jump" || anim === "climb" || anim === "attack" ? anim : "idle";
 
     if (!Number.isFinite(rawX) || !Number.isFinite(rawY)) return undefined;
-    const stage = getStageById(ps.stageId);
-    const maxX = stage.meta.widthTiles * stage.meta.tileSize - PLAYER_CONFIG.hitboxWidth;
-    const maxY = stage.meta.heightTiles * stage.meta.tileSize;
-    const x = Math.max(0, Math.min(maxX, Math.round(rawX)));
-    const y = Math.max(-120, Math.min(maxY, Math.round(rawY)));
+    const { x, y } = clampToStage(ps.stageId, rawX, rawY);
     const vx = Number.isFinite(rawVx) ? Math.max(-600, Math.min(600, Math.round(rawVx))) : 0;
     const vy = Number.isFinite(rawVy) ? Math.max(-900, Math.min(900, Math.round(rawVy))) : 0;
 
@@ -686,7 +693,9 @@ export const sunnyMeadowDefinition = defineGameDefinition(gameMetadata, {
       const tpl = ITEM_CATALOG[item.templateId]!;
       const clientPickupId =
         typeof action.payload.clientPickupId === "string" ? action.payload.clientPickupId : undefined;
-      ps.score += tpl.score;
+      // A weapon pickup never becomes unavailable, so it pays out only the first time.
+      const alreadyOwned = tpl.category === "weapon" && Boolean(tpl.weaponId) && ps.unlockedWeapons.includes(tpl.weaponId!);
+      if (!alreadyOwned) ps.score += tpl.score;
 
       if (tpl.category === "weapon" && tpl.weaponId) {
         if (!ps.unlockedWeapons.includes(tpl.weaponId)) {
@@ -879,8 +888,9 @@ export const sunnyMeadowDefinition = defineGameDefinition(gameMetadata, {
       const rawX = Number(action.payload.x);
       const rawY = Number(action.payload.y);
       if (Number.isFinite(rawX) && Number.isFinite(rawY)) {
-        ps.x = Math.round(rawX);
-        ps.y = Math.round(rawY);
+        const position = clampToStage(ps.stageId, rawX, rawY);
+        ps.x = position.x;
+        ps.y = position.y;
       }
       events.push(
         makeEvent(
@@ -923,7 +933,9 @@ export const sunnyMeadowDefinition = defineGameDefinition(gameMetadata, {
     }
 
     if (!Number.isFinite(earliest)) return [];
-    const runAt = Math.max(context.now + 350, earliest);
+    // Run at the due time itself. Pushing it out from "now" on every reschedule
+    // (the host reschedules after each action) starved respawns in a busy room.
+    const runAt = earliest;
     return [
       {
         id: `sunny-respawn:${Math.floor(runAt / 250)}`,
@@ -1031,8 +1043,14 @@ export const sunnyMeadowDefinition = defineGameDefinition(gameMetadata, {
       totalPlayersOnline: context.state.players.length,
       stagePlayerCount: stagePlayerCounts[stageId] ?? 0,
       stagePlayerCounts,
-      mobs: stageRt.mobs,
-      items: stageRt.items,
+      // Only what a client draws. Who damaged or was paid for a mob stays on the server.
+      mobs: Object.fromEntries(
+        Object.entries(stageRt.mobs).map(([id, mob]) => [
+          id,
+          { alive: mob.alive, hp: mob.hp, maxHp: mob.maxHp, inCombat: mob.inCombat, spawnProtectUntil: mob.spawnProtectUntil }
+        ])
+      ),
+      items: Object.fromEntries(Object.entries(stageRt.items).map(([id, item]) => [id, { available: item.available }])),
       nearbyPlayers
     } as unknown as JsonObject;
   },
