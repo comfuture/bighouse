@@ -4,7 +4,7 @@ export const baseGameMetadata = {
   gameId: "gomoku",
   adapterKey: "gomoku",
   displayName: "Gomoku",
-  description: "Classic five-in-a-row strategy on a 15x15 board with authoritative multiplayer rules.",
+  description: "Classic five-in-a-row strategy for two players on a 15x15 board.",
   minPlayers: 2,
   maxPlayers: 2,
   category: "board"
