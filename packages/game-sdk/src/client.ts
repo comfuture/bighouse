@@ -11,6 +11,7 @@ import type {
 
 export type {
   BotDifficulty,
+  GameCategory,
   GameMetadata,
   GameEvent,
   GameTeam,

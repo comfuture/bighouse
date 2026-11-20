@@ -4,7 +4,7 @@ import { GameServerError, toErrorResponse } from "../core/errors";
 import { lobbyDoName, matchmakerDoName, roomDoName } from "../core/ids";
 import type { RoomCommandResultEnvelope } from "../do/room";
 import { getGameDefinition, listGameDefinitions } from "../games/registry";
-import type { FixedRoomSpec } from "../core/game";
+import type { FixedRoomSpec, GameCategory } from "../core/game";
 import { D1Repository, type RoomIndexRecord } from "../storage/d1";
 import type { Env } from "../types";
 
@@ -39,6 +39,7 @@ type GameListItem = {
   supportsBots?: boolean;
   persistentWorld?: boolean;
   fixedRooms?: FixedRoomSpec[];
+  category?: GameCategory;
   thumbnail?: {
     src: string;
     alt: string;
@@ -408,6 +409,7 @@ function listRegisteredGames(): GameListItem[] {
         ...(metadata.supportsBots === undefined ? {} : { supportsBots: metadata.supportsBots }),
         ...(metadata.persistentWorld === undefined ? {} : { persistentWorld: metadata.persistentWorld }),
         ...(metadata.fixedRooms ? { fixedRooms: metadata.fixedRooms } : {}),
+        ...(metadata.category ? { category: metadata.category } : {}),
         ...(metadata.thumbnail ? { thumbnail: metadata.thumbnail } : {})
       };
     });

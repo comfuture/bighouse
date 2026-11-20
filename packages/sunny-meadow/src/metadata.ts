@@ -7,6 +7,7 @@ export const baseGameMetadata: GameMetadata = {
   description: "수백 명이 함께 뛰노는 10개 스테이지 횡스크롤 액션 RPG 플랫포머! 몬스터 사냥·레벨업·무기 수집·비밀 포털을 탐험하세요.",
   minPlayers: 1,
   maxPlayers: 500,
+  category: "action",
   supportsBots: false,
   persistentWorld: true,
   fixedRooms: [

@@ -9,6 +9,7 @@ export type Game = {
   modes?: Array<{ id: string; displayName: string; minPlayers: number; maxPlayers: number }>;
   supportsBots?: boolean;
   persistentWorld?: boolean;
+  category?: string;
   thumbnail?: {
     src: string;
     alt: string;

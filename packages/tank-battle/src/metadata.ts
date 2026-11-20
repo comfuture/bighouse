@@ -6,5 +6,6 @@ export const baseGameMetadata = {
   displayName: "Tank Battle",
   description: "Turn-based artillery combat with destructible terrain, wind, gravity, power charging, and tactical items.",
   minPlayers: 2,
-  maxPlayers: 2
+  maxPlayers: 2,
+  category: "action"
 } satisfies GameMetadata;

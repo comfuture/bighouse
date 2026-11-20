@@ -5,6 +5,7 @@ export type {
   ClientGameAction,
   FixedRoomSpec,
   GameAction,
+  GameCategory,
   GameContext,
   GameDefinition,
   GameDefinitionImplementation,

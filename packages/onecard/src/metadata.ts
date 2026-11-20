@@ -6,5 +6,6 @@ export const baseGameMetadata = {
   displayName: "One Card",
   description: "Standard Korean One Card trump-shedding game with rich animations, action triggers, and stacking attacks.",
   minPlayers: 2,
-  maxPlayers: 4
+  maxPlayers: 4,
+  category: "card"
 } satisfies GameMetadata;
