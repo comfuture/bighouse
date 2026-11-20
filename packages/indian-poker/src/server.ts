@@ -202,6 +202,11 @@ function chipsOf(stage: IndianPokerStageState, playerId: string): number {
   return stage.chips[playerId] ?? 0;
 }
 
+/** Chips the other player still holds. At zero they are all-in and cannot answer a bigger wager. */
+function opponentChipsOf(stage: IndianPokerStageState, playerId: string): number {
+  return Object.entries(stage.chips).reduce((total, [id, chips]) => (id === playerId ? total : total + chips), 0);
+}
+
 function betOf(stage: IndianPokerStageState, playerId: string): number {
   return stage.bets[playerId] ?? 0;
 }
@@ -211,11 +216,14 @@ export function amountToCall(stage: IndianPokerStageState, playerId: string): nu
   return Math.max(0, stage.currentBet - betOf(stage, playerId));
 }
 
+/** Largest stack a room may configure; keeps every chip sum an exact integer. */
+const MAX_CONFIG_CHIPS = 1_000_000;
+
 function readConfigNumber(config: JsonObject | undefined, key: string, fallback: number, minimum: number): number {
   const raw = config?.[key];
   const parsed = typeof raw === "number" ? raw : Number.NaN;
   if (!Number.isFinite(parsed)) return fallback;
-  return Math.max(minimum, Math.floor(parsed));
+  return Math.min(MAX_CONFIG_CHIPS, Math.max(minimum, Math.floor(parsed)));
 }
 
 function event(type: string, payload: JsonObject, createdAt: number): GameEvent {
@@ -487,16 +495,18 @@ export function availableActions(stage: IndianPokerStageState, playerId: string)
 
   const toCall = amountToCall(stage, playerId);
   const chips = chipsOf(stage, playerId);
+  // Nobody can raise the stakes against an all-in opponent: they have nothing left to answer with.
+  const opponentCanAnswer = opponentChipsOf(stage, playerId) > 0;
   const actions: IndianPokerActionType[] = [];
   if (toCall === 0) {
     actions.push("check");
-    if (chips > 0) actions.push("bet");
+    if (chips > 0 && opponentCanAnswer) actions.push("bet");
   } else {
     actions.push("call");
     // `chips > toCall` mirrors validateAction: a stack that can only match the
     // call cannot raise, so advertising it would hand the client an action the
     // rules reject.
-    if (chips > toCall && stage.raiseCount < stage.maxRaises) {
+    if (chips > toCall && opponentCanAnswer && stage.raiseCount < stage.maxRaises) {
       actions.push("raise", "double");
     }
   }
@@ -580,6 +590,10 @@ export const indianPokerDefinition = defineGameDefinition(gameMetadata, {
 
     const chips = chipsOf(stage, action.playerId);
     const toCall = amountToCall(stage, action.playerId);
+    const opponentAllIn: ValidationResult | null =
+      opponentChipsOf(stage, action.playerId) > 0
+        ? null
+        : { ok: false, code: "invalid_action", message: "Your opponent is all-in, so the wager cannot grow" };
 
     switch (action.type as IndianPokerActionType) {
       case "die":
@@ -606,7 +620,7 @@ export const indianPokerDefinition = defineGameDefinition(gameMetadata, {
         if (amount > chips) {
           return { ok: false, code: "invalid_action", message: "Not enough chips for that bet" };
         }
-        return { ok: true };
+        return opponentAllIn ?? { ok: true };
       }
 
       case "raise": {
@@ -623,7 +637,7 @@ export const indianPokerDefinition = defineGameDefinition(gameMetadata, {
         if (chips <= toCall) {
           return { ok: false, code: "invalid_action", message: "Not enough chips to raise, call or die instead" };
         }
-        return { ok: true };
+        return opponentAllIn ?? { ok: true };
       }
 
       case "double": {
@@ -636,7 +650,7 @@ export const indianPokerDefinition = defineGameDefinition(gameMetadata, {
         if (chips <= toCall) {
           return { ok: false, code: "invalid_action", message: "Not enough chips to double, call or die instead" };
         }
-        return { ok: true };
+        return opponentAllIn ?? { ok: true };
       }
 
       default:
@@ -808,6 +822,10 @@ export const indianPokerDefinition = defineGameDefinition(gameMetadata, {
 
   getPrivateView(context: GameContext, playerId: string): JsonObject {
     const stage = readStage(context.state.stageState);
+    // Only a seated player has an opponent whose card they may see.
+    if (!context.state.players.some((player) => player.playerId === playerId)) {
+      return {};
+    }
     const opponent = opponentOf(context.state.players, playerId);
     const revealed = stage.phase === "reveal" || stage.phase === "gameOver";
     const ownCard = stage.cards[playerId];
@@ -882,16 +900,17 @@ function selectIndianPokerBotAction(context: BotGameContext): GameAction | null 
   const confidence = aggression - edge + (jitter - 0.5) * 0.4;
 
   if (toCall > 0) {
-    if (confidence < -0.15 && toCall > stage.ante) {
+    // Folding a call that costs nothing would throw the pot away.
+    if (confidence < -0.15 && toCall > stage.ante && Math.min(toCall, chips) > 0) {
       return { type: "die", payload: {} };
     }
-    if (confidence > 0.85 && chips > toCall && stage.raiseCount < stage.maxRaises) {
+    if (confidence > 0.85 && availableActions(stage, me).includes("double")) {
       return { type: "double", payload: {} };
     }
     return { type: "call", payload: {} };
   }
 
-  if (confidence > 0.45 && chips > 0) {
+  if (confidence > 0.45 && availableActions(stage, me).includes("bet")) {
     const sizing = Math.max(1, Math.min(chips, Math.round(Math.max(stage.pot, stage.ante) * (0.5 + confidence))));
     return { type: "bet", payload: { amount: sizing } };
   }
