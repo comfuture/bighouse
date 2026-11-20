@@ -281,14 +281,14 @@ export const chatStyles = `
     left:max(16px,env(safe-area-inset-left));
     bottom:max(16px,env(safe-area-inset-bottom));
     display:grid;
-    width:min(560px,calc(100% - 32px));
+    width:min(440px,calc(100% - 32px));
     grid-template-columns:minmax(0,1fr) auto auto;
-    gap:8px;
-    padding:9px;
+    gap:6px;
+    padding:6px;
     border:2px solid rgba(255,255,255,.72);
-    border-radius:18px;
+    border-radius:14px;
     background:rgba(4,15,38,.82);
-    box-shadow:0 8px 0 rgba(2,6,23,.7),0 18px 36px rgba(2,6,23,.35);
+    box-shadow:0 4px 0 rgba(2,6,23,.7),0 10px 22px rgba(2,6,23,.3);
     backdrop-filter:blur(12px);
     opacity:0;
     visibility:hidden;
@@ -296,19 +296,23 @@ export const chatStyles = `
     pointer-events:none;
     transition:opacity 280ms ease,transform 280ms ease,visibility 0s linear 280ms;
   }
-  .bh-chat.is-open .bh-chat-log { bottom:88px; overflow-y:auto; pointer-events:auto; }
+  .bh-chat.is-open .bh-chat-log { bottom:72px; overflow-y:auto; pointer-events:auto; }
   .bh-chat.is-open .bh-chat-composer { opacity:1; visibility:visible; transform:translateY(0); pointer-events:auto; transition-delay:0s; }
   .bh-chat.is-fading .bh-chat-log, .bh-chat.is-fading .bh-chat-composer { opacity:0; transform:translateY(8px); pointer-events:none; }
-  .bh-chat-input { min-width:0; min-height:46px; border:0; border-radius:12px; padding:10px 12px; color:#fff; background:rgba(255,255,255,.12); font-weight:800; }
+  .bh-chat-input { min-width:0; min-height:36px; border:0; border-radius:9px; padding:6px 10px; color:#fff; background:rgba(255,255,255,.12); font-size:14px; font-weight:700; }
   .bh-chat-input::placeholder { color:#cbd5e1; }
-  .bh-chat-send { min-width:50px; padding:8px 12px; }
-  .bh-chat-close { display:grid; width:46px; min-height:46px; place-items:center; border:2px solid var(--bh-ui-ink); border-radius:12px; padding:10px; color:#fff; background:rgba(10,28,63,.9); box-shadow:0 4px 0 var(--bh-ui-ink),inset 0 2px 0 rgba(255,255,255,.18); cursor:pointer; }
+  .bh-chat-send { min-width:40px; min-height:36px; border-radius:9px; padding:6px 10px; }
+  .bh-chat-close { display:grid; width:36px; min-height:36px; place-items:center; border:2px solid var(--bh-ui-ink); border-radius:9px; padding:6px; color:#fff; background:rgba(10,28,63,.9); box-shadow:0 4px 0 var(--bh-ui-ink),inset 0 2px 0 rgba(255,255,255,.18); cursor:pointer; }
   .bh-chat-close:hover { filter:brightness(1.14); }
   .bh-chat-close:active { transform:translateY(2px); box-shadow:0 2px 0 var(--bh-ui-ink),inset 0 2px 0 rgba(255,255,255,.18); }
   @media (max-width:720px), (hover:none), (pointer:coarse) {
     .bh-chat:not(.is-open) .bh-chat-log { left:max(10px,env(safe-area-inset-left)); right:calc(max(10px,env(safe-area-inset-right)) + var(--bh-game-ui-control-size,48px) + 10px); bottom:max(18px,env(safe-area-inset-bottom)); width:auto; padding-left:0; padding-right:0; }
     .bh-chat-composer { left:max(10px,env(safe-area-inset-left)); right:max(10px,env(safe-area-inset-right)); bottom:max(10px,env(safe-area-inset-bottom)); width:auto; }
-    .bh-chat.is-open .bh-chat-log { left:max(10px,env(safe-area-inset-left)); right:max(10px,env(safe-area-inset-right)); bottom:86px; width:auto; }
+    .bh-chat.is-open .bh-chat-log { left:max(10px,env(safe-area-inset-left)); right:max(10px,env(safe-area-inset-right)); bottom:78px; width:auto; }
+    /* Fingers need a larger target than a pointer does. */
+    .bh-chat-input, .bh-chat-send, .bh-chat-close { min-height:44px; }
+    .bh-chat-close { width:44px; }
+    .bh-chat-send { min-width:44px; }
   }
   @media (orientation:landscape) and (max-height:520px) {
     .bh-chat:not(.is-open) .bh-chat-log { right:calc(var(--bh-game-ui-inline-end,max(8px,env(safe-area-inset-right))) + var(--bh-game-ui-control-size,48px) + 10px); max-block-size:52svh; }
