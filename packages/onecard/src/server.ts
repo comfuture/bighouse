@@ -12,6 +12,7 @@ import type {
 } from "@bighouse/game-sdk/server";
 import { createGameEventId, defineGameDefinition, secureShuffle } from "@bighouse/game-sdk/server";
 import { baseGameMetadata } from "./metadata";
+import { cardPlayProblem } from "./rules";
 
 export type CardStageState = {
   discardPile: string[];
@@ -615,69 +616,8 @@ function canChooseSuit(card: string): boolean {
 
 // Check valid move logic authoritatively
 function validateCardPlay(stage: CardStageState, card: string): ValidationResult {
-  const topCard = stage.discardPile[stage.discardPile.length - 1];
-  if (!topCard) {
-    return { ok: true }; // stage is clean, any card is valid
-  }
-
-  const isCardJoker = card === "BJ" || card === "CJ";
-  const cardSuit = isCardJoker ? "J" : card.slice(-1) as "S" | "H" | "C" | "D";
-  const cardRank = isCardJoker ? card : card.slice(0, -1);
-
-  // Stacking attack active
-  if (stage.activeAttackCount > 0 && stage.activeAttackCard) {
-    const attackCard = stage.activeAttackCard;
-    const isAttackJoker = attackCard === "BJ" || attackCard === "CJ";
-    const attackRank = isAttackJoker ? attackCard : attackCard.slice(0, -1);
-
-    // Defense matching
-    if (attackRank === "2") {
-      // 2 can be defended by 2, A, BJ, CJ
-      if (cardRank === "2" || cardRank === "A" || isCardJoker) {
-        return { ok: true };
-      }
-      return { ok: false, code: "invalid_action", message: "Must defend attack with a 2, A, or Joker" };
-    } else if (attackRank === "A") {
-      // A can be defended by A, BJ, CJ (not 2)
-      if (cardRank === "A" || isCardJoker) {
-        return { ok: true };
-      }
-      return { ok: false, code: "invalid_action", message: "Must defend Ace attack with an Ace or Joker" };
-    } else if (attackCard === "BJ") {
-      // BJ can only be defended by CJ
-      if (card === "CJ") {
-        return { ok: true };
-      }
-      return { ok: false, code: "invalid_action", message: "Must defend Black Joker with a Color Joker" };
-    } else if (attackCard === "CJ") {
-      // CJ cannot be defended!
-      return { ok: false, code: "invalid_action", message: "Color Joker attack cannot be defended" };
-    }
-  }
-
-  // Normal play (no active attack)
-  if (isCardJoker) {
-    return { ok: true }; // Jokers can always be played
-  }
-
-  const isTopJoker = topCard === "BJ" || topCard === "CJ";
-  const topSuit = isTopJoker ? "J" : topCard.slice(-1) as "S" | "H" | "C" | "D";
-  const topRank = isTopJoker ? topCard : topCard.slice(0, -1);
-
-  // If top is Joker or a 7, matching goes by the declared chosen suit.
-  if ((isTopJoker || topRank === "7") && stage.chosenSuit) {
-    if (cardSuit === stage.chosenSuit) {
-      return { ok: true };
-    }
-    return { ok: false, code: "invalid_action", message: `Must match the chosen suit: ${stage.chosenSuit}` };
-  }
-
-  // Standard match (same suit or same rank)
-  if (cardSuit === topSuit || cardRank === topRank) {
-    return { ok: true };
-  }
-
-  return { ok: false, code: "invalid_action", message: "Card must match the top card's suit or number" };
+  const problem = cardPlayProblem(stage, card);
+  return problem === null ? { ok: true } : { ok: false, code: "invalid_action", message: problem };
 }
 
 function nextPlayerId(players: PlayerSeat[], stage: CardStageState, skipNext: boolean): string {

@@ -2,6 +2,7 @@ import "./style.css";
 import type { GameClientContext, MountedGameClient } from "@bighouse/game-sdk/client";
 import { triggerCardSubmitFeedback, triggerSelectionFeedback } from "@bighouse/game-sdk/feedback";
 import { createGameUi, type MountedGameUi } from "@bighouse/ui";
+import { cardPlayProblem } from "./rules";
 import {
   clampFlightCenter,
   clampFlightPosition,
@@ -33,6 +34,8 @@ export type OneCardPrivateView = {
 export type OneCardClient = {
   playerId: string;
   version: number;
+  /** Display names by player id. */
+  names: Record<string, string>;
   publicView: OneCardPublicView;
   privateView: OneCardPrivateView;
   sendAction(action: { type: string; payload: Record<string, unknown> }): void;
@@ -101,6 +104,7 @@ function toOneCardClient(context: GameClientContext): OneCardClient {
   return {
     playerId: context.playerId,
     version: context.version,
+    names: Object.fromEntries(context.room.players.map((player) => [player.playerId, player.displayName || "Player"])),
     publicView: {
       ...(context.publicView as OneCardPublicView),
       roomPhase: context.phase,
@@ -320,47 +324,7 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
   }
 
   function getPlayableCards(hand: string[], pub: OneCardPublicView): string[] {
-    const topCard = pub.discardPile[pub.discardPile.length - 1];
-    if (!topCard) return hand;
-
-    const playable: string[] = [];
-    const activeAttack = pub.activeAttackCount > 0;
-    const attackCard = pub.activeAttackCard;
-    const isAttackJoker = attackCard === "BJ" || attackCard === "CJ";
-    const attackRank = attackCard ? (isAttackJoker ? attackCard : attackCard.slice(0, -1)) : "";
-
-    for (const card of hand) {
-      const isCardJoker = card === "BJ" || card === "CJ";
-      const cardSuit = isCardJoker ? "J" : card.slice(-1);
-      const cardRank = isCardJoker ? card : card.slice(0, -1);
-
-      if (activeAttack && attackCard) {
-        if (attackRank === "2") {
-          if (cardRank === "2" || cardRank === "A" || isCardJoker) playable.push(card);
-        } else if (attackRank === "A") {
-          if (cardRank === "A" || isCardJoker) playable.push(card);
-        } else if (attackCard === "BJ") {
-          if (card === "CJ") playable.push(card);
-        }
-        // CJ cannot be defended, playable remains empty
-      } else {
-        // No active attack
-        if (isCardJoker) {
-          playable.push(card);
-        } else {
-          const isTopJoker = topCard === "BJ" || topCard === "CJ";
-          const topSuit = isTopJoker ? "J" : topCard.slice(-1);
-          const topRank = isTopJoker ? topCard : topCard.slice(0, -1);
-
-          if ((isTopJoker || topRank === "7") && pub.chosenSuit) {
-            if (cardSuit === pub.chosenSuit) playable.push(card);
-          } else {
-            if (cardSuit === topSuit || cardRank === topRank) playable.push(card);
-          }
-        }
-      }
-    }
-    return playable;
+    return hand.filter((card) => cardPlayProblem(pub, card) === null);
   }
 
   function triggerFlyAnimation(
@@ -768,7 +732,12 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
   function getPlayerName(playerId?: string): string {
     if (!playerId) return "Opponent";
     if (playerId === state.playerId) return "You";
-    return playerId.slice(0, 8); // truncate ID nicely
+    return state.names[playerId] ?? "Player";
+  }
+
+  /** Player names are user input: escape them before they go into markup. */
+  function playerNameHtml(playerId?: string): string {
+    return getPlayerName(playerId).replace(/[&<>"']/g, (char) => `&#${char.charCodeAt(0)};`);
   }
 
   function formatCardName(card: string): string {
@@ -828,8 +797,8 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
     turnTracker.className = `turn-tracker ${pub.turnDirection === "clockwise" ? "is-clockwise" : "is-counterclockwise"}`;
     turnTracker.innerHTML = `
       <span class="turn-pill is-direction">${directionArrow} ${directionLabel}</span>
-      <span class="turn-pill is-current">Turn: ${getPlayerName(pub.currentPlayerId)}</span>
-      ${nextPlayerId ? `<span class="turn-pill is-next">Next: ${getPlayerName(nextPlayerId)}</span>` : ""}
+      <span class="turn-pill is-current">Turn: ${playerNameHtml(pub.currentPlayerId)}</span>
+      ${nextPlayerId ? `<span class="turn-pill is-next">Next: ${playerNameHtml(nextPlayerId)}</span>` : ""}
     `;
   }
 
@@ -882,7 +851,7 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
       seatEl.innerHTML = `
         <div class="opponent-profile ${isTurn ? "is-active-turn" : ""} ${isNext ? "is-next-turn" : ""} ${isBankrupt ? "is-bankrupt" : ""}">
           <div class="opponent-avatar">👤</div>
-          <div class="opponent-name">${getPlayerName(pid)}</div>
+          <div class="opponent-name">${playerNameHtml(pid)}</div>
           <div class="opponent-hand-preview">
             <div class="card-back-icon">🎴</div>
             <span class="opponent-card-count">x${count}</span>
@@ -983,6 +952,7 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
 
       state.playerId = input.playerId;
       state.version = input.version;
+      state.names = input.names;
       state.publicView = input.publicView;
       state.privateView = input.privateView;
       render();
