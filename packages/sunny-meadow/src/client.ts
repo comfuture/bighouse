@@ -526,7 +526,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
     warpFlash = 0.25;
   }
 
-  function applySnapshot(snap: GameClientSnapshot): void {
+  function reconcileSnapshot(snap: GameClientSnapshot): void {
     const priv = snap.privateView as Partial<WorldPlayerState>;
     const pub = snap.publicView as {
       stageId?: string;
@@ -653,6 +653,21 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
           if (!present.has(pid)) remotePlayers.delete(pid);
         }
       }
+    }
+  }
+
+  /**
+   * The host calls update() for chat, presence and event-only changes too,
+   * passing the last snapshot again. Reconcile world state only when the
+   * snapshot itself is new, otherwise it would undo what later events did.
+   */
+  let lastReconciledSnapshot = "";
+
+  function applySnapshot(snap: GameClientSnapshot): void {
+    const snapshotKey = `${snap.version}:${snap.serverTime}`;
+    if (snapshotKey !== lastReconciledSnapshot) {
+      lastReconciledSnapshot = snapshotKey;
+      reconcileSnapshot(snap);
     }
 
     // Process recent events deduplicated by id
