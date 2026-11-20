@@ -8,6 +8,7 @@ export type Game = {
   maxPlayers: number;
   modes?: Array<{ id: string; displayName: string; minPlayers: number; maxPlayers: number }>;
   supportsBots?: boolean;
+  persistentWorld?: boolean;
   thumbnail?: {
     src: string;
     alt: string;
@@ -29,6 +30,8 @@ export type Player = {
 
 export type RoomIndex = {
   roomId: string;
+  roomName?: string;
+  isFixed?: boolean;
   gameId: string;
   mode: string;
   status: "open" | "matching" | "active" | "closed";
@@ -40,7 +43,10 @@ export type RoomIndex = {
 export type RoomSnapshot = {
   teams?: GameTeam[];
   supportsBots?: boolean;
+  persistentWorld?: boolean;
   roomId: string;
+  roomName?: string;
+  fixed?: boolean;
   gameId: string;
   mode: string;
   phase: "waiting" | "active" | "finished" | "closed";

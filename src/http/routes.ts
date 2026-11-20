@@ -4,6 +4,7 @@ import { GameServerError, toErrorResponse } from "../core/errors";
 import { lobbyDoName, matchmakerDoName, roomDoName } from "../core/ids";
 import type { RoomCommandResultEnvelope } from "../do/room";
 import { getGameDefinition, listGameDefinitions } from "../games/registry";
+import type { FixedRoomSpec } from "../core/game";
 import { D1Repository, type RoomIndexRecord } from "../storage/d1";
 import type { Env } from "../types";
 
@@ -36,6 +37,8 @@ type GameListItem = {
   maxPlayers: number;
   modes?: Array<{ id: string; displayName: string; minPlayers: number; maxPlayers: number }>;
   supportsBots?: boolean;
+  persistentWorld?: boolean;
+  fixedRooms?: FixedRoomSpec[];
   thumbnail?: {
     src: string;
     alt: string;
@@ -73,6 +76,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     const mode = routeParam(lobbyJoin, "mode");
     const game = requireGame(gameId);
     resolvePlayerLimits(game, { mode, ...(body.minPlayers !== undefined ? { minPlayers: body.minPlayers } : {}), ...(body.maxPlayers !== undefined ? { maxPlayers: body.maxPlayers } : {}) });
+    await ensureFixedRoomsForGame(env, repo, game.gameId, mode);
     const lobby = env.LOBBY_DO.getByName(lobbyDoName(game.gameId, mode));
     const result = await lobby.join({
       gameId: game.gameId,
@@ -98,7 +102,16 @@ async function route(request: Request, env: Env): Promise<Response> {
     const game = requireGame(routeParam(lobbyRooms, "gameId"));
     const mode = routeParam(lobbyRooms, "mode");
     resolvePlayerLimits(game, { mode });
-    const rooms = await refreshLobbyRooms(env, repo, await repo.listLobbyRooms(game.gameId, mode));
+    const definition = getGameDefinition(game.gameId);
+    const includeActive = Boolean(definition.persistentWorld);
+    await ensureFixedRoomsForGame(env, repo, game.gameId, mode);
+    const rooms = await refreshLobbyRooms(
+      env,
+      repo,
+      await repo.listLobbyRooms(game.gameId, mode, includeActive),
+      includeActive,
+      definition.fixedRooms
+    );
     return Response.json({ rooms });
   }
 
@@ -186,7 +199,7 @@ async function route(request: Request, env: Env): Promise<Response> {
   const roomPath = matchPath(url.pathname, /^\/rooms\/([^/]+)$/u, ["roomId"]);
   if (request.method === "GET" && roomPath) {
     const roomId = routeParam(roomPath, "roomId");
-    const indexed = await repo.getRoom(roomId);
+    const indexed = (await repo.getRoom(roomId)) ?? (await ensureFixedRoomById(env, repo, roomId));
     const doName = indexed?.doName ?? roomDoName(roomId);
     const room = env.ROOM_DO.getByName(doName);
     const summary = await room.getSummary();
@@ -197,7 +210,7 @@ async function route(request: Request, env: Env): Promise<Response> {
   if (request.method === "POST" && roomJoinPath) {
     const body = joinSchema.pick({ playerId: true, displayName: true }).parse(await request.json());
     const roomId = routeParam(roomJoinPath, "roomId");
-    const indexed = await repo.getRoom(roomId);
+    const indexed = (await repo.getRoom(roomId)) ?? (await ensureFixedRoomById(env, repo, roomId));
     if (!indexed) {
       throw new GameServerError("room_not_found", "Room not found", 404);
     }
@@ -223,7 +236,7 @@ async function route(request: Request, env: Env): Promise<Response> {
   const roomWsPath = matchPath(url.pathname, /^\/rooms\/([^/]+)\/ws$/u, ["roomId"]);
   if (request.method === "GET" && roomWsPath) {
     const roomId = routeParam(roomWsPath, "roomId");
-    const indexed = await repo.getRoom(roomId);
+    const indexed = (await repo.getRoom(roomId)) ?? (await ensureFixedRoomById(env, repo, roomId));
     if (indexed?.status === "closed") {
       throw new GameServerError("room_closed", "Room is closed", 410);
     }
@@ -259,12 +272,77 @@ function requireGame(gameId: string): RegisteredGame {
   };
 }
 
-async function refreshLobbyRooms(env: Env, repo: D1Repository, rooms: RoomIndexRecord[]): Promise<RoomIndexRecord[]> {
+async function ensureFixedRoomsForGame(
+  env: Env,
+  repo: D1Repository,
+  gameId: string,
+  mode: string
+): Promise<void> {
+  const definition = getGameDefinition(gameId);
+  const specs = (definition.fixedRooms ?? []).filter((spec) => (spec.mode ?? "default") === mode);
+  if (specs.length === 0) return;
+
+  const { minPlayers, maxPlayers } = resolvePlayerLimits(definition, { mode });
+  for (const spec of specs) {
+    const existing = await repo.getRoom(spec.roomId);
+    if (existing && existing.status !== "closed" && existing.roomName === spec.name && existing.isFixed) {
+      continue;
+    }
+    const doName = roomDoName(spec.roomId);
+    const room = env.ROOM_DO.getByName(doName);
+    const summary = await room.initialize({
+      roomId: spec.roomId,
+      roomName: spec.name,
+      fixed: true,
+      gameId: definition.gameId,
+      mode,
+      minPlayers,
+      maxPlayers,
+      config: structuredClone(definition.metadata.config ?? {})
+    });
+    await repo.upsertRoom({
+      roomId: spec.roomId,
+      roomName: spec.name,
+      isFixed: true,
+      gameId: definition.gameId,
+      mode,
+      status: summary.phase === "active" ? "active" : "open",
+      playerCount: summary.playerCount,
+      minPlayers: summary.minPlayers,
+      maxPlayers: summary.maxPlayers,
+      doName
+    });
+  }
+}
+
+async function ensureFixedRoomById(
+  env: Env,
+  repo: D1Repository,
+  roomId: string
+): Promise<RoomIndexRecord | null> {
+  for (const definition of listGameDefinitions()) {
+    const spec = (definition.fixedRooms ?? []).find((candidate) => candidate.roomId === roomId);
+    if (!spec) continue;
+    const mode = spec.mode ?? "default";
+    await ensureFixedRoomsForGame(env, repo, definition.gameId, mode);
+    return repo.getRoom(roomId);
+  }
+  return null;
+}
+
+async function refreshLobbyRooms(
+  env: Env,
+  repo: D1Repository,
+  rooms: RoomIndexRecord[],
+  includeActive = false,
+  fixedSpecs?: FixedRoomSpec[]
+): Promise<RoomIndexRecord[]> {
   const refreshed: RoomIndexRecord[] = [];
   for (const indexed of rooms) {
     const room = env.ROOM_DO.getByName(indexed.doName);
     const summary = await room.refreshLobbyStatus();
-    if (summary.phase === "closed" || summary.playerCount === 0) {
+    const isPersistentOrFixed = Boolean(indexed.isFixed || summary.fixed || includeActive);
+    if (summary.phase === "closed" || (!isPersistentOrFixed && summary.playerCount === 0)) {
       await repo.closeRoomIndex(indexed.roomId, new Date().toISOString());
       continue;
     }
@@ -278,8 +356,12 @@ async function refreshLobbyRooms(env: Env, repo: D1Repository, rooms: RoomIndexR
         : summary.playerCount >= summary.minPlayers
           ? "matching"
           : "open";
+    const roomName = summary.roomName ?? indexed.roomName;
+    const isFixed = Boolean(summary.fixed || indexed.isFixed);
     const record: RoomIndexRecord = {
       ...indexed,
+      ...(roomName ? { roomName } : {}),
+      ...(isFixed ? { isFixed: true } : {}),
       status,
       playerCount: summary.playerCount,
       minPlayers: summary.minPlayers,
@@ -289,13 +371,24 @@ async function refreshLobbyRooms(env: Env, repo: D1Repository, rooms: RoomIndexR
       record.status !== indexed.status ||
       record.playerCount !== indexed.playerCount ||
       record.minPlayers !== indexed.minPlayers ||
-      record.maxPlayers !== indexed.maxPlayers
+      record.maxPlayers !== indexed.maxPlayers ||
+      record.roomName !== indexed.roomName ||
+      Boolean(record.isFixed) !== Boolean(indexed.isFixed)
     ) {
       await repo.upsertRoom(record);
     }
-    if ((record.status === "open" || record.status === "matching") && record.playerCount < record.maxPlayers) {
+    const joinableStatus = record.status === "open" || record.status === "matching" || (includeActive && record.status === "active");
+    if (joinableStatus && record.playerCount < record.maxPlayers) {
       refreshed.push(record);
     }
+  }
+  if (fixedSpecs && fixedSpecs.length > 0) {
+    const order = new Map(fixedSpecs.map((spec, idx) => [spec.roomId, idx]));
+    refreshed.sort((a, b) => {
+      const ia = order.get(a.roomId) ?? Number.MAX_SAFE_INTEGER;
+      const ib = order.get(b.roomId) ?? Number.MAX_SAFE_INTEGER;
+      return ia - ib;
+    });
   }
   return refreshed;
 }
@@ -313,6 +406,8 @@ function listRegisteredGames(): GameListItem[] {
         maxPlayers: metadata.maxPlayers,
         ...(metadata.modes ? { modes: metadata.modes } : {}),
         ...(metadata.supportsBots === undefined ? {} : { supportsBots: metadata.supportsBots }),
+        ...(metadata.persistentWorld === undefined ? {} : { persistentWorld: metadata.persistentWorld }),
+        ...(metadata.fixedRooms ? { fixedRooms: metadata.fixedRooms } : {}),
         ...(metadata.thumbnail ? { thumbnail: metadata.thumbnail } : {})
       };
     });

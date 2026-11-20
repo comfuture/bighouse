@@ -123,7 +123,7 @@ const roomIsFull = computed(() => {
 });
 const roomCanShareQr = computed(() => {
   const snapshot = room.value;
-  return Boolean(snapshot && !roomIsFull.value && (snapshot.phase === "waiting" || snapshot.activeInterruption));
+  return Boolean(snapshot && !roomIsFull.value && (snapshot.phase === "waiting" || snapshot.activeInterruption || snapshot.persistentWorld));
 });
 const lobbyPath = computed(() => {
   const gameId = room.value?.gameId ?? String(route.params.gameId);
@@ -250,7 +250,7 @@ onBeforeRouteLeave((to) => {
   if (guardNavigationAllowed || leavingRoom || closingRoom) return true;
 
   pendingGuardDestination = to.fullPath;
-  if (hasOtherPlayers.value) {
+  if (hasOtherPlayers.value && !room.value?.persistentWorld) {
     leaveConfirmOpen.value = true;
     return false;
   }
@@ -459,11 +459,14 @@ function createGameSnapshot(): GameClientSnapshot | undefined {
     phase: snapshot.phase,
     room: {
       roomId: snapshot.roomId,
+      ...(snapshot.roomName ? { roomName: snapshot.roomName } : {}),
+      ...(snapshot.fixed ? { fixed: true } : {}),
       gameId: snapshot.gameId,
       mode: snapshot.mode,
       minPlayers: snapshot.minPlayers,
       maxPlayers: snapshot.maxPlayers,
       ...(snapshot.supportsBots === undefined ? {} : { supportsBots: snapshot.supportsBots }),
+      ...(snapshot.persistentWorld === undefined ? {} : { persistentWorld: snapshot.persistentWorld }),
       ...(snapshot.teams ? { teams: snapshot.teams } : {}),
       ...(snapshot.hostPlayerId ? { hostPlayerId: snapshot.hostPlayerId } : {}),
       players: snapshot.players,
