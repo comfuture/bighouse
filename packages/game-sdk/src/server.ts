@@ -165,6 +165,11 @@ export type GameDefinition = GameMetadata & {
   getBroadcastRecipients?(context: GameContext, event: GameEvent): string[] | undefined;
   applyTimer?(context: GameContext, timer: TimerIntent): ActionResult;
   selectBotAction?(context: BotGameContext): GameAction | null | undefined;
+  /**
+   * State every player may see. When the view has a string `currentPlayerId`
+   * and that player is a bot, the host schedules `selectBotAction` for it;
+   * leave the field out while nobody is to move.
+   */
   getPublicView(context: GameContext, viewerPlayerId?: string): JsonObject;
   getPrivateView(context: GameContext, playerId: string): JsonObject;
   nextTimers(context: GameContext): TimerIntent[];

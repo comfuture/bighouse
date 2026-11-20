@@ -648,7 +648,7 @@ describe("RoomDO", () => {
 
     const finished = await room.getSnapshot("host");
     expect(finished.phase).toBe("finished");
-    expect(finished.publicView).toMatchObject({ winnerPlayerId: "host" });
+    expect(finished.publicView).toMatchObject({ status: { kind: "won", winnerPlayerId: "host" } });
 
     await room.requestPlayAgain("host");
     await expect(room.getSnapshot("guest")).resolves.toMatchObject({ rematchRequests: ["host"] });

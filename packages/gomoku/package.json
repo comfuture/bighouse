@@ -8,6 +8,7 @@
     ".": "./src/index.ts",
     "./client": "./src/client.ts",
     "./client-metadata": "./src/client-metadata.ts",
+    "./rules": "./src/rules.ts",
     "./server": "./src/server.ts",
     "./metadata": "./src/metadata.ts"
   },
