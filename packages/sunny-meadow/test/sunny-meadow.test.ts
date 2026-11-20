@@ -584,8 +584,20 @@ describe("@bighouse/sunny-meadow death and revival", () => {
   });
 
   it("saves the revived, penalised profile when a player leaves while down", () => {
-    const profile = sunnyMeadowDefinition.extractPlayerProfile!({ state: downedPlayer(), now }, "p1") as { xp: number; coins: number; hp: number; level: number };
+    const state = downedPlayer();
+    // They fell far from the stage start.
+    Object.assign(state.playerStates.p1!, { x: 3_000, y: 200 });
+    const profile = sunnyMeadowDefinition.extractPlayerProfile!({ state, now }, "p1") as {
+      xp: number; coins: number; hp: number; level: number; lastX: number; lastY: number;
+    };
     expect(profile).toMatchObject({ xp: 0, coins: 0, level: 3 });
     expect(profile.hp).toBeGreaterThan(0);
+    // Rejoining must not revive them where they died: the saved position is the stage start.
+    const stage = getStageById("stage-1");
+    const spawnX = (stage.spawn.x + 0.5) * stage.meta.tileSize;
+    expect(Math.abs(profile.lastX - spawnX)).toBeLessThanOrEqual((SPAWN_SPREAD_TILES + 1) * stage.meta.tileSize);
+    expect(profile.lastX).not.toBe(3_000);
+    // The room state itself is untouched: they are still down until they leave or revive.
+    expect(player(state)).toMatchObject({ dead: true, hp: 0 });
   });
 });
