@@ -6,5 +6,6 @@ export const baseGameMetadata = {
   displayName: "Gomoku",
   description: "Classic five-in-a-row strategy on a 15x15 board with authoritative multiplayer rules.",
   minPlayers: 2,
-  maxPlayers: 2
+  maxPlayers: 2,
+  category: "board"
 } satisfies GameMetadata;

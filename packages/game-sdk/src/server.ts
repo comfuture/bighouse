@@ -5,6 +5,9 @@ export type GameThumbnail = {
   alt: string;
 };
 
+/** Shelf a game is listed under in the portal directory. */
+export type GameCategory = "board" | "card" | "action";
+
 export type FixedRoomSpec = {
   roomId: string;
   name: string;
@@ -27,6 +30,8 @@ export type GameMetadata = {
   fixedRooms?: FixedRoomSpec[];
   config?: JsonObject;
   thumbnail?: GameThumbnail;
+  /** Portal directory shelf. Games without one are listed under "Other". */
+  category?: GameCategory;
 };
 
 export type PlayerIdentity = {
