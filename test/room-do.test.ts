@@ -85,6 +85,18 @@ describe("RoomDO", () => {
     expect(ack.version).toBe(5);
     expect(ack.events[0]).toMatchObject({ type: "gomoku.stonePlaced", visibility: "public" });
 
+    for (const payload of [null, undefined, [], "x"]) {
+      await expect(
+        room.trySubmitAction({
+          playerId: "p2",
+          clientActionId: `bad-payload-${String(payload)}`,
+          expectedVersion: 5,
+          type: "placeStone",
+          payload: payload as never
+        })
+      ).resolves.toMatchObject({ ok: false, error: { code: "invalid_action", status: 400 } });
+    }
+
     const duplicate = await room.submitAction({
       playerId: "p1",
       clientActionId: "move-1",

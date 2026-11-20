@@ -747,6 +747,11 @@ export class RoomDO extends DurableObject<Env> {
   }
 
   async submitAction(action: ClientGameAction): Promise<ActionAck> {
+    // Client messages are parsed without a schema, so check the envelope here
+    // once instead of making every game defend against a null or array payload.
+    if (typeof action.type !== "string" || !isPlainObject(action.payload)) {
+      throw new GameServerError("invalid_action", "Action needs a type and an object payload", 400);
+    }
     const state = this.requireState();
     const processed = this.ctx.storage.sql
       .exec<ProcessedActionRow>(
@@ -1907,6 +1912,10 @@ function botDifficultyFor(player: PlayerSeat): BotDifficulty {
 
 function nextHumanHost(players: PlayerSeat[]): PlayerSeat | undefined {
   return players.find((candidate) => !isBotPlayer(candidate) && candidate.connected) ?? players.find((candidate) => !isBotPlayer(candidate));
+}
+
+function isPlainObject(value: unknown): value is JsonObject {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function botTurnTimerId(version: number, playerId: string): string {
