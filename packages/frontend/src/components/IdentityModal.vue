@@ -1,8 +1,9 @@
 <template>
   <UModal
     v-model:open="open"
-    :title="editingNickname ? 'Change nickname' : 'Player information'"
-    :description="editingNickname ? 'Choose the name other players will see.' : 'Set the identity used to join lobbies and rooms.'"
+    :title="editingNickname ? 'Change nickname' : 'Pick a nickname'"
+    :description="editingNickname ? 'This is the name other players see.' : 'Other players see this name in rooms and chat. You can change it any time.'"
+    :dismissible="editingNickname"
     :ui="{ close: 'hidden' }"
   >
     <template #body>
@@ -16,37 +17,39 @@
           icon="i-lucide-circle-alert"
           :title="error"
         />
-        <UFormField v-if="!editingNickname" label="Player ID" required>
+        <UFormField label="Nickname" required>
           <UInput
-            v-model="draft.playerId"
-            placeholder="player-1234abcd"
+            v-model="draft.displayName"
+            class="w-full"
+            placeholder="Alice"
             autofocus
+            maxlength="24"
             :aria-invalid="Boolean(error)"
             :aria-describedby="error ? 'identity-error' : undefined"
             @keydown.enter.prevent="save"
           />
         </UFormField>
-        <UFormField :label="editingNickname ? 'Nickname' : 'Display name'" :required="editingNickname">
-          <UInput
-            v-model="draft.displayName"
-            placeholder="Alice"
-            :autofocus="editingNickname"
-            :aria-invalid="editingNickname && Boolean(error)"
-            :aria-describedby="editingNickname && error ? 'identity-error' : undefined"
-            @keydown.enter.prevent="save"
-          />
-        </UFormField>
-        <UFormField v-if="!editingNickname" label="Lobby mode">
-          <UInput v-model="draft.mode" placeholder="default" @keydown.enter.prevent="save" />
-        </UFormField>
+        <details v-if="!editingNickname" class="identity-advanced">
+          <summary>Advanced</summary>
+          <div class="space-y-4">
+            <UFormField label="Player ID" help="Identifies you on this device. Generated for you.">
+              <div class="flex gap-2">
+                <UInput v-model="draft.playerId" class="min-w-0 flex-1" placeholder="player-1234abcd" @keydown.enter.prevent="save" />
+                <UButton color="neutral" variant="subtle" icon="i-lucide-refresh-cw" aria-label="Generate a new player ID" @click="generatePlayerId" />
+              </div>
+            </UFormField>
+            <UFormField label="Default lobby mode">
+              <UInput v-model="draft.mode" class="w-full" placeholder="default" @keydown.enter.prevent="save" />
+            </UFormField>
+          </div>
+        </details>
       </div>
     </template>
 
     <template #footer>
-      <div class="flex justify-end gap-2">
+      <div class="flex w-full justify-end gap-2">
         <UButton v-if="editingNickname" color="neutral" variant="subtle" label="Cancel" @click="closeNicknameEditor" />
-        <UButton v-else color="neutral" variant="subtle" label="Generate ID" icon="i-lucide-refresh-cw" @click="generatePlayerId" />
-        <UButton :label="editingNickname ? 'Save nickname' : 'Continue'" :icon="editingNickname ? 'i-lucide-check' : 'i-lucide-arrow-right'" @click="save" />
+        <UButton :label="editingNickname ? 'Save' : 'Start playing'" :icon="editingNickname ? 'i-lucide-check' : 'i-lucide-arrow-right'" @click="save" />
       </div>
     </template>
   </UModal>
@@ -95,7 +98,7 @@ function save(): void {
   if (editingNickname.value) {
     const displayName = (draft.displayName || "").trim();
     if (!displayName) {
-      error.value = "Nickname is required";
+      error.value = "Enter a nickname to continue";
       return;
     }
     identity.displayName = displayName;
@@ -104,13 +107,13 @@ function save(): void {
     error.value = "";
     return;
   }
-  const playerId = draft.playerId.trim();
-  if (!playerId) {
-    error.value = "Player ID is required";
+  const displayName = (draft.displayName || "").trim();
+  if (!displayName) {
+    error.value = "Enter a nickname to continue";
     return;
   }
-  identity.playerId = playerId;
-  identity.displayName = (draft.displayName || "").trim();
+  identity.playerId = draft.playerId.trim() || generatedPlayerId();
+  identity.displayName = displayName;
   identity.mode = draft.mode.trim() || "default";
   persistIdentity();
   error.value = "";
