@@ -1,17 +1,24 @@
 import { identity, requirePlayerId } from "./identity";
 import type { Game, RoomIndex, RoomJoinResponse } from "./types";
 
+/** Turn an error body like `{ error: { code, message } }` into a readable Error. */
+function apiError(data: unknown, status: number): Error {
+  const error = (data as { error?: { message?: unknown } | string } | null)?.error;
+  const message = typeof error === "string" ? error : error?.message;
+  return new Error(typeof message === "string" && message ? message : `Request failed (${status})`);
+}
+
 export async function listGames(): Promise<Game[]> {
   const res = await fetch("/games");
   const data = (await res.json()) as { games: Game[] };
-  if (!res.ok) throw new Error(JSON.stringify(data));
+  if (!res.ok) throw apiError(data, res.status);
   return data.games;
 }
 
 export async function listLobbyRooms(gameId: string, mode: string): Promise<RoomIndex[]> {
   const res = await fetch(`/games/${encodeURIComponent(gameId)}/lobbies/${encodeURIComponent(mode)}/rooms`);
   const data = (await res.json()) as { rooms: RoomIndex[] };
-  if (!res.ok) throw new Error(JSON.stringify(data));
+  if (!res.ok) throw apiError(data, res.status);
   return data.rooms;
 }
 
@@ -23,7 +30,7 @@ export async function createLobbyRoom(gameId: string, mode: string, options: { m
     body: JSON.stringify({ playerId: identity.playerId, displayName: identity.displayName || undefined, ...options })
   });
   const data = (await res.json()) as RoomJoinResponse;
-  if (!res.ok) throw new Error(JSON.stringify(data));
+  if (!res.ok) throw apiError(data, res.status);
   return data;
 }
 
@@ -35,7 +42,7 @@ export async function joinRoom(roomId: string): Promise<RoomJoinResponse> {
     body: JSON.stringify({ playerId: identity.playerId, displayName: identity.displayName || undefined })
   });
   const data = (await res.json()) as RoomJoinResponse;
-  if (!res.ok) throw new Error(JSON.stringify(data));
+  if (!res.ok) throw apiError(data, res.status);
   return data;
 }
 
