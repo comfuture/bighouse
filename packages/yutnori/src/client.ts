@@ -62,6 +62,12 @@ export function selectedLegalMove(view: YutnoriPublicView, rollId?: string, piec
   return view.legalMoves.find((move) => move.rollId === rollId && move.pieceId === pieceId && move.pathId === pathId);
 }
 
+/**
+ * Quiet time before a draft is shared with teammates. The room accepts one signal
+ * per 500ms from a player, so this leaves room for network jitter between two sends.
+ */
+const PREVIEW_DEBOUNCE_MS = 800;
+
 export function mountGame(container: HTMLElement, context: GameClientContext): MountedGameClient {
   let snapshot: GameClientSnapshot = context;
   let view = context.publicView as unknown as YutnoriPublicView;
@@ -174,7 +180,7 @@ export function mountGame(container: HTMLElement, context: GameClientContext): M
       context.sendSignal?.({ type: "previewPlan", payload: { matchId: view.matchId, turnId, expectedVersion: version, revision: planRevision, moves: draftMoves.map((choice) => ({ ...choice })) } });
       // A cleared draft still has a revision that teammates must retain for proposals.
       previewRenewTimer = setTimeout(() => sharePreview(false), 12_000);
-    }, 550);
+    }, PREVIEW_DEBOUNCE_MS);
   }
   function addDestination(move: LegalMove): void {
     if (!canSelect() || draftComplete) return;
@@ -464,7 +470,13 @@ export function mountGame(container: HTMLElement, context: GameClientContext): M
   function update(next: GameClientSnapshot): void {
     const previous = view;
     if (snapshot.version !== next.version) planRevision = 0;
-    if (snapshot.version !== next.version || next.actionError?.revision !== snapshot.actionError?.revision || next.connected === false || next.room.activeInterruption || next.phase !== snapshot.phase || (next.publicView as unknown as YutnoriPublicView).turn.turnId !== view.turn.turnId) { cancelDrag(); draftMoves = []; teammateMoves = []; sentProposalKey = ""; branchChoices = []; clearTimeout(previewTimer); clearTimeout(previewRenewTimer); pending = false; message = next.actionError?.revision !== snapshot.actionError?.revision ? (next.actionError?.message ?? "") : ""; }
+    // The host reports every server error here: a rejected chat line or a rate-limited
+    // preview signal as well as a rejected move. Only a failure of the move this client
+    // was waiting on may throw the draft away; anything else just shows its message.
+    const errorChanged = next.actionError?.revision !== snapshot.actionError?.revision;
+    const stateChanged = snapshot.version !== next.version || next.connected === false || Boolean(next.room.activeInterruption) || next.phase !== snapshot.phase || (next.publicView as unknown as YutnoriPublicView).turn.turnId !== view.turn.turnId;
+    if (stateChanged || (errorChanged && pending)) { cancelDrag(); draftMoves = []; teammateMoves = []; sentProposalKey = ""; branchChoices = []; clearTimeout(previewTimer); clearTimeout(previewRenewTimer); pending = false; message = ""; }
+    if (errorChanged) message = next.actionError?.message ?? "";
     if (next.serverTime !== snapshot.serverTime) clockOffset = next.serverTime - Date.now();
     snapshot = next;
     view = next.publicView as unknown as YutnoriPublicView;

@@ -60,6 +60,22 @@ describe("yutnori game client", () => {
     game.update({ ...context, connected: false });
     expect(container.querySelector<HTMLButtonElement>('[data-command="throw"]')!.disabled).toBe(true);
   });
+  it("keeps the draft when an unrelated server error arrives, and drops it when the commit itself fails", () => {
+    const context = fixture();
+    const { game, container, click } = mount(context);
+    click('[data-piece="A1"]');
+    click('[data-destination="o1"]');
+    expect(container.querySelector(".yut-path-preview")).not.toBeNull();
+
+    // A rate-limited preview signal or a rejected chat line is reported the same way as a rejected move.
+    game.update({ ...context, actionError: { revision: 1, message: "Please wait before sending another suggestion" } });
+    expect(container.querySelector(".yut-path-preview")).not.toBeNull();
+    expect(container.textContent).toContain("Please wait before sending another suggestion");
+
+    click('[data-command="plan-commit"]');
+    game.update({ ...context, actionError: { revision: 2, message: "다시 시도하세요" } });
+    expect(container.querySelector(".yut-path-preview")).toBeNull();
+  });
   it("sends teammate selection as a private signal, never a game action", () => {
     const context = fixture("c");
     const { click } = mount(context);
@@ -313,11 +329,11 @@ describe("yutnori game client", () => {
     const { click } = mount(context);
     click('[data-piece="A1"]'); click('[data-destination="o5"]');
     expect(context.sendSignal).not.toHaveBeenCalled();
-    vi.advanceTimersByTime(550);
+    vi.advanceTimersByTime(800);
     const signal = vi.mocked(context.sendSignal!).mock.calls[0]![0];
     expect(signal.type).toBe("previewPlan");
     expect(signal.payload).toMatchObject({ expectedVersion: 1, moves: [{ rollId: "m", pieceId: "A1", pathId: "outer" }] });
-    const partner = { ...context, playerId: "c", sendSignal: vi.fn(), events: [{ id: "preview1", type: "yutnori.preview", visibility: "private" as const, playerId: "c", createdAt: now + 550, payload: { ...signal.payload, playerId: "a" } }] };
+    const partner = { ...context, playerId: "c", sendSignal: vi.fn(), events: [{ id: "preview1", type: "yutnori.preview", visibility: "private" as const, playerId: "c", createdAt: now + 800, payload: { ...signal.payload, playerId: "a" } }] };
     const peer = mount(partner);
     expect(peer.container.querySelector('[data-node="o5"] .has-piece')).not.toBeNull();
     expect(peer.container.textContent).toContain("이어서");
@@ -339,9 +355,9 @@ describe("yutnori game client", () => {
       host.game.update({ ...context, serverTime: Date.now() });
     });
     host.click('[data-piece="A1"]'); host.click('[data-destination="o1"]');
-    vi.advanceTimersByTime(550);
+    vi.advanceTimersByTime(800);
     host.click('[data-command="plan-undo"]');
-    vi.advanceTimersByTime(550);
+    vi.advanceTimersByTime(800);
     const clearedRevision = vi.mocked(context.sendSignal!).mock.lastCall![0].payload.revision;
     expect(clearedRevision).toBeGreaterThan(0);
     vi.advanceTimersByTime(31_000);
