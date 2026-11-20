@@ -1,56 +1,61 @@
 <template>
   <div class="portal-page">
-    <nav class="portal-topbar" aria-label="Lobby navigation">
-      <UButton label="All games" icon="i-lucide-arrow-left" color="neutral" variant="ghost" @click="goToGames" />
-      <button class="portal-player-chip" type="button" aria-label="Change nickname" title="Change nickname" @click="openNicknameEditor">
-        <UIcon name="i-lucide-user-round" aria-hidden="true" />
-        <span>{{ identity.displayName || identity.playerId }}</span>
-        <UIcon class="portal-player-edit-icon" name="i-lucide-pencil" aria-hidden="true" />
-      </button>
-    </nav>
+    <PortalTopbar>
+      <RouterLink class="portal-back-link" to="/">
+        <UIcon name="i-lucide-arrow-left" aria-hidden="true" />
+        All games
+      </RouterLink>
+    </PortalTopbar>
 
-    <section class="game-lobby-hero" :style="lobbyHeroStyle" aria-labelledby="lobby-title">
-      <div class="game-lobby-hero-overlay" />
-      <div class="game-lobby-hero-content">
-        <div class="game-lobby-copy">
-          <div class="portal-eyebrow">
-            <span class="portal-live-dot" aria-hidden="true" />
-            {{ rooms.length }} live {{ rooms.length === 1 ? "room" : "rooms" }}
-          </div>
-          <h1 id="lobby-title" class="game-lobby-hero-title">{{ displayGameName }}</h1>
-          <p class="game-lobby-hero-copy">{{ gameDescription }}</p>
-          <div class="game-lobby-badges">
-            <span>{{ selectedMode?.displayName ?? mode }}</span>
-            <span>public lobby</span>
-          </div>
-          <nav v-if="gameMetadata?.modes" class="portal-game-modes" aria-label="게임 방식 선택">
-            <RouterLink v-for="option in gameMetadata.modes" :key="option.id" :to="`/game/${gameId}/${option.id}`" :aria-current="option.id === mode ? 'page' : undefined">{{ option.displayName }}</RouterLink>
-          </nav>
-          <label v-if="gameId === 'yutnori'" class="lobby-rule-option"><input v-model="backDo" type="checkbox" /> 빽도 사용 · 출구를 지나면 완주</label>
-        </div>
-        <button class="portal-primary-action game-lobby-create" type="button" :disabled="creatingRoom || invalidMode" @click="createRoom">
-          <UIcon :name="creatingRoom ? 'i-lucide-loader-circle' : 'i-lucide-plus'" :class="{ 'portal-spin': creatingRoom }" aria-hidden="true" />
-          {{ creatingRoom ? "Opening room…" : "Create a room" }}
-        </button>
+    <section class="portal-panel lobby-header" aria-labelledby="lobby-title">
+      <div class="lobby-header-art">
+        <img v-if="gameMetadata?.thumbnail" :src="gameMetadata.thumbnail.src" :alt="gameMetadata.thumbnail.alt" />
       </div>
+      <div class="lobby-header-copy">
+        <h1 id="lobby-title">{{ displayGameName }}</h1>
+        <p>{{ gameDescription }}</p>
+        <div class="portal-game-meta">
+          <span v-if="gameMetadata"><UIcon name="i-lucide-users" aria-hidden="true" />{{ playerRangeLabel(gameMetadata) }}</span>
+          <span v-if="gameMetadata">{{ categoryLabel(gameMetadata) }}</span>
+        </div>
+      </div>
+      <div class="lobby-header-action">
+        <button class="portal-primary-action lobby-play-now" type="button" :disabled="busy || invalidMode" @click="quickPlay">
+          <UIcon :name="quickJoining ? 'i-lucide-loader-circle' : 'i-lucide-play'" :class="{ 'portal-spin': quickJoining }" aria-hidden="true" />
+          {{ quickJoining ? "Finding a seat…" : "Play now" }}
+        </button>
+        <p>Takes a free seat in an open room, or opens a new one</p>
+      </div>
+      <nav v-if="gameMetadata?.modes" class="lobby-mode-switch" aria-label="Game mode">
+        <span class="lobby-mode-label">Mode</span>
+        <RouterLink
+          v-for="option in gameMetadata.modes"
+          :key="option.id"
+          data-game-elastic="off"
+          :to="lobbyPath(gameId, option.id)"
+          :aria-current="option.id === mode ? 'page' : undefined"
+        >
+          {{ option.displayName }}
+        </RouterLink>
+      </nav>
     </section>
 
     <div v-if="displayedError" class="portal-alert is-error" role="alert">
       <UIcon name="i-lucide-circle-alert" aria-hidden="true" />
       <div>
-        <strong>Lobby update</strong>
+        <strong>{{ invalidMode ? "Unknown game mode" : "Something went wrong" }}</strong>
         <span>{{ displayedError }}</span>
       </div>
     </div>
 
-    <div class="game-lobby-layout">
-      <section class="lobby-room-directory" aria-labelledby="room-directory-title">
-        <header class="portal-section-heading">
+    <div class="lobby-layout">
+      <section class="portal-panel lobby-rooms" aria-labelledby="lobby-rooms-title">
+        <header class="lobby-section-header">
           <div>
-            <div class="portal-kicker">Open tables</div>
-            <h2 id="room-directory-title">Join a live room</h2>
+            <h2 id="lobby-rooms-title">Open rooms</h2>
+            <p>Pick a room to sit down with the players already there</p>
           </div>
-          <button class="portal-refresh-button" type="button" :disabled="refreshingRooms" @click="manualRefreshRooms">
+          <button class="portal-secondary-action" type="button" :disabled="refreshingRooms" @click="manualRefreshRooms">
             <UIcon name="i-lucide-refresh-cw" :class="{ 'portal-spin': refreshingRooms }" aria-hidden="true" />
             Refresh
           </button>
@@ -63,69 +68,72 @@
           </div>
         </div>
 
-        <div v-else-if="rooms.length > 0" class="lobby-room-list">
-          <article v-for="(room, index) in rooms" :key="room.roomId" class="lobby-room-row">
-            <div class="lobby-room-rank" aria-hidden="true">{{ String(index + 1).padStart(2, "0") }}</div>
+        <ul v-else-if="rooms.length > 0" class="lobby-room-list">
+          <li v-for="room in rooms" :key="room.roomId" class="lobby-room-row">
             <div class="lobby-room-summary">
-              <div class="lobby-room-title-line">
-                <h3>{{ roomLabel(room) }}</h3>
-                <span :class="['lobby-room-status', `is-${room.status}`]">{{ room.isFixed ? "상시 오픈" : room.status }}</span>
-              </div>
-              <div class="lobby-room-meta">
-                <span><UIcon name="i-lucide-users" aria-hidden="true" /> {{ room.playerCount }}/{{ room.maxPlayers }}</span>
-                <span>{{ roomMetaSubtitle(room) }}</span>
-              </div>
+              <h3>{{ roomLabel(room) }}</h3>
+              <p>
+                <span :class="['lobby-room-status', `is-${room.status}`]">{{ roomStatusLabel(room) }}</span>
+                <span v-if="roomNote(room)">{{ roomNote(room) }}</span>
+              </p>
             </div>
-            <div class="lobby-room-capacity" :aria-label="`${room.playerCount} of ${room.maxPlayers} seats filled`">
-              <span v-for="seat in Math.min(room.maxPlayers, 12)" :key="seat" :class="{ 'is-filled': seat <= Math.ceil((room.playerCount / Math.max(1, room.maxPlayers)) * Math.min(room.maxPlayers, 12)) }" />
+            <div class="lobby-room-seats" :aria-label="`${room.playerCount} of ${room.maxPlayers} seats taken`">
+              <span class="lobby-room-seat-count">{{ room.playerCount }}/{{ room.maxPlayers }}</span>
+              <span v-if="room.maxPlayers <= maxSeatPegs" class="seat-pegs" aria-hidden="true">
+                <i v-for="seat in room.maxPlayers" :key="seat" :class="{ 'is-taken': seat <= room.playerCount }" />
+              </span>
             </div>
-            <button
-              class="lobby-room-join"
-              type="button"
-              :disabled="joiningRoomId !== ''"
-              @click="joinExisting(room.roomId)"
-            >
-              <UIcon :name="joiningRoomId === room.roomId ? 'i-lucide-loader-circle' : 'i-lucide-log-in'" :class="{ 'portal-spin': joiningRoomId === room.roomId }" aria-hidden="true" />
+            <button class="lobby-room-join" type="button" :disabled="busy" @click="joinExisting(room.roomId)">
+              <UIcon v-if="joiningRoomId === room.roomId" name="i-lucide-loader-circle" class="portal-spin" aria-hidden="true" />
               {{ joiningRoomId === room.roomId ? "Joining…" : "Join" }}
             </button>
-          </article>
-        </div>
+          </li>
+        </ul>
 
-        <div v-else class="lobby-empty-state">
-          <span class="lobby-empty-icon" aria-hidden="true"><UIcon name="i-lucide-armchair" /></span>
+        <div v-else class="portal-empty">
+          <UIcon name="i-lucide-armchair" aria-hidden="true" />
           <div>
-            <h3>Be the first at the table</h3>
-            <p>No rooms are waiting right now. Open one and invite your crew.</p>
+            <h3>No rooms are open yet</h3>
+            <p>Create one and send the link to the people you want to play with.</p>
           </div>
-          <button class="portal-secondary-action" type="button" :disabled="creatingRoom || invalidMode" @click="createRoom">
-            <UIcon name="i-lucide-plus" aria-hidden="true" />
-            Create room
-          </button>
         </div>
       </section>
 
-      <ChatPanel class="lobby-chat-panel" title="Lobby chat" :messages="chat" @send="sendChat" />
-    </div>
+      <aside class="lobby-side">
+        <section class="portal-panel lobby-create" aria-labelledby="lobby-create-title">
+          <h2 id="lobby-create-title">Create a room</h2>
+          <p>Open your own room, then share its link or QR code so friends can join.</p>
+          <dl class="lobby-create-summary">
+            <div v-if="selectedMode">
+              <dt>Mode</dt>
+              <dd>{{ selectedMode.displayName }}</dd>
+            </div>
+            <div>
+              <dt>Seats</dt>
+              <dd>
+                {{ seatLabel }}
+                <span v-if="roomSeats <= maxSeatPegs" class="seat-pegs" aria-hidden="true">
+                  <i v-for="seat in roomSeats" :key="seat" />
+                </span>
+              </dd>
+            </div>
+          </dl>
+          <label v-if="gameId === 'yutnori'" class="lobby-rule-option">
+            <input v-model="backDo" type="checkbox" />
+            <span>
+              Use back-do (빽도)
+              <small>Pieces finish once they pass the exit</small>
+            </span>
+          </label>
+          <button class="portal-secondary-action lobby-create-button" type="button" :disabled="busy || invalidMode" @click="createRoom">
+            <UIcon :name="creatingRoom ? 'i-lucide-loader-circle' : 'i-lucide-plus'" :class="{ 'portal-spin': creatingRoom }" aria-hidden="true" />
+            {{ creatingRoom ? "Opening room…" : "Create room" }}
+          </button>
+        </section>
 
-    <UModal
-      v-model:open="creatingRoom"
-      title="Creating game room"
-      description="Preparing a fresh table and connecting you to it."
-      :dismissible="false"
-      :ui="{ close: 'hidden' }"
-    >
-      <template #body>
-        <div class="room-creation-progress" role="status" aria-live="polite" aria-busy="true">
-          <span class="room-creation-orbit" aria-hidden="true">
-            <UIcon name="i-lucide-gamepad-2" />
-          </span>
-          <div>
-            <strong>Creating game room</strong>
-            <p>Reserving seats and loading the game table…</p>
-          </div>
-        </div>
-      </template>
-    </UModal>
+        <ChatPanel title="Lobby chat" :messages="chat" @send="sendChat" />
+      </aside>
+    </div>
   </div>
 </template>
 
@@ -133,9 +141,11 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import ChatPanel from "../components/ChatPanel.vue";
-import { createLobbyRoom, joinRoom, listLobbyRooms, lobbyWebsocketUrl } from "../api";
+import PortalTopbar from "../components/PortalTopbar.vue";
+import { createLobbyRoom, joinRoom, listLobbyRooms, lobbyWebsocketUrl, quickJoinLobby } from "../api";
 import { getClientGameMetadata } from "../game-plugins";
-import { identity, identityReady, openNicknameEditor } from "../identity";
+import { identity, identityReady } from "../identity";
+import { categoryLabel, lobbyPath, playerRangeLabel, rememberRecentGame } from "../portal";
 import { parseServerMessage } from "../socket";
 import type { ChatMessage, RoomIndex } from "../types";
 
@@ -148,23 +158,25 @@ const selectedMode = computed(() => gameMetadata.value?.modes?.find((entry) => e
 const invalidMode = computed(() => Boolean(gameMetadata.value?.modes && !selectedMode.value));
 const backDo = ref(true);
 const displayGameName = computed(() => gameMetadata.value?.displayName ?? gameId.value);
-const gameDescription = computed(() => gameMetadata.value?.description ?? "Create a room or join an open table.");
-const lobbyHeroStyle = computed(() => {
-  const thumbnail = gameMetadata.value?.thumbnail;
-  if (!thumbnail) return {};
-  return {
-    "--game-lobby-image": `url(${thumbnail.src})`
-  };
+const gameDescription = computed(() => gameMetadata.value?.description ?? "Join an open room or create your own.");
+/** Rooms with more seats than this show the count alone, without pegs. */
+const maxSeatPegs = 8;
+const roomSeats = computed(() => selectedMode.value?.maxPlayers ?? gameMetadata.value?.maxPlayers ?? 2);
+const seatLabel = computed(() => {
+  const min = selectedMode.value?.minPlayers ?? gameMetadata.value?.minPlayers ?? roomSeats.value;
+  return min === roomSeats.value ? `${roomSeats.value} players` : `${min}–${roomSeats.value} players`;
 });
 const rooms = ref<RoomIndex[]>([]);
 const chat = ref<ChatMessage[]>([]);
 const error = ref("");
 const roomListError = ref("");
-const displayedError = computed(() => invalidMode.value ? "지원하지 않는 게임 방식입니다. 개인전 또는 팀전을 선택해 주세요." : error.value || roomListError.value);
+const displayedError = computed(() => invalidMode.value ? "This game has no such mode. Pick one of the modes above." : error.value || roomListError.value);
 const loadingRooms = ref(true);
 const refreshingRooms = ref(false);
 const creatingRoom = ref(false);
+const quickJoining = ref(false);
 const joiningRoomId = ref("");
+const busy = computed(() => creatingRoom.value || quickJoining.value || joiningRoomId.value !== "");
 let ws: WebSocket | undefined;
 let pollId: number | undefined;
 let reconnectTimer: number | undefined;
@@ -172,12 +184,14 @@ let reconnectAttempt = 0;
 let closingLobby = false;
 
 onMounted(() => {
+  rememberRecentGame(gameId.value);
   void refreshRooms();
   if (identityReady.value) connectLobby();
   pollId = window.setInterval(() => void refreshRooms(), 3000);
 });
 
 watch([gameId, mode], () => {
+  rememberRecentGame(gameId.value);
   rooms.value = [];
   chat.value = [];
   error.value = "";
@@ -224,16 +238,32 @@ async function manualRefreshRooms(): Promise<void> {
   refreshingRooms.value = false;
 }
 
+function roomOptions(): { minPlayers?: number; maxPlayers?: number; config?: Record<string, unknown> } {
+  return selectedMode.value ? {
+    minPlayers: selectedMode.value.minPlayers,
+    maxPlayers: selectedMode.value.maxPlayers,
+    ...(gameId.value === "yutnori" ? { config: { backDo: backDo.value } } : {})
+  } : {};
+}
+
+async function quickPlay(): Promise<void> {
+  if (busy.value) return;
+  quickJoining.value = true;
+  try {
+    const result = await quickJoinLobby(gameId.value, mode.value, roomOptions());
+    await router.push(`/game/${encodeURIComponent(gameId.value)}/${encodeURIComponent(result.roomId)}`);
+  } catch (cause) {
+    error.value = cause instanceof Error ? cause.message : "Could not find a room";
+  } finally {
+    quickJoining.value = false;
+  }
+}
+
 async function createRoom(): Promise<void> {
-  if (creatingRoom.value) return;
+  if (busy.value) return;
   creatingRoom.value = true;
   try {
-    const options = selectedMode.value ? {
-      minPlayers: selectedMode.value.minPlayers,
-      maxPlayers: selectedMode.value.maxPlayers,
-      ...(gameId.value === "yutnori" ? { config: { backDo: backDo.value } } : {})
-    } : {};
-    const result = await createLobbyRoom(gameId.value, mode.value, options);
+    const result = await createLobbyRoom(gameId.value, mode.value, roomOptions());
     await router.push(`/game/${encodeURIComponent(gameId.value)}/${encodeURIComponent(result.roomId)}`);
   } catch (cause) {
     error.value = cause instanceof Error ? cause.message : "Failed to create room";
@@ -242,12 +272,8 @@ async function createRoom(): Promise<void> {
   }
 }
 
-async function goToGames(): Promise<void> {
-  await router.replace("/");
-}
-
 async function joinExisting(roomId: string): Promise<void> {
-  if (joiningRoomId.value) return;
+  if (busy.value) return;
   joiningRoomId.value = roomId;
   try {
     await joinRoom(roomId);
@@ -262,13 +288,23 @@ async function joinExisting(roomId: string): Promise<void> {
 function roomLabel(room: RoomIndex): string {
   if (room.roomName) return room.roomName;
   const suffix = room.roomId.replace(/^room_/, "").slice(-6).toUpperCase();
-  return suffix ? `Table ${suffix}` : "Waiting table";
+  return suffix ? `Room ${suffix}` : "Room";
 }
 
-function roomMetaSubtitle(room: RoomIndex): string {
+function roomStatusLabel(room: RoomIndex): string {
+  if (room.isFixed) return "Always open";
+  if (room.status === "active") return "In game";
+  if (room.status === "matching") return "Ready to start";
+  if (room.status === "closed") return "Closed";
+  return "Waiting for players";
+}
+
+function roomNote(room: RoomIndex): string {
   const fixedSpec = gameMetadata.value?.fixedRooms?.find((spec) => spec.roomId === room.roomId);
   if (fixedSpec?.description) return fixedSpec.description;
-  return selectedMode.value?.displayName ?? `Starts at ${room.minPlayers}`;
+  const missing = room.minPlayers - room.playerCount;
+  if (room.status === "open" && missing > 0) return missing === 1 ? "Needs 1 more" : `Needs ${missing} more`;
+  return "";
 }
 
 function connectLobby(): void {
@@ -293,7 +329,7 @@ function connectLobby(): void {
   });
   socket.addEventListener("error", () => {
     if (ws !== socket) return;
-    error.value = "Lobby WebSocket failed";
+    error.value = "Lobby chat is not connected";
   });
   socket.addEventListener("close", () => {
     if (!closingLobby && ws === socket) {
@@ -311,7 +347,7 @@ function scheduleReconnect(): void {
   if (!identityReady.value || reconnectTimer) return;
   const delay = Math.min(500 * 2 ** reconnectAttempt, 5000);
   reconnectAttempt += 1;
-  error.value = "Lobby connection lost. Reconnecting...";
+  error.value = "Lobby connection lost, reconnecting";
   reconnectTimer = window.setTimeout(() => {
     reconnectTimer = undefined;
     connectLobby();

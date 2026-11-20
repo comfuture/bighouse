@@ -1,17 +1,14 @@
 <template>
   <section class="portal-chat" :aria-label="title">
     <header class="portal-chat-header">
-      <div>
-        <span class="portal-kicker">Live channel</span>
-        <h2>{{ title }}</h2>
-      </div>
-      <span class="portal-chat-count">{{ messages.length }}</span>
+      <h2>{{ title }}</h2>
+      <span v-if="messages.length > 0" class="portal-count">{{ messages.length }}</span>
     </header>
 
     <div ref="logElement" class="portal-chat-log" role="log" aria-live="polite" aria-relevant="additions">
       <div v-if="messages.length === 0" class="portal-chat-empty">
         <UIcon name="i-lucide-message-circle-more" aria-hidden="true" />
-        <span>No messages yet. Say hello.</span>
+        <span>No messages yet</span>
       </div>
       <div v-for="message in messages.slice(-80)" :key="`${message.createdAt}-${message.playerId}-${message.body}`" class="portal-chat-message">
         <div class="portal-chat-message-meta">
@@ -27,7 +24,7 @@
       <UInput
         v-model="body"
         class="min-w-0 flex-1"
-        :placeholder="`Message ${title.toLowerCase()}`"
+        placeholder="Message"
         aria-label="Chat message"
         @compositionstart="handleCompositionStart"
         @compositionend="handleCompositionEnd"
