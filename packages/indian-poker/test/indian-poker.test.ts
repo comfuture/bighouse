@@ -777,3 +777,47 @@ describe("indian-poker bot", () => {
     }
   });
 });
+
+describe("all-in", () => {
+  /** p2 has put every chip in; p1 still holds chips and is to act. */
+  function opponentAllIn(): RoomState {
+    const state = initState();
+    const stage = stageOf(state);
+    stage.phase = "betting";
+    stage.currentPlayerId = "p1";
+    stage.chips = { p1: 80, p2: 0 };
+    stage.bets = { p1: 20, p2: 20 };
+    stage.currentBet = 20;
+    stage.raiseCount = 0;
+    return state;
+  }
+
+  it("does not offer or accept a bet against an opponent with no chips left", () => {
+    const state = opponentAllIn();
+    expect(availableActions(stageOf(state), "p1")).toEqual(["check", "die"]);
+    expect(validate(state, "p1", "bet", { amount: 10 })).toMatchObject({ ok: false, code: "invalid_action" });
+    expect(validate(state, "p1", "check")).toEqual({ ok: true });
+  });
+
+  it("does not offer or accept a raise against an opponent with no chips left", () => {
+    const state = opponentAllIn();
+    const stage = stageOf(state);
+    stage.bets = { p1: 10, p2: 20 };
+    expect(availableActions(stage, "p1")).toEqual(["call", "die"]);
+    expect(validate(state, "p1", "raise", { amount: 10 })).toMatchObject({ ok: false, code: "invalid_action" });
+    expect(validate(state, "p1", "double")).toMatchObject({ ok: false, code: "invalid_action" });
+  });
+
+  it("caps configured starting chips so stacks stay exact", () => {
+    const state = baseState();
+    state.room.config = { startingChips: 1e300 };
+    const stage = indianPokerDefinition.initialStageState({ room: state.room, players: state.players, now: NOW }) as unknown as IndianPokerStageState;
+    const total = Object.values(stage.chips).reduce((sum, chips) => sum + chips, 0) + stage.pot;
+    expect(total).toBe(2_000_000);
+  });
+
+  it("gives an unseated viewer no card", () => {
+    const state = initState();
+    expect(indianPokerDefinition.getPrivateView({ state, now: NOW }, "stranger")).toEqual({});
+  });
+});
