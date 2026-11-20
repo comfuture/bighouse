@@ -65,7 +65,7 @@
 
 <script setup lang="ts">
 import { toDataURL } from "qrcode";
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, toRaw, watch } from "vue";
 import { onBeforeRouteLeave, useRoute, useRouter } from "vue-router";
 import type {
   BotDifficulty,
@@ -446,11 +446,14 @@ function applyPresence(payload: { playerId: string; connected: boolean }): void 
 }
 
 function createGameSnapshot(): GameClientSnapshot | undefined {
-  const snapshot = room.value;
+  // Games get plain objects, never Vue's reactive proxies: a proxy cannot be
+  // passed to structuredClone or postMessage, and games must not be able to
+  // trigger host re-renders by touching their own snapshot.
+  const snapshot = toRaw(room.value);
   if (!snapshot) return undefined;
   return {
     playerId: identity.playerId,
-    events: [...gameEvents.value],
+    events: toRaw(gameEvents.value).map((event) => toRaw(event)),
     connected: connected.value,
     ...(actionError.value ? { actionError: actionError.value } : {}),
     version: snapshot.version,
@@ -476,7 +479,7 @@ function createGameSnapshot(): GameClientSnapshot | undefined {
     publicView: snapshot.publicView,
     privateView: snapshot.privateView,
     rematchRequests: snapshot.rematchRequests ?? [],
-    chatMessages: [...chatMessages.value]
+    chatMessages: toRaw(chatMessages.value).map((message) => toRaw(message))
   };
 }
 
