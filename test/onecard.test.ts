@@ -567,4 +567,29 @@ describe("One Card Game Logic", () => {
     const stage = result.state.stageState as any;
     expect(stage.currentPlayerId).toBe("p1");
   });
+
+  it("lets a 7 answer a 7 whatever suit was called, but holds other cards to the called suit", () => {
+    const state = baseState(2);
+    state.stageState = {
+      discardPile: ["7S"],
+      deck: ["2C"],
+      dealtHands: {},
+      currentPlayerId: "p1",
+      turnDirection: "clockwise",
+      activeAttackCount: 0,
+      chosenSuit: "H",
+      eliminatedPlayerIds: [],
+      hasExtraTurn: false
+    };
+    state.playerStates.p1 = { hand: ["7D", "9S", "9H"] };
+    state.playerStates.p2 = { hand: ["8S"] };
+    const play = (card: string, chosenSuit?: string) =>
+      oneCardDefinition.validateAction(
+        { state: cloneState(state), now: 1 },
+        { playerId: "p1", clientActionId: card, expectedVersion: 2, type: "playCard", payload: { card, ...(chosenSuit ? { chosenSuit } : {}) } }
+      );
+    expect(play("7D", "D")).toEqual({ ok: true });
+    expect(play("9H")).toEqual({ ok: true });
+    expect(play("9S")).toMatchObject({ ok: false, message: "Must match the chosen suit: H" });
+  });
 });
