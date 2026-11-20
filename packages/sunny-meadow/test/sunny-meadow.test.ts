@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { ITEM_CATALOG, MOB_CATALOG, VIEWPORT } from "../src/catalogs";
-import { validateNormalizedStage } from "../src/map-schema";
+import { compileStageForRuntime, validateNormalizedStage } from "../src/map-schema";
+import { updateMovingPlatforms } from "../src/physics";
 import {
   applyExperienceGain,
   computeEffectiveXp,
@@ -497,7 +498,18 @@ describe("@bighouse/sunny-meadow server hardening", () => {
       mobs: Record<string, object>;
       items: Record<string, object>;
     };
-    expect(Object.keys(Object.values(view.mobs)[0]!).sort()).toEqual(["alive", "hp", "inCombat", "maxHp", "spawnProtectUntil"]);
+    expect(Object.keys(Object.values(view.mobs)[0]!).sort()).toEqual([
+      "alive",
+      "facing",
+      "hp",
+      "inCombat",
+      "maxHp",
+      "spawnProtectUntil",
+      "vx",
+      "vy",
+      "x",
+      "y"
+    ]);
     expect(Object.keys(Object.values(view.items)[0]!)).toEqual(["available"]);
   });
 });
@@ -599,5 +611,183 @@ describe("@bighouse/sunny-meadow death and revival", () => {
     expect(profile.lastX).not.toBe(3_000);
     // The room state itself is untouched: they are still down until they leave or revive.
     expect(player(state)).toMatchObject({ dead: true, hp: 0 });
+  });
+});
+
+describe("@bighouse/sunny-meadow multiplayer synchronization", () => {
+  const now = 1_700_000_000_000;
+
+  function setupTwoPlayers(): RoomState {
+    const room = {
+      roomId: "room_sync",
+      gameId: "sunny-meadow",
+      mode: "default",
+      minPlayers: 1,
+      maxPlayers: 500,
+      config: {},
+      createdAt: now
+    };
+    let state: RoomState = {
+      room,
+      phase: "active",
+      version: 1,
+      players: [],
+      stageState: sunnyMeadowDefinition.initialStageState({ room, players: [], now }),
+      playerStates: {},
+      updatedAt: now
+    };
+    for (const [i, id] of ["pA", "pB"].entries()) {
+      const seat = { playerId: id, displayName: id, seat: i, connected: true, ready: true, joinedAt: now };
+      state.players.push(seat);
+      state = sunnyMeadowDefinition.onPlayerJoin!({ state, now }, seat, null).state;
+    }
+    return state;
+  }
+
+  it("reconciles legacy persistent rooms with current stage mobs/items so potions and mob XP never vanish", () => {
+    const state = setupTwoPlayers();
+    // Simulate a legacy Durable Object created before the stage expansion (missing new zone mobs & potions)
+    const stage1 = (state.stageState as { stages: Record<string, { mobs: Record<string, unknown>; items: Record<string, unknown> }> }).stages["stage-1"]!;
+    delete stage1.items["s1_iso_po"];
+    delete stage1.mobs["s1_iso_mob1"];
+    stage1.mobs["s1_obsolete_mob"] = { id: "s1_obsolete_mob", templateId: "red_mushroom", alive: true, hp: 40, maxHp: 40 };
+
+    // Player collects s1_iso_po (potion) -> reconcile restores it automatically and awards +1 potion!
+    const beforePotions = (state.playerStates.pA as { potions: number }).potions;
+    const pick = sunnyMeadowDefinition.applyAction(
+      { state, now: now + 50 },
+      { playerId: "pA", clientActionId: "pick_reconciled_potion", expectedVersion: 0, type: "collectItem", payload: { itemId: "s1_iso_po" } }
+    );
+    expect((pick.state.playerStates.pA as { potions: number }).potions).toBe(beforePotions + 1);
+    expect(pick.events.some((e) => e.type === "sunny.itemCollected" && e.payload.itemId === "s1_iso_po")).toBe(true);
+
+    // Obsolete mob pruned, new mob restored and attackable
+    const pub = sunnyMeadowDefinition.getPublicView({ state: pick.state, now: now + 60 }, "pA") as { mobs: Record<string, unknown> };
+    expect(pub.mobs["s1_obsolete_mob"]).toBeUndefined();
+    expect(pub.mobs["s1_iso_mob1"]).toBeDefined();
+  });
+
+  it("syncs mob positions from the closest player via handleSignal and rejects farther-player overwrites", () => {
+    const state = setupTwoPlayers();
+    const mobId = "s1_mob_1a";
+    const stage1 = (state.stageState as { stages: Record<string, { mobs: Record<string, { x: number; y: number }> }> }).stages["stage-1"]!;
+    const mobHomeX = stage1.mobs[mobId]!.x;
+    const mobHomeY = stage1.mobs[mobId]!.y;
+
+    // Place pA right next to the mob and pB 500px away
+    Object.assign(state.playerStates.pA!, { x: mobHomeX + 20, y: mobHomeY });
+    Object.assign(state.playerStates.pB!, { x: mobHomeX + 520, y: mobHomeY });
+
+    const sigA = sunnyMeadowDefinition.handleSignal!(
+      { state: structuredClone(state), now: now + 100 },
+      "pA",
+      {
+        type: "playerPose",
+        payload: {
+          x: mobHomeX + 20,
+          y: mobHomeY,
+          vx: 0,
+          vy: 0,
+          facing: -1,
+          animState: "idle",
+          mobs: [[mobId, mobHomeX + 44, mobHomeY, 85, 0, 1]]
+        }
+      }
+    );
+    expect(sigA).toBeDefined();
+    expect(sigA!.recipientPlayerIds).toContain("pB");
+    expect(sigA!.payload.mobs).toEqual([[mobId, mobHomeX + 44, mobHomeY, 85, 0, 1]]);
+    expect(sigA!.stageState).toBeDefined();
+
+    // Apply pA's stageState update, then verify pB (farther away) cannot overwrite pA's fresh mob position
+    state.stageState = sigA!.stageState!;
+    const sigB = sunnyMeadowDefinition.handleSignal!(
+      { state: structuredClone(state), now: now + 200 },
+      "pB",
+      {
+        type: "playerPose",
+        payload: {
+          x: mobHomeX + 520,
+          y: mobHomeY,
+          vx: 0,
+          vy: 0,
+          facing: -1,
+          animState: "idle",
+          mobs: [[mobId, mobHomeX - 80, mobHomeY, -60, 0, -1]]
+        }
+      }
+    );
+    expect(sigB).toBeDefined();
+    expect(sigB!.payload.mobs).toBeUndefined();
+  });
+
+  it("allows race-window duplicate pickup for ordinary potions/coins, but blocks duplicates on rare Golden Hearts", () => {
+    let state = setupTwoPlayers();
+
+    // Ordinary potion: both pA and pB touch within grace window -> both receive +1 potion
+    const beforeA = (state.playerStates.pA as { potions: number }).potions;
+    const beforeB = (state.playerStates.pB as { potions: number }).potions;
+    state = sunnyMeadowDefinition.applyAction(
+      { state, now: now + 10 },
+      { playerId: "pA", clientActionId: "pot_a", expectedVersion: 0, type: "collectItem", payload: { itemId: "s1_iso_po" } }
+    ).state;
+    state = sunnyMeadowDefinition.applyAction(
+      { state, now: now + 200 },
+      { playerId: "pB", clientActionId: "pot_b", expectedVersion: 0, type: "collectItem", payload: { itemId: "s1_iso_po" } }
+    ).state;
+    expect((state.playerStates.pA as { potions: number }).potions).toBe(beforeA + 1);
+    expect((state.playerStates.pB as { potions: number }).potions).toBe(beforeB + 1);
+
+    // Rare Golden Heart (max_hp): first player gets +20 maxHp, second player's race grab is silently ignored
+    const maxHpA = (state.playerStates.pA as { maxHp: number }).maxHp;
+    const maxHpB = (state.playerStates.pB as { maxHp: number }).maxHp;
+    state = sunnyMeadowDefinition.applyAction(
+      { state, now: now + 300 },
+      { playerId: "pA", clientActionId: "gh_a", expectedVersion: 0, type: "collectItem", payload: { itemId: "s1_iso_gh" } }
+    ).state;
+    const ghB = sunnyMeadowDefinition.applyAction(
+      { state, now: now + 400 },
+      { playerId: "pB", clientActionId: "gh_b", expectedVersion: 0, type: "collectItem", payload: { itemId: "s1_iso_gh" } }
+    );
+    expect((ghB.state.playerStates.pA as { maxHp: number }).maxHp).toBe(maxHpA + 20);
+    expect((ghB.state.playerStates.pB as { maxHp: number }).maxHp).toBe(maxHpB);
+    expect(ghB.events).toContainEqual(
+      expect.objectContaining({ type: "sunny.actionIgnored", payload: expect.objectContaining({ reason: "item_taken" }) })
+    );
+  });
+
+  it("tracks monotonic weaponSwitchSeq so rapid Q/E weapon cycling never rolls back", () => {
+    let state = setupTwoPlayers();
+    Object.assign(state.playerStates.pA!, { unlockedWeapons: ["wooden_sword", "leaf_blade", "star_wand"] });
+
+    state = sunnyMeadowDefinition.applyAction(
+      { state, now: now + 10 },
+      { playerId: "pA", clientActionId: "sw1", expectedVersion: 0, type: "switchWeapon", payload: { weaponId: "leaf_blade", switchSeq: 1 } }
+    ).state;
+    state = sunnyMeadowDefinition.applyAction(
+      { state, now: now + 20 },
+      { playerId: "pA", clientActionId: "sw2", expectedVersion: 0, type: "switchWeapon", payload: { weaponId: "star_wand", switchSeq: 2 } }
+    ).state;
+
+    const priv = sunnyMeadowDefinition.getPrivateView({ state, now: now + 25 }, "pA") as {
+      equippedWeaponId: string;
+      weaponSwitchSeq: number;
+    };
+    expect(priv.equippedWeaponId).toBe("star_wand");
+    expect(priv.weaponSwitchSeq).toBe(2);
+  });
+
+  it("evaluates moving platforms deterministically from synced server time across all clients", () => {
+    const a = compileStageForRuntime(getStageById("stage-4"));
+    const b = compileStageForRuntime(getStageById("stage-4"));
+    expect(a.movingPlatforms.length).toBeGreaterThan(0);
+
+    const syncedTime = 1_700_000_123_456;
+    updateMovingPlatforms(a.movingPlatforms, 1 / 60, syncedTime);
+    updateMovingPlatforms(b.movingPlatforms, 1 / 60, syncedTime);
+    for (let i = 0; i < a.movingPlatforms.length; i++) {
+      expect(a.movingPlatforms[i]!.x).toBeCloseTo(b.movingPlatforms[i]!.x, 5);
+      expect(a.movingPlatforms[i]!.y).toBeCloseTo(b.movingPlatforms[i]!.y, 5);
+    }
   });
 });

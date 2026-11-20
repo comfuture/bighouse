@@ -405,8 +405,19 @@ async function handleRoomMessage(message: ServerMessage): Promise<void> {
   if (message.type === "event" || message.type === "privateEvent") {
     const event = (message.payload as { event: GameEvent }).event;
     if (!gameEvents.value.some((item) => item.id === event.id)) {
+      // Coalesce high-frequency transient pose signals per player so they never
+      // evict authoritative combat, item, or respawn events from the buffer.
+      if (event.type === "sunny.playerPose" && typeof event.payload?.playerId === "string") {
+        const senderId = event.payload.playerId;
+        const prevIdx = gameEvents.value.findIndex(
+          (item) => item.type === "sunny.playerPose" && item.payload?.playerId === senderId
+        );
+        if (prevIdx >= 0) {
+          gameEvents.value.splice(prevIdx, 1);
+        }
+      }
       gameEvents.value.push(event);
-      if (gameEvents.value.length > 32) gameEvents.value.splice(0, gameEvents.value.length - 32);
+      if (gameEvents.value.length > 96) gameEvents.value.splice(0, gameEvents.value.length - 96);
       uiRevision.value += 1;
       updateMountedGame();
     }

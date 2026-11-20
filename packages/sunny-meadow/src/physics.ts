@@ -18,7 +18,11 @@ export function aabbOverlap(a: Rect, b: Rect): boolean {
   return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
 }
 
-export function updateMovingPlatforms(movingPlatforms: RuntimeMovingPlatform[], dt: number): void {
+export function updateMovingPlatforms(
+  movingPlatforms: RuntimeMovingPlatform[],
+  dt: number,
+  syncedNowMs?: number
+): void {
   for (const mp of movingPlatforms) {
     mp.prevX = mp.x;
     mp.prevY = mp.y;
@@ -27,6 +31,48 @@ export function updateMovingPlatforms(movingPlatforms: RuntimeMovingPlatform[], 
       mp.dx = 0;
       mp.dy = 0;
       continue;
+    }
+
+    // Deterministic server-clock evaluation so every player on the same stage
+    // sees every moving platform at the exact same pixel simultaneously.
+    if (typeof syncedNowMs === "number" && Number.isFinite(syncedNowMs) && mp.speed > 0) {
+      const n = mp.waypoints.length;
+      const segments: Array<{ from: { x: number; y: number }; to: { x: number; y: number }; travel: number }> = [];
+      for (let i = 0; i < n - 1; i++) {
+        const a = mp.waypoints[i]!;
+        const b = mp.waypoints[i + 1]!;
+        segments.push({ from: a, to: b, travel: Math.hypot(b.x - a.x, b.y - a.y) / mp.speed });
+      }
+      for (let i = n - 1; i > 0; i--) {
+        const a = mp.waypoints[i]!;
+        const b = mp.waypoints[i - 1]!;
+        segments.push({ from: a, to: b, travel: Math.hypot(b.x - a.x, b.y - a.y) / mp.speed });
+      }
+
+      const pause = Math.max(0, mp.pauseTime);
+      let cycleSec = 0;
+      for (const seg of segments) cycleSec += seg.travel + pause;
+      if (cycleSec > 0.001) {
+        let t = (((syncedNowMs / 1000) % cycleSec) + cycleSec) % cycleSec;
+        for (const seg of segments) {
+          if (t <= seg.travel) {
+            const frac = seg.travel > 0.0001 ? t / seg.travel : 1;
+            mp.x = seg.from.x + (seg.to.x - seg.from.x) * frac;
+            mp.y = seg.from.y + (seg.to.y - seg.from.y) * frac;
+            break;
+          }
+          t -= seg.travel;
+          if (t <= pause) {
+            mp.x = seg.to.x;
+            mp.y = seg.to.y;
+            break;
+          }
+          t -= pause;
+        }
+        mp.dx = mp.x - mp.prevX;
+        mp.dy = mp.y - mp.prevY;
+        continue;
+      }
     }
 
     if (mp.pauseTimer > 0) {

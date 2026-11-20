@@ -877,9 +877,14 @@ export class RoomDO extends DurableObject<Env> {
       throw new GameServerError("invalid_action", "Please wait before sending another suggestion", 429);
     }
     this.ctx.storage.sql.exec("INSERT INTO signal_limits (player_id, sent_at) VALUES (?, ?) ON CONFLICT(player_id) DO UPDATE SET sent_at = excluded.sent_at", playerId, now);
-    if (isPersistentWorld && result.playerStatePatch) {
-      const currentPs = state.playerStates[playerId] ?? {};
-      state.playerStates[playerId] = { ...currentPs, ...result.playerStatePatch };
+    if (isPersistentWorld && (result.playerStatePatch || result.stageState)) {
+      if (result.playerStatePatch) {
+        const currentPs = state.playerStates[playerId] ?? {};
+        state.playerStates[playerId] = { ...currentPs, ...result.playerStatePatch };
+      }
+      if (result.stageState) {
+        state.stageState = result.stageState;
+      }
       this.saveState(state);
     }
     // Transient signals are delivered only to adapter-approved recipients. They never

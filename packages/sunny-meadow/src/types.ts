@@ -271,6 +271,7 @@ export type PersistedPlayerProfile = {
   mobsDefeated: number;
   unlockedWeapons: string[];
   equippedWeaponId: string;
+  weaponSwitchSeq?: number;
   highestStageNumber: number;
   lastStageId: string;
   lastX: number;
@@ -301,6 +302,7 @@ export type WorldPlayerState = {
   mobsDefeated: number;
   unlockedWeapons: string[];
   equippedWeaponId: string;
+  weaponSwitchSeq?: number;
   highestStageNumber: number;
   lastUpdatedAt: number;
   /**
@@ -326,6 +328,14 @@ export type ServerMobState = {
   respawnAt: number;
   spawnProtectUntil: number;
   lastHitAt: number;
+  /** Synchronized world position & kinematics (pixels), led by nearest alive player */
+  x?: number;
+  y?: number;
+  vx?: number;
+  vy?: number;
+  facing?: number;
+  stateUpdatedAt?: number;
+  authorityPlayerId?: string;
   /** Cooperative hunting: tracks damage dealt per playerId in the current life cycle */
   contributors?: Record<string, number>;
   /** Timestamp when mob was defeated (enables grace-window simultaneous kill credit) */
@@ -371,4 +381,5 @@ export type RemotePlayerView = {
   hp: number;
   maxHp: number;
   equippedWeaponId: string;
+  dead?: boolean;
 };

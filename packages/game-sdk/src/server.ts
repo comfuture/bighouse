@@ -161,6 +161,8 @@ export type GameDefinition = GameMetadata & {
     payload: JsonObject;
     /** Optional lightweight player state fields persisted with the player (e.g. latest position for persistent worlds). */
     playerStatePatch?: JsonObject;
+    /** Optional updated stage state for persistent worlds (e.g. nearest-player mob kinematics). */
+    stageState?: JsonObject;
   } | undefined;
   /** Optional persistent-world hooks for drop-in join, drop-out leave, and D1 player profile persistence. */
   onPlayerJoin?(context: GameContext, player: PlayerSeat, persistedProfile?: JsonObject | null): ActionResult;

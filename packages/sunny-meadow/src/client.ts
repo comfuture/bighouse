@@ -58,6 +58,12 @@ type ClientMobEntity = ClientMobRender & {
   aiPhase: string;
   shootTimer: number;
   teleportTimer: number;
+  authX: number;
+  authY: number;
+  authVx: number;
+  authVy: number;
+  authFacing: number;
+  lastAuthAt: number;
 };
 
 type ClientProjectile = ClientProjectileRender & {
@@ -393,6 +399,79 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
   const optimisticItemLocks = new Map<string, number>();
   let localPredSeq = 0;
   const nextPredId = (prefix: string) => `${prefix}_${++localPredSeq}_${Date.now().toString(36)}`;
+  let weaponSwitchSeq = 0;
+  let pendingWeaponSwitch: { weaponId: string; seq: number; expiresAt: number } | null = null;
+  let serverClockOffset = 0;
+  let clockSynced = false;
+
+  function hashId(str: string): number {
+    let h = 2166136261;
+    for (let i = 0; i < str.length; i++) {
+      h ^= str.charCodeAt(i);
+      h = Math.imul(h, 16777619);
+    }
+    return (h >>> 0) / 4294967296;
+  }
+
+  function selectWeaponLocal(wid: string): void {
+    if (downed()) return;
+    if (!localPlayer.unlockedWeapons.includes(wid) || localPlayer.equippedWeaponId === wid) return;
+    weaponSwitchSeq += 1;
+    pendingWeaponSwitch = {
+      weaponId: wid,
+      seq: weaponSwitchSeq,
+      expiresAt: Date.now() + 2500
+    };
+    localPlayer.equippedWeaponId = wid;
+    actions.sendAction({ type: "switchWeapon", payload: { weaponId: wid, switchSeq: weaponSwitchSeq } });
+  }
+
+  function getMobAuthority(mob: ClientMobEntity, now: number): {
+    targetX: number;
+    targetY: number;
+    hasTarget: boolean;
+    isLocalAuthority: boolean;
+    localDist: number;
+  } {
+    const mx = mob.x + mob.w * 0.5;
+    const my = mob.y + mob.h * 0.5;
+    let bestId = "";
+    let bestDist = Infinity;
+    let bestX = mx;
+    let bestY = my;
+    let localDist = Infinity;
+
+    if (!downed()) {
+      const lx = localPlayer.x + localPlayer.w * 0.5;
+      const ly = localPlayer.y + localPlayer.h * 0.5;
+      localDist = Math.hypot(lx - mx, ly - my);
+      bestId = localPlayer.playerId;
+      bestDist = localDist;
+      bestX = lx;
+      bestY = ly;
+    }
+
+    for (const rp of remotePlayers.values()) {
+      if (rp.dead || now - rp.lastSeenAt > 12_000) continue;
+      const rx = rp.x + 14;
+      const ry = rp.y + 21;
+      const dist = Math.hypot(rx - mx, ry - my);
+      if (dist < bestDist - 1 || (Math.abs(dist - bestDist) <= 1 && rp.playerId < bestId)) {
+        bestDist = dist;
+        bestId = rp.playerId;
+        bestX = rx;
+        bestY = ry;
+      }
+    }
+
+    return {
+      targetX: bestX,
+      targetY: bestY,
+      hasTarget: bestId !== "",
+      isLocalAuthority: bestId === localPlayer.playerId && bestDist <= 1400,
+      localDist
+    };
+  }
 
   function spawnText(
     x: number,
@@ -517,7 +596,9 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
     mobsById.clear();
     for (const ms of compiledStage.mobSpawns) {
       const tpl = MOB_CATALOG[ms.templateId]!;
+      const startX = ms.x - tpl.width * 0.5;
       const startY = tpl.flying ? ms.y - tpl.height - 76 : ms.y - tpl.height;
+      const seed = hashId(ms.id);
       const mob: ClientMobEntity = {
         id: ms.id,
         tpl,
@@ -527,9 +608,9 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
         primaryColor: tpl.primaryColor,
         w: tpl.width,
         h: tpl.height,
-        x: ms.x - tpl.width * 0.5,
+        x: startX,
         y: startY,
-        homeX: ms.x - tpl.width * 0.5,
+        homeX: startX,
         homeY: startY,
         vx: 0,
         vy: 0,
@@ -543,17 +624,23 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
         spawnProtectUntil: 0,
         hitFlashTimer: 0,
         hitStunTimer: 0,
-        animTimer: Math.random() * 10,
+        animTimer: seed * 10,
         drawScale: tpl.drawScale,
         hasCrown: Boolean(tpl.hasCrown),
         squashX: 1,
         squashY: 1,
         patrolMinX: ms.patrolMinX,
         patrolMaxX: ms.patrolMaxX,
-        aiTimer: 0.6 + Math.random() * 0.9,
+        aiTimer: 0.6 + seed * 0.9,
         aiPhase: "idle",
-        shootTimer: 1.2 + Math.random() * 1.2,
-        teleportTimer: 2.2 + Math.random() * 1.4
+        shootTimer: 1.2 + seed * 1.2,
+        teleportTimer: 2.2 + seed * 1.4,
+        authX: startX,
+        authY: startY,
+        authVx: 0,
+        authVy: 0,
+        authFacing: ms.facing,
+        lastAuthAt: 0
       };
       mobs.push(mob);
       mobsById.set(mob.id, mob);
@@ -612,6 +699,15 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
       nearbyPlayers?: RemotePlayerView[];
     };
 
+    const nowClock = Date.now();
+    const measuredOffset = snap.serverTime - nowClock;
+    if (!clockSynced || Math.abs(measuredOffset - serverClockOffset) > 1500) {
+      serverClockOffset = measuredOffset;
+      clockSynced = true;
+    } else {
+      serverClockOffset += (measuredOffset - serverClockOffset) * 0.25;
+    }
+
     const seat = snap.room.players.find((p) => p.playerId === snap.playerId);
     localPlayer.displayName = priv.displayName || seat?.displayName || localPlayer.displayName;
     if (typeof priv.level === "number") localPlayer.level = priv.level;
@@ -625,7 +721,26 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
     if (typeof priv.score === "number") localPlayer.score = priv.score;
     if (typeof priv.mobsDefeated === "number") localPlayer.mobsDefeated = priv.mobsDefeated;
     if (Array.isArray(priv.unlockedWeapons)) localPlayer.unlockedWeapons = [...priv.unlockedWeapons];
-    if (typeof priv.equippedWeaponId === "string") localPlayer.equippedWeaponId = priv.equippedWeaponId;
+    if (typeof priv.equippedWeaponId === "string") {
+      const srvSeq = typeof priv.weaponSwitchSeq === "number" ? priv.weaponSwitchSeq : 0;
+      if (pendingWeaponSwitch && nowClock < pendingWeaponSwitch.expiresAt) {
+        const caughtUp =
+          (pendingWeaponSwitch.seq > 0 && srvSeq >= pendingWeaponSwitch.seq) ||
+          (pendingWeaponSwitch.seq === 0 && priv.equippedWeaponId === pendingWeaponSwitch.weaponId);
+        if (caughtUp) {
+          localPlayer.equippedWeaponId = priv.equippedWeaponId;
+          pendingWeaponSwitch = null;
+        } else if (localPlayer.unlockedWeapons.includes(pendingWeaponSwitch.weaponId)) {
+          localPlayer.equippedWeaponId = pendingWeaponSwitch.weaponId;
+        } else {
+          localPlayer.equippedWeaponId = priv.equippedWeaponId;
+          pendingWeaponSwitch = null;
+        }
+      } else {
+        pendingWeaponSwitch = null;
+        localPlayer.equippedWeaponId = priv.equippedWeaponId;
+      }
+    }
     if (typeof priv.highestStageNumber === "number") highestStageNumber = priv.highestStageNumber;
     if (priv.dead === true) enterDeath(localPlayer.xp, localPlayer.coins);
     else leaveDeath();
@@ -676,6 +791,23 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
           mob.inCombat = sm.inCombat;
         }
         mob.spawnProtectUntil = sm.spawnProtectUntil > 0 ? sm.spawnProtectUntil + serverTimeOffset : 0;
+
+        // Apply server-stored mob position & kinematics on stage load or when not local authority
+        if (typeof sm.x === "number" && typeof sm.y === "number") {
+          mob.authX = sm.x;
+          mob.authY = sm.y;
+          mob.authVx = typeof sm.vx === "number" ? sm.vx : 0;
+          mob.authVy = typeof sm.vy === "number" ? sm.vy : 0;
+          mob.authFacing = typeof sm.facing === "number" ? (sm.facing < 0 ? -1 : 1) : mob.facing;
+          mob.lastAuthAt = nowLocal;
+          if (stageChanged) {
+            mob.x = sm.x;
+            mob.y = sm.y;
+            mob.vx = mob.authVx;
+            mob.vy = mob.authVy;
+            mob.facing = mob.authFacing;
+          }
+        }
       }
     }
 
@@ -710,6 +842,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
           existing.equippedWeaponId = rp.equippedWeaponId;
           existing.facing = rp.facing;
           existing.animState = rp.animState;
+          existing.dead = Boolean(rp.dead);
           existing.targetX = rp.x;
           existing.targetY = rp.y;
           existing.vx = rp.vx;
@@ -718,6 +851,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
         } else {
           remotePlayers.set(rp.playerId, {
             ...rp,
+            dead: Boolean(rp.dead),
             targetX: rp.x,
             targetY: rp.y,
             lastSeenAt: now
@@ -751,7 +885,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
       for (const ev of snap.events) {
         if (seenEventIds.has(ev.id)) continue;
         seenEventIds.add(ev.id);
-        if (seenEventIds.size > 240) {
+        if (seenEventIds.size > 1000) {
           const first = seenEventIds.values().next().value;
           if (first) seenEventIds.delete(first);
         }
@@ -768,6 +902,24 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
     if (typeof p.stageId === "string" && p.stageId !== currentStageId) return;
     const nowOffset = Date.now() - serverTime;
 
+    if (ev.type === "sunny.actionIgnored") {
+      // Lost an optimistic race (e.g. another player claimed a Golden Heart or killed a mob earlier);
+      // clear optimistic locks so the fresh server snapshot reconciles immediately.
+      if (p.action === "attackMob") optimisticMobLocks.clear();
+      if (p.action === "collectItem") optimisticItemLocks.clear();
+      return;
+    }
+
+    if (ev.type === "sunny.weaponChanged") {
+      const pid = String(p.playerId ?? "");
+      const wid = typeof p.weaponId === "string" ? p.weaponId : "";
+      if (pid && pid !== ctx.playerId && wid) {
+        const rp = remotePlayers.get(pid);
+        if (rp) rp.equippedWeaponId = wid;
+      }
+      return;
+    }
+
     if (ev.type === "sunny.playerPose") {
       const pid = String(p.playerId ?? "");
       if (!pid || pid === ctx.playerId) return;
@@ -783,6 +935,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
         existing.level = Number(p.level ?? existing.level);
         existing.displayName = String(p.displayName ?? existing.displayName);
         existing.equippedWeaponId = String(p.equippedWeaponId ?? existing.equippedWeaponId);
+        existing.dead = false;
         existing.lastSeenAt = now;
       } else {
         remotePlayers.set(pid, {
@@ -801,8 +954,27 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
           hp: Number(p.hp ?? 100),
           maxHp: Number(p.maxHp ?? 100),
           equippedWeaponId: String(p.equippedWeaponId ?? "wooden_sword"),
+          dead: false,
           lastSeenAt: now
         });
+      }
+
+      // Apply nearest-player authoritative mob kinematics relayed by the server
+      if (Array.isArray(p.mobs)) {
+        for (const entry of p.mobs) {
+          if (!Array.isArray(entry) || entry.length < 6) continue;
+          const mob = mobsById.get(String(entry[0]));
+          if (!mob || !mob.alive || now < mob.spawnProtectUntil) continue;
+          const mx = Number(entry[1]);
+          const my = Number(entry[2]);
+          if (!Number.isFinite(mx) || !Number.isFinite(my)) continue;
+          mob.authX = mx;
+          mob.authY = my;
+          mob.authVx = Number.isFinite(Number(entry[3])) ? Number(entry[3]) : 0;
+          mob.authVy = Number.isFinite(Number(entry[4])) ? Number(entry[4]) : 0;
+          mob.authFacing = Number(entry[5]) < 0 ? -1 : 1;
+          mob.lastAuthAt = now;
+        }
       }
       return;
     }
@@ -853,6 +1025,13 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
       const kbX = Number(p.knockbackX ?? 200) * (1 - mob.tpl.knockbackResist);
       const kbY = Number(p.knockbackY ?? -160) * (1 - mob.tpl.knockbackResist);
 
+      if (typeof p.x === "number" && typeof p.y === "number" && Number.isFinite(p.x) && Number.isFinite(p.y)) {
+        mob.x = p.x;
+        mob.y = p.y;
+        mob.authX = p.x;
+        mob.authY = p.y;
+        mob.lastAuthAt = Date.now();
+      }
       mob.hp = Number(p.hp ?? mob.hp);
       mob.inCombat = true;
       mob.hitFlashTimer = 0.14;
@@ -900,7 +1079,16 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
     }
 
     if (ev.type === "sunny.mobsRespawned") {
-      const list = (p.mobs as Array<{ id: string; hp: number; maxHp: number; spawnProtectUntil: number }>) ?? [];
+      const list =
+        (p.mobs as Array<{
+          id: string;
+          hp: number;
+          maxHp: number;
+          x?: number;
+          y?: number;
+          facing?: number;
+          spawnProtectUntil: number;
+        }>) ?? [];
       for (const rm of list) {
         const mob = mobsById.get(rm.id);
         if (!mob) continue;
@@ -910,10 +1098,17 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
         mob.maxHp = rm.maxHp;
         mob.displayHp = rm.hp;
         mob.inCombat = false;
-        mob.x = mob.homeX;
-        mob.y = mob.homeY;
+        mob.x = typeof rm.x === "number" ? rm.x : mob.homeX;
+        mob.y = typeof rm.y === "number" ? rm.y : mob.homeY;
         mob.vx = 0;
         mob.vy = 0;
+        if (typeof rm.facing === "number") mob.facing = rm.facing < 0 ? -1 : 1;
+        mob.authX = mob.x;
+        mob.authY = mob.y;
+        mob.authVx = 0;
+        mob.authVy = 0;
+        mob.authFacing = mob.facing;
+        mob.lastAuthAt = 0;
         mob.hitStunTimer = 0;
         // Measure the protection from the event's own timestamp: `serverTime` is the last
         // snapshot's, which may be minutes old when an event arrives on its own.
@@ -985,21 +1180,43 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
       return;
     }
 
-    if (ev.type === "sunny.playerDied" && p.playerId === ctx.playerId) {
-      enterDeath(Number(p.lostXp ?? localPlayer.xp), Number(p.lostCoins ?? localPlayer.coins));
+    if (ev.type === "sunny.playerDied") {
+      const pid = String(p.playerId ?? "");
+      if (pid === ctx.playerId) {
+        enterDeath(Number(p.lostXp ?? localPlayer.xp), Number(p.lostCoins ?? localPlayer.coins));
+      } else if (pid) {
+        const rp = remotePlayers.get(pid);
+        if (rp) rp.dead = true;
+      }
       return;
     }
 
-    if (ev.type === "sunny.playerRespawned" && p.playerId === ctx.playerId) {
-      leaveDeath();
-      if (typeof p.hp === "number") localPlayer.hp = p.hp;
-      localPlayer.x = Number(p.x ?? compiledStage.spawn.x);
-      localPlayer.y = Number(p.y ?? compiledStage.spawn.y - localPlayer.h);
-      localPlayer.vx = 0;
-      localPlayer.vy = 0;
-      localPlayer.invulnTimer = 2.0;
-      spawnText(localPlayer.x + 14, localPlayer.y - 20, "부활!", "info");
-      spawnSparkles(localPlayer.x + 14, localPlayer.y + 20, "#FFD740", 16);
+    if (ev.type === "sunny.playerRespawned") {
+      const pid = String(p.playerId ?? "");
+      if (pid === ctx.playerId) {
+        leaveDeath();
+        if (typeof p.hp === "number") localPlayer.hp = p.hp;
+        localPlayer.x = Number(p.x ?? compiledStage.spawn.x);
+        localPlayer.y = Number(p.y ?? compiledStage.spawn.y - localPlayer.h);
+        localPlayer.vx = 0;
+        localPlayer.vy = 0;
+        localPlayer.invulnTimer = 2.0;
+        spawnText(localPlayer.x + 14, localPlayer.y - 20, "부활!", "info");
+        spawnSparkles(localPlayer.x + 14, localPlayer.y + 20, "#FFD740", 16);
+      } else if (pid) {
+        const rp = remotePlayers.get(pid);
+        if (rp) {
+          rp.dead = false;
+          if (typeof p.x === "number") {
+            rp.x = p.x;
+            rp.targetX = p.x;
+          }
+          if (typeof p.y === "number") {
+            rp.y = p.y;
+            rp.targetY = p.y;
+          }
+        }
+      }
       return;
     }
 
@@ -1093,14 +1310,19 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
     void audio.unlock();
     keysDown.add(e.code);
 
-    // Quick weapon selection 1..9, 0
-    if (e.code.startsWith("Digit")) {
+    // Quick weapon selection 1..9, 0 and rapid Q / E cycling (handled on keydown so fast taps never drop)
+    if (e.code.startsWith("Digit") && !e.repeat) {
       const digit = Number(e.code.slice(5));
       const idx = digit === 0 ? 9 : digit - 1;
       const wid = WEAPON_ORDER[idx];
-      if (wid && localPlayer.unlockedWeapons.includes(wid) && localPlayer.equippedWeaponId !== wid) {
-        localPlayer.equippedWeaponId = wid;
-        actions.sendAction({ type: "switchWeapon", payload: { weaponId: wid } });
+      if (wid) selectWeaponLocal(wid);
+    } else if ((e.code === "KeyQ" || e.code === "KeyE") && !e.repeat) {
+      if (localPlayer.unlockedWeapons.length > 1) {
+        const delta = e.code === "KeyE" ? 1 : -1;
+        const idx = localPlayer.unlockedWeapons.indexOf(localPlayer.equippedWeaponId);
+        const nextWid =
+          localPlayer.unlockedWeapons[(idx + delta + localPlayer.unlockedWeapons.length) % localPlayer.unlockedWeapons.length]!;
+        selectWeaponLocal(nextWid);
       }
     }
   };
@@ -1170,7 +1392,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
       return;
     }
 
-    updateMovingPlatforms(compiledStage.movingPlatforms, dt);
+    updateMovingPlatforms(compiledStage.movingPlatforms, dt, now + serverClockOffset);
     stepLocalPlayer(dt, now);
     stepMobs(dt, now);
     stepProjectiles(dt, now);
@@ -1200,14 +1422,13 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
     p.squashX += (1 - p.squashX) * Math.min(1, dt * 15);
     p.squashY += (1 - p.squashY) * Math.min(1, dt * 15);
 
-    // Weapon cycle & potion
-    if (justPressed("weaponPrev") || justPressed("weaponNext")) {
+    // Virtual touch weapon cycling (keyboard Q/E is handled directly in onKeyDown for zero missed rapid taps)
+    if ((virtualDown.has("weaponPrev") && justPressed("weaponPrev")) || (virtualDown.has("weaponNext") && justPressed("weaponNext"))) {
       if (p.unlockedWeapons.length > 1) {
         const delta = justPressed("weaponNext") ? 1 : -1;
         const idx = p.unlockedWeapons.indexOf(p.equippedWeaponId);
         const nextWid = p.unlockedWeapons[(idx + delta + p.unlockedWeapons.length) % p.unlockedWeapons.length]!;
-        p.equippedWeaponId = nextWid;
-        actions.sendAction({ type: "switchWeapon", payload: { weaponId: nextWid } });
+        selectWeaponLocal(nextWid);
       }
     }
     if (justPressed("potion") && p.potions > 0 && p.hp < p.maxHp) {
@@ -1581,7 +1802,14 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
     // Sync to server for authoritative XP, cooperative rewards, and multiplayer broadcast
     actions.sendAction({
       type: "attackMob",
-      payload: { mobId: mob.id, knockDir, clientHitId, damageRoll }
+      payload: {
+        mobId: mob.id,
+        knockDir,
+        clientHitId,
+        damageRoll,
+        mobX: Math.round(mob.x),
+        mobY: Math.round(mob.y)
+      }
     });
   }
 
@@ -1592,6 +1820,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
     attackCooldown = w.cooldown;
     p.attackAnimDuration = Math.min(0.24, w.cooldown * 0.78);
     p.attackAnimTimer = p.attackAnimDuration;
+    poseSendTimer = 0.085;
     p.squashX = 1.14;
     p.squashY = 0.9;
     audio.playSfx(w.sfx, 0.06);
@@ -1700,9 +1929,6 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
   }
 
   function stepMobs(dt: number, now: number): void {
-    const px = localPlayer.x + localPlayer.w * 0.5;
-    const py = localPlayer.y + localPlayer.h * 0.5;
-
     for (const mob of mobs) {
       if (!mob.alive) continue;
       mob.animTimer += dt;
@@ -1717,10 +1943,18 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
       const isProtected = now < mob.spawnProtectUntil;
       const mx = mob.x + mob.w * 0.5;
       const my = mob.y + mob.h * 0.5;
+      // Target the nearest alive player across ALL players on this stage (not only localPlayer!)
+      const auth = getMobAuthority(mob, now);
+      const px = auth.targetX;
+      const py = auth.targetY;
       const dx = px - mx;
       const dy = py - my;
       const dist = Math.hypot(dx, dy);
-      const seesPlayer = !isProtected && Math.abs(dx) <= mob.tpl.aggroRange && Math.abs(dy) <= (mob.tpl.flying ? 260 : 105);
+      const seesPlayer =
+        auth.hasTarget &&
+        !isProtected &&
+        Math.abs(dx) <= mob.tpl.aggroRange &&
+        Math.abs(dy) <= (mob.tpl.flying ? 260 : 105);
 
       if (seesPlayer && !mob.inCombat && dist <= mob.tpl.aggroRange * 0.82) {
         mob.inCombat = true;
@@ -1776,6 +2010,27 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
         }
       }
 
+      // Smooth reconciliation to nearest-player authoritative kinematics when another player is closer
+      if (!isProtected && !auth.isLocalAuthority && mob.hitStunTimer <= 0 && now - mob.lastAuthAt < 1100) {
+        const errX = mob.authX - mob.x;
+        const errY = mob.authY - mob.y;
+        const errDist = Math.hypot(errX, errY);
+        if (errDist > 120) {
+          mob.x = mob.authX;
+          mob.y = mob.authY;
+          mob.vx = mob.authVx;
+          mob.vy = mob.authVy;
+          mob.facing = mob.authFacing;
+        } else if (errDist > 2) {
+          const blend = 1 - Math.exp(-16 * dt);
+          mob.x += errX * blend;
+          mob.y += errY * blend;
+          mob.vx += (mob.authVx - mob.vx) * blend;
+          mob.vy += (mob.authVy - mob.vy) * blend;
+          mob.facing = mob.authFacing;
+        }
+      }
+
       // Contact damage (blocked during 2-second spawn protection or hitstun!)
       if (!isProtected && mob.hitStunTimer <= 0 && localPlayer.invulnTimer <= 0) {
         const box = { x: mob.x + 5, y: mob.y + 5, w: mob.w - 10, h: mob.h - 6 };
@@ -1803,7 +2058,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
     if (mob.tpl.rangedAttack && seesPlayer) {
       mob.shootTimer -= dt;
       if (mob.shootTimer <= 0) {
-        mob.shootTimer = mob.tpl.rangedAttack.cooldownSec * (0.85 + Math.random() * 0.3);
+        mob.shootTimer = mob.tpl.rangedAttack.cooldownSec;
         mob.facing = dx >= 0 ? 1 : -1;
         spawnEnemyShot(mob, px, py);
       }
@@ -1827,7 +2082,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
         mob.grounded = false;
         mob.squashX = 0.8;
         mob.squashY = 1.24;
-        mob.aiTimer = (mob.tpl.hopInterval ?? 1.4) * (0.85 + Math.random() * 0.25);
+        mob.aiTimer = mob.tpl.hopInterval ?? 1.4;
         if (ai === "double_hop") mob.aiPhase = "can_double";
       } else if (ai === "double_hop" && !mob.grounded && mob.aiPhase === "can_double" && mob.vy > -40) {
         mob.vy = -340;
@@ -2001,6 +2256,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
             );
           }
           localPlayer.equippedWeaponId = tpl.weaponId;
+          pendingWeaponSwitch = { weaponId: tpl.weaponId, seq: 0, expiresAt: now + 2500 };
           spawnText(item.x, item.y - 24, `★ ${tpl.name} 획득!`, "crit");
           spawnSparkles(item.x, item.y, tpl.glowColor, 16);
           audio.playSfx(tpl.sfx, 0);
@@ -2070,6 +2326,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
     poseSendTimer += dt;
     if (poseSendTimer >= 0.085 && actions.sendSignal && ctx.connected !== false && !downed()) {
       poseSendTimer = 0;
+      const now = Date.now();
       const animState =
         localPlayer.attackAnimTimer > 0
           ? "attack"
@@ -2080,6 +2337,28 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
               : Math.abs(localPlayer.vx) > 15
                 ? "walk"
                 : "idle";
+
+      // Attach compact kinematics for up to 12 nearby mobs where localPlayer is the nearest alive player
+      const ownedMobs: Array<{ dist: number; tuple: [string, number, number, number, number, number] }> = [];
+      for (const mob of mobs) {
+        if (!mob.alive || now < mob.spawnProtectUntil) continue;
+        const auth = getMobAuthority(mob, now);
+        if (!auth.isLocalAuthority || auth.localDist > 1200) continue;
+        ownedMobs.push({
+          dist: auth.localDist,
+          tuple: [
+            mob.id,
+            Math.round(mob.x),
+            Math.round(mob.y),
+            Math.round(mob.vx),
+            Math.round(mob.vy),
+            mob.facing < 0 ? -1 : 1
+          ]
+        });
+      }
+      ownedMobs.sort((a, b) => a.dist - b.dist);
+      const mobSyncPayload = ownedMobs.slice(0, 12).map((m) => m.tuple);
+
       actions.sendSignal({
         type: "playerPose",
         payload: {
@@ -2088,7 +2367,8 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
           vx: Math.round(localPlayer.vx),
           vy: Math.round(localPlayer.vy),
           facing: localPlayer.facing,
-          animState
+          animState,
+          ...(mobSyncPayload.length > 0 ? { mobs: mobSyncPayload } : {})
         }
       });
     }

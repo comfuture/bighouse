@@ -1442,7 +1442,7 @@ export class SunnyRenderer {
       const walkBob = moving ? Math.abs(Math.sin(this.time * 12 + rp.x * 0.05)) * 4 : Math.sin(this.time * 3 + rp.x) * 1;
 
       ctx.save();
-      ctx.globalAlpha = 0.92;
+      ctx.globalAlpha = rp.dead ? 0.38 : 0.92;
       ctx.fillStyle = "rgba(45, 32, 18, 0.22)";
       ctx.beginPath();
       ctx.ellipse(footX, footY + 1, 15, 4, 0, 0, Math.PI * 2);
@@ -1455,7 +1455,16 @@ export class SunnyRenderer {
       }
       if (sheet) {
         const w = WEAPON_CATALOG[rp.equippedWeaponId] ?? WEAPON_CATALOG.wooden_sword!;
-        ctx.drawImage(sheet, w.iconIndex * 96, 0, 96, 96, 6, -46, 32, 32);
+        ctx.save();
+        ctx.translate(10, -22);
+        if (rp.animState === "attack") {
+          ctx.rotate(0.85 + Math.sin(this.time * 28) * 0.35);
+          ctx.scale(1.15, 1.15);
+        } else {
+          ctx.rotate(-0.2);
+        }
+        ctx.drawImage(sheet, w.iconIndex * 96, 0, 96, 96, -4, -26, 34, 34);
+        ctx.restore();
       }
       ctx.restore();
 
