@@ -5,6 +5,7 @@ import tilesetMeadowUrl from "./assets/images/tileset_meadow.png?url";
 import heroUrl from "./assets/images/hero.png?url";
 import heroSheetUrl from "./assets/images/hero_sheet.png?url";
 import itemsSheetUrl from "./assets/images/items_sheet.png?url";
+import economySheetUrl from "./assets/images/economy_sheet.png?url";
 import mobRedMushroomUrl from "./assets/images/mob_red_mushroom.png?url";
 import mobRedMushroomSheetUrl from "./assets/images/mob_red_mushroom_sheet.png?url";
 import mobYellowHamsterUrl from "./assets/images/mob_yellow_hamster.png?url";
@@ -38,9 +39,23 @@ import {
   WEAPON_CATALOG,
   WEAPON_ORDER
 } from "./catalogs";
+import {
+  computeEffectiveCombatStats,
+  getWeaponUpgrade
+} from "./economy";
 import type { CompiledStage, RuntimeDecoration, RuntimePlatform, RuntimePortal } from "./map-schema";
 import { computeXpEfficiency } from "./progression";
-import type { ActiveStatusEffect, RemotePlayerView, StageTheme, StatusEffectKind } from "./types";
+import type { ActiveStatusEffect, RemotePlayerView, StageTheme, StatusEffectKind, WeaponUpgradeState } from "./types";
+
+export { economySheetUrl, itemsSheetUrl, heroUrl };
+
+/** Logical canvas hitbox of the clickable Coin badge in the top-right HUD (opens Shop). */
+export const HUD_COIN_HITBOX = {
+  x: VIEWPORT.width - 238,
+  y: 44,
+  w: 226,
+  h: 32
+} as const;
 
 const IMAGE_URLS: Record<string, string> = {
   bg_sky: bgSkyUrl,
@@ -50,6 +65,7 @@ const IMAGE_URLS: Record<string, string> = {
   hero: heroUrl,
   hero_sheet: heroSheetUrl,
   items_sheet: itemsSheetUrl,
+  economy_sheet: economySheetUrl,
   red_mushroom: mobRedMushroomUrl,
   red_mushroom_sheet: mobRedMushroomSheetUrl,
   yellow_hamster: mobYellowHamsterUrl,
@@ -96,6 +112,7 @@ export type ClientMobRender = {
   animTimer: number;
   drawScale: number;
   hasCrown: boolean;
+  isElite?: boolean;
   squashX: number;
   squashY: number;
   statuses: Partial<Record<StatusEffectKind, ActiveStatusEffect>>;
@@ -108,6 +125,23 @@ export type ClientItemRender = {
   y: number;
   available: boolean;
   bobPhase: number;
+  /** Counts down when a Treasure Chest has just been opened to show the open-lid golden glow */
+  openingTimer?: number;
+};
+
+export type ClientLootDrop = {
+  id: string;
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  sheet: "economy" | "items";
+  iconIndex: number;
+  color: string;
+  label?: string;
+  age: number;
+  arcDuration: number;
+  collected: boolean;
 };
 
 export type ClientProjectileRender = {
@@ -209,12 +243,15 @@ export type LocalPlayerRender = {
   hp: number;
   maxHp: number;
   baseAtk: number;
+  baseDex: number;
   potions: number;
   coins: number;
   score: number;
   mobsDefeated: number;
   unlockedWeapons: string[];
   equippedWeaponId: string;
+  weaponUpgrades: Record<string, WeaponUpgradeState>;
+  inMenu: boolean;
   invulnTimer: number;
   slowTimer: number;
   statuses: Partial<Record<StatusEffectKind, ActiveStatusEffect>>;
@@ -239,10 +276,12 @@ export type RenderScene = {
   remotePlayers: RemotePlayerView[];
   mobs: ClientMobRender[];
   items: ClientItemRender[];
+  lootDrops: ClientLootDrop[];
   projectiles: ClientProjectileRender[];
   damageTexts: ClientDamageText[];
   hitEffects: ClientHitEffect[];
   particles: ClientParticle[];
+  coinHover?: boolean;
   stagePlayerCount: number;
   totalPlayersOnline: number;
 };
@@ -311,6 +350,7 @@ export class SunnyRenderer {
     this.drawMobs(ctx, scene.mobs, scene.now, camX, W);
     this.drawRemotePlayers(ctx, scene.remotePlayers, camX, W);
     this.drawLocalPlayer(ctx, scene.player);
+    this.drawLootDrops(ctx, scene.lootDrops);
     this.drawProjectiles(ctx, scene.projectiles);
     this.drawEffects(ctx, scene.hitEffects, scene.particles, scene.damageTexts);
     this.drawSignTooltip(ctx, scene.player.nearbySign);
@@ -1281,6 +1321,7 @@ export class SunnyRenderer {
     viewW: number
   ): void {
     const sheet = this.images.items_sheet;
+    const econSheet = this.images.economy_sheet;
     const cellSize = 96;
     for (const item of items) {
       const tpl = ITEM_CATALOG[item.templateId];
@@ -1288,6 +1329,68 @@ export class SunnyRenderer {
       if (tpl.category === "weapon" && tpl.weaponId && player.unlockedWeapons.includes(tpl.weaponId)) {
         continue;
       }
+      if (tpl.category === "chest") {
+        const opening = (item.openingTimer ?? 0) > 0;
+        if (!item.available && !opening) continue;
+        if (item.x < camX - 64 || item.x > camX + viewW + 64) continue;
+
+        const ix = item.x;
+        const iy = item.y + 4;
+        const drawSize = 52;
+        ctx.save();
+        if (!item.available && opening) {
+          const t = Math.min(1, (item.openingTimer ?? 0) / 1.25);
+          ctx.globalAlpha = Math.min(1, t * 2.2);
+          // Golden light beam bursting out of the open chest
+          const beam = ctx.createLinearGradient(ix, iy, ix, iy - 110);
+          beam.addColorStop(0, "rgba(255, 215, 64, 0.72)");
+          beam.addColorStop(1, "rgba(255, 215, 64, 0)");
+          ctx.fillStyle = beam;
+          ctx.beginPath();
+          ctx.moveTo(ix - 20, iy);
+          ctx.lineTo(ix - 36, iy - 110);
+          ctx.lineTo(ix + 36, iy - 110);
+          ctx.lineTo(ix + 20, iy);
+          ctx.closePath();
+          ctx.fill();
+        } else {
+          // Shimmering treasure aura for closed chest
+          const pulse = 1 + Math.sin(this.time * 4.5 + item.bobPhase) * 0.08;
+          const glow = ctx.createRadialGradient(ix, iy, 4, ix, iy, 36 * pulse);
+          glow.addColorStop(0, "rgba(255, 215, 64, 0.72)");
+          glow.addColorStop(1, "rgba(255, 215, 64, 0)");
+          ctx.fillStyle = glow;
+          ctx.beginPath();
+          ctx.arc(ix, iy, 36 * pulse, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        if (econSheet) {
+          const iconCol = item.available ? 0 : 1;
+          const popScale = !item.available && opening ? 1 + Math.sin((1 - (item.openingTimer ?? 0) / 1.25) * Math.PI) * 0.14 : 1;
+          const sz = drawSize * popScale;
+          ctx.drawImage(econSheet, iconCol * cellSize, 0, cellSize, cellSize, ix - sz * 0.5, iy - sz * 0.52, sz, sz);
+        }
+
+        if (item.available) {
+          ctx.font = 'bold 11.5px "Pretendard", "Apple SD Gothic Neo", sans-serif';
+          ctx.textAlign = "center";
+          const label = "★ 보물 상자";
+          const tw = ctx.measureText(label).width + 14;
+          ctx.fillStyle = "rgba(54, 34, 14, 0.86)";
+          ctx.strokeStyle = "#FFD740";
+          ctx.lineWidth = 1.6;
+          ctx.beginPath();
+          ctx.roundRect(ix - tw * 0.5, iy - 42, tw, 19, 9);
+          ctx.fill();
+          ctx.stroke();
+          ctx.fillStyle = "#FFF176";
+          ctx.fillText(label, ix, iy - 29);
+        }
+        ctx.restore();
+        continue;
+      }
+
       if (tpl.category !== "weapon" && !item.available) continue;
       if (item.x < camX - 48 || item.x > camX + viewW + 48) continue;
 
@@ -1322,6 +1425,38 @@ export class SunnyRenderer {
         ctx.fill();
         ctx.fillStyle = "#FFF59D";
         ctx.fillText(label, ix, iy - 24);
+      }
+      ctx.restore();
+    }
+  }
+
+  private drawLootDrops(ctx: CanvasRenderingContext2D, drops: ClientLootDrop[]): void {
+    const itemsSheet = this.images.items_sheet;
+    const econSheet = this.images.economy_sheet;
+    for (const d of drops) {
+      const sheet = d.sheet === "economy" ? econSheet : itemsSheet;
+      const sz = d.sheet === "economy" ? 34 : 26;
+      ctx.save();
+      const glow = ctx.createRadialGradient(d.x, d.y, 2, d.x, d.y, sz * 0.82);
+      glow.addColorStop(0, d.color);
+      glow.addColorStop(1, "rgba(255,255,255,0)");
+      ctx.fillStyle = glow;
+      ctx.globalAlpha = 0.72;
+      ctx.beginPath();
+      ctx.arc(d.x, d.y, sz * 0.82, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.globalAlpha = 1;
+      if (sheet) {
+        ctx.drawImage(sheet, d.iconIndex * 96, 0, 96, 96, d.x - sz * 0.5, d.y - sz * 0.5, sz, sz);
+      }
+      if (d.label && d.age < d.arcDuration + 0.2) {
+        ctx.font = 'bold 11px "Pretendard", sans-serif';
+        ctx.textAlign = "center";
+        ctx.strokeStyle = "rgba(32, 20, 10, 0.9)";
+        ctx.lineWidth = 3;
+        ctx.strokeText(d.label, d.x, d.y - 20);
+        ctx.fillStyle = d.color;
+        ctx.fillText(d.label, d.x, d.y - 20);
       }
       ctx.restore();
     }
@@ -1650,9 +1785,9 @@ export class SunnyRenderer {
     ctx.textAlign = "center";
     ctx.lineWidth = 3;
     ctx.strokeStyle = "rgba(42, 26, 14, 0.88)";
-    const title = `Lv.${mob.level} ${mob.name}`;
+    const title = mob.isElite && !mob.hasCrown ? `★ Lv.${mob.level} ${mob.name}` : `Lv.${mob.level} ${mob.name}`;
     ctx.strokeText(title, cx, y - 5);
-    ctx.fillStyle = mob.hasCrown ? "#FFD740" : "#FFFFFF";
+    ctx.fillStyle = mob.hasCrown ? "#FFD740" : mob.isElite ? "#FFAB40" : "#FFFFFF";
     ctx.fillText(title, cx, y - 5);
 
     ctx.fillStyle = "rgba(35, 22, 12, 0.88)";
@@ -1715,7 +1850,12 @@ export class SunnyRenderer {
       );
 
       ctx.save();
-      ctx.globalAlpha = rp.dead ? 0.38 : 0.92;
+      if (rp.inMenu) {
+        ctx.filter = "grayscale(100%)";
+        ctx.globalAlpha = 0.48;
+      } else {
+        ctx.globalAlpha = rp.dead ? 0.38 : 0.92;
+      }
       ctx.fillStyle = "rgba(45, 32, 18, 0.22)";
       ctx.beginPath();
       ctx.ellipse(footX, footY + 1, 15 * pose.shadowScale, 4 * pose.shadowScale, 0, 0, Math.PI * 2);
@@ -1747,7 +1887,7 @@ export class SunnyRenderer {
       ctx.restore();
 
       // Overhead Player Name + Level Badge
-      this.drawPlayerNameTag(ctx, footX, rp.y - 24, rp.displayName, rp.level, false);
+      this.drawPlayerNameTag(ctx, footX, rp.y - 24, rp.displayName, rp.level, false, Boolean(rp.inMenu));
     }
   }
 
@@ -1781,7 +1921,12 @@ export class SunnyRenderer {
     );
 
     ctx.save();
-    if (flicker) ctx.globalAlpha = 0.45;
+    if (p.inMenu) {
+      ctx.filter = "grayscale(100%)";
+      ctx.globalAlpha = 0.48;
+    } else if (flicker) {
+      ctx.globalAlpha = 0.45;
+    }
     if (p.grounded) {
       ctx.fillStyle = "rgba(45, 32, 18, 0.28)";
       ctx.beginPath();
@@ -1818,7 +1963,7 @@ export class SunnyRenderer {
     ctx.restore();
 
     // Local Player Overhead Name + Level Tag
-    this.drawPlayerNameTag(ctx, footX, p.y - 24, p.displayName, p.level, true);
+    this.drawPlayerNameTag(ctx, footX, p.y - 24, p.displayName, p.level, true, p.inMenu);
 
     // Local player active status visuals
     if (p.statuses) {
@@ -1859,21 +2004,26 @@ export class SunnyRenderer {
     y: number,
     name: string,
     level: number,
-    isSelf: boolean
+    isSelf: boolean,
+    inMenu = false
   ): void {
     ctx.save();
     ctx.font = 'bold 11.5px "Pretendard", "Apple SD Gothic Neo", sans-serif';
-    const label = `Lv.${level} ${name}`;
+    const label = inMenu ? `정비 중 · Lv.${level} ${name}` : `Lv.${level} ${name}`;
     const tw = ctx.measureText(label).width + 14;
-    ctx.fillStyle = isSelf ? "rgba(46, 30, 12, 0.86)" : "rgba(25, 38, 56, 0.78)";
-    ctx.strokeStyle = isSelf ? "#FFD740" : "rgba(255, 255, 255, 0.55)";
+    ctx.fillStyle = inMenu
+      ? "rgba(62, 68, 76, 0.82)"
+      : isSelf
+        ? "rgba(46, 30, 12, 0.86)"
+        : "rgba(25, 38, 56, 0.78)";
+    ctx.strokeStyle = inMenu ? "#CFD8DC" : isSelf ? "#FFD740" : "rgba(255, 255, 255, 0.55)";
     ctx.lineWidth = 1.6;
     ctx.beginPath();
     ctx.roundRect(cx - tw * 0.5, y - 10, tw, 19, 9);
     ctx.fill();
     ctx.stroke();
 
-    ctx.fillStyle = isSelf ? "#FFF59D" : "#FFFFFF";
+    ctx.fillStyle = inMenu ? "#ECEFF1" : isSelf ? "#FFF59D" : "#FFFFFF";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
     ctx.fillText(label, cx, y);
@@ -2175,16 +2325,20 @@ export class SunnyRenderer {
     ctx.font = 'bold 10px "Pretendard", sans-serif';
     ctx.fillText(`EXP ${p.xp.toLocaleString()} / ${p.xpToNext.toLocaleString()}`, barX + barW * 0.5, 46);
 
-    // ATK + Potions row
+    // ATK / DEX + Potions row (reflecting weapon enhancements!)
+    const eqUpgrade = getWeaponUpgrade(p.weaponUpgrades, wObj.id);
+    const combatStats = computeEffectiveCombatStats(wObj, p.baseAtk, p.baseDex, eqUpgrade);
     ctx.textAlign = "left";
-    ctx.font = 'bold 11.5px "Pretendard", sans-serif';
+    ctx.font = 'bold 11px "Pretendard", sans-serif';
     ctx.fillStyle = "#FFE082";
-    ctx.fillText(`ATK ${p.baseAtk + wObj.atk}`, barX, 71);
+    ctx.fillText(`ATK ${combatStats.totalAtk}`, barX, 71);
+    ctx.fillStyle = "#A5D6A7";
+    ctx.fillText(`DEX ${combatStats.totalDex}`, barX + 56, 71);
     if (sheet) {
-      ctx.drawImage(sheet, 96, 0, 96, 96, barX + 78, 57, 22, 22);
+      ctx.drawImage(sheet, 96, 0, 96, 96, barX + 106, 57, 22, 22);
     }
     ctx.fillStyle = p.potions > 0 ? "#FFCDD2" : "#9E9E9E";
-    ctx.fillText(`포션 ×${p.potions} [F]`, barX + 102, 71);
+    ctx.fillText(`×${p.potions} [F]`, barX + 130, 71);
 
     // Active Player Status Pills & Idle Regen Badge directly beneath top-left HUD card
     {
@@ -2291,21 +2445,63 @@ export class SunnyRenderer {
       ctx.fillText("⚠ 경험치 효율 낮음 — 다음 스테이지로 이동하세요!", W * 0.5, 83);
     }
 
-    // --- Top-Right: Score / Coins / Mobs ---
-    ctx.fillStyle = "rgba(42, 26, 14, 0.80)";
-    ctx.strokeStyle = "rgba(255, 224, 130, 0.65)";
+    // --- Top-Right: Clearly Separated Points Pill & Clickable Coin Shop Pill with Icons ---
+    // 1. Points + Mobs Defeated Pill
+    const ptsX = W - 238;
+    const ptsY = 10;
+    const ptsW = 226;
+    const ptsH = 29;
+    ctx.fillStyle = "rgba(38, 25, 15, 0.84)";
+    ctx.strokeStyle = "rgba(255, 224, 130, 0.55)";
+    ctx.lineWidth = 1.8;
     ctx.beginPath();
-    ctx.roundRect(W - 220, 10, 208, 56, 14);
+    ctx.roundRect(ptsX, ptsY, ptsW, ptsH, 10);
     ctx.fill();
     ctx.stroke();
 
+    // Star / Trophy icon for Points
+    this.drawStar(ctx, ptsX + 16, ptsY + 14.5, 8.5, 5, "#FFD740", "#5D3A1A");
+    ctx.textAlign = "left";
+    ctx.textBaseline = "middle";
+    ctx.font = '800 13px "Pretendard", sans-serif';
+    ctx.fillStyle = "#FFF59D";
+    ctx.fillText(`${p.score.toLocaleString()} PTS`, ptsX + 30, ptsY + 15);
     ctx.textAlign = "right";
-    ctx.font = 'bold 15px "Pretendard", sans-serif';
+    ctx.font = 'bold 10.5px "Pretendard", sans-serif';
+    ctx.fillStyle = "#C8E6C9";
+    ctx.fillText(`처치 ${p.mobsDefeated}`, ptsX + ptsW - 10, ptsY + 15);
+
+    // 2. Coin Pill (Clickable -> Opens Shop!)
+    const cb = HUD_COIN_HITBOX;
+    ctx.fillStyle = scene.coinHover ? "rgba(92, 58, 18, 0.94)" : "rgba(56, 36, 14, 0.86)";
+    ctx.strokeStyle = scene.coinHover ? "#FFE57F" : "#FFB300";
+    ctx.lineWidth = scene.coinHover ? 2.4 : 1.8;
+    ctx.beginPath();
+    ctx.roundRect(cb.x, cb.y, cb.w, cb.h, 11);
+    ctx.fill();
+    ctx.stroke();
+
+    // Gleaming Gold Coin icon from items_sheet (cell 3)
+    if (sheet) {
+      ctx.drawImage(sheet, 3 * 96, 0, 96, 96, cb.x + 6, cb.y + 4, 24, 24);
+    }
+    ctx.textAlign = "left";
+    ctx.font = '800 13.5px "Pretendard", sans-serif';
     ctx.fillStyle = "#FFD740";
-    ctx.fillText(`${p.score.toLocaleString()} PTS`, W - 22, 29);
-    ctx.font = 'bold 11.5px "Pretendard", sans-serif';
-    ctx.fillStyle = "#E8F5E9";
-    ctx.fillText(`코인 ${p.coins}  ·  총 처치 ${p.mobsDefeated}`, W - 22, 49);
+    ctx.fillText(`${p.coins.toLocaleString()} 코인`, cb.x + 34, cb.y + 16.5);
+
+    // Subtle "상점" button chip inside Coin Pill
+    const chipW = 54;
+    const chipX = cb.x + cb.w - chipW - 7;
+    const chipY = cb.y + 6;
+    ctx.fillStyle = scene.coinHover ? "#FFD740" : "rgba(255, 215, 64, 0.22)";
+    ctx.beginPath();
+    ctx.roundRect(chipX, chipY, chipW, 20, 8);
+    ctx.fill();
+    ctx.textAlign = "center";
+    ctx.font = '800 10.5px "Pretendard", sans-serif';
+    ctx.fillStyle = scene.coinHover ? "#4A2C14" : "#FFF8E1";
+    ctx.fillText("상점 ▸", chipX + chipW * 0.5, chipY + 10.5);
 
     // --- Bottom-Center: Unlocked Weapons Bar ---
     const visibleWeapons = p.unlockedWeapons.slice(-6);
@@ -2344,6 +2540,16 @@ export class SunnyRenderer {
       ctx.textAlign = "left";
       ctx.textBaseline = "top";
       ctx.fillText(orderIdx === 10 ? "0" : String(orderIdx), sx + 3, sy + 2);
+
+      const u = getWeaponUpgrade(p.weaponUpgrades, wid);
+      const uTot = u.atkLevel + u.dexLevel;
+      if (uTot > 0) {
+        ctx.fillStyle = "#FFAB40";
+        ctx.font = "900 10px sans-serif";
+        ctx.textAlign = "right";
+        ctx.textBaseline = "bottom";
+        ctx.fillText(`+${uTot}`, sx + slotSize - 3, sy + slotSize - 2);
+      }
     });
 
     ctx.font = 'bold 12px "Pretendard", sans-serif';
@@ -2361,7 +2567,8 @@ export class SunnyRenderer {
       }
     }
     const traitText = traits.length > 0 ? ` · ★ ${traits.join(" + ")}` : "";
-    const wInfo = `${wObj.name} (ATK +${wObj.atk} / 총 ${p.baseAtk + wObj.atk})${traitText} · Q/E 교체`;
+    const upgTag = combatStats.totalLevel > 0 ? ` +${combatStats.totalLevel}` : "";
+    const wInfo = `${wObj.name}${upgTag} (총 ATK ${combatStats.totalAtk} · DEX ${combatStats.totalDex})${traitText} · Q/E 교체 · [I] 인벤토리`;
     ctx.strokeText(wInfo, W * 0.5, barTop - 10);
     ctx.fillStyle = "#FFF8E1";
     ctx.fillText(wInfo, W * 0.5, barTop - 10);
