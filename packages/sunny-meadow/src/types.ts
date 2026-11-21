@@ -50,6 +50,8 @@ export type MobTemplate = {
   hopInterval?: number;
   hasCrown?: boolean;
   isBoss?: boolean;
+  /** Elite / boss monsters have a rare chance to drop Upgrade Stones on defeat */
+  isElite?: boolean;
   dropChance: number;
   dropItem: string;
 };
@@ -117,7 +119,39 @@ export type WeaponTemplate = {
   description: string;
 };
 
-export type ItemCategory = "heal" | "potion" | "max_hp" | "coin" | "weapon";
+export type ItemCategory = "heal" | "potion" | "max_hp" | "coin" | "weapon" | "chest" | "stone";
+
+export type UpgradeStoneId = "stone_green" | "stone_blue" | "stone_orange" | "stone_red";
+
+export type WeaponUpgradeStat = "atk" | "dex";
+
+export type InventorySlot = {
+  itemId: string;
+  quantity: number;
+} | null;
+
+export type InventoryItemSpec = {
+  id: string;
+  name: string;
+  kind: "stone" | "consumable" | "relic";
+  stackable: boolean;
+  /** Default 20 for upgrade stones, 1 for non-stackables */
+  maxStack: number;
+  /** Sprite cell index in economy_sheet.png (when sheet === "economy") or items_sheet.png */
+  sheet: "economy" | "items";
+  iconIndex: number;
+  color: string;
+  buyPrice?: number;
+  sellPrice: number;
+  upgradeStat?: WeaponUpgradeStat;
+  description: string;
+};
+
+export type WeaponUpgradeState = {
+  atkLevel: number;
+  dexLevel: number;
+  failStreak: number;
+};
 
 export type ItemTemplate = {
   id: string;
@@ -314,6 +348,8 @@ export type PersistedPlayerProfile = {
   unlockedWeapons: string[];
   equippedWeaponId: string;
   weaponSwitchSeq?: number;
+  inventory?: InventorySlot[];
+  weaponUpgrades?: Record<string, WeaponUpgradeState>;
   highestStageNumber: number;
   lastStageId: string;
   lastX: number;
@@ -337,6 +373,7 @@ export type WorldPlayerState = {
   hp: number;
   maxHp: number;
   baseAtk: number;
+  baseDex?: number;
   goldenHeartBonus: number;
   potions: number;
   coins: number;
@@ -345,12 +382,20 @@ export type WorldPlayerState = {
   unlockedWeapons: string[];
   equippedWeaponId: string;
   weaponSwitchSeq?: number;
+  inventory?: InventorySlot[];
+  weaponUpgrades?: Record<string, WeaponUpgradeState>;
   highestStageNumber: number;
   lastUpdatedAt: number;
   /** Server timestamp of last active input/combat (used to validate 10s idle HP regen). */
   lastActivityAt?: number;
   /** Server timestamp of last idle HP regen tick (rate-limits gentle regen interval). */
   lastIdleRegenAt?: number;
+  /** Server timestamp of last shop/upgrade transaction (anti-abuse rate limiting). */
+  lastEconomyActionAt?: number;
+  /** Monotonic upgrade attempt counter for deterministic server-side upgrade rolls. */
+  upgradeAttempts?: number;
+  /** True while inventory or shop modal is open (gray semi-transparent & immune to stage interactions). */
+  inMenu?: boolean;
   /**
    * Set while the player is down and waiting to revive. A dead player takes no
    * actions and does not move. Absent on states saved before death existed.
@@ -430,4 +475,5 @@ export type RemotePlayerView = {
   maxHp: number;
   equippedWeaponId: string;
   dead?: boolean;
+  inMenu?: boolean;
 };
