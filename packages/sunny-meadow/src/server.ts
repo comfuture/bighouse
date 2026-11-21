@@ -20,6 +20,25 @@ import {
   WEAPON_CATALOG,
   WEAPON_ORDER
 } from "./catalogs";
+import {
+  addItemToInventory,
+  canAddItemToInventory,
+  computeChestCoinReward,
+  computeEffectiveCombatStats,
+  computePlayerBaseDex,
+  computeUpgradePreview,
+  countItemInInventory,
+  ECONOMY_ACTION_COOLDOWN_MS,
+  getWeaponUpgrade,
+  INVENTORY_ITEMS,
+  normalizeInventory,
+  normalizeWeaponUpgrades,
+  removeItemAtSlot,
+  removeItemFromInventory,
+  rollChestStoneDrop,
+  rollEliteStoneDrop,
+  SHOP_OFFERS_BY_ID
+} from "./economy";
 import { baseGameMetadata } from "./metadata";
 import {
   applyExperienceGain,
@@ -42,6 +61,7 @@ import type {
   ServerStageRuntime,
   StatusEffectKind,
   SunnyMeadowWorldState,
+  WeaponUpgradeStat,
   WorldPlayerState
 } from "./types";
 
@@ -67,6 +87,15 @@ export function computeDeterministicHit(
   const variance = 0.94 + ((clamped * 97) % 1) * 0.12;
   const damage = Math.max(1, Math.round(totalAtk * variance * (isCrit ? critMult : 1)));
   return { damage, isCrit };
+}
+
+function serverEntropyRoll(seed: string): number {
+  let h = 2166136261;
+  for (let i = 0; i < seed.length; i++) {
+    h ^= seed.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return (h >>> 0) / 4294967296;
 }
 
 function computeMobHome(
@@ -463,6 +492,7 @@ function createFreshPlayerState(
     hp,
     maxHp,
     baseAtk,
+    baseDex: computePlayerBaseDex(level),
     goldenHeartBonus,
     potions: typeof saved?.potions === "number" ? Math.max(0, Math.floor(saved.potions)) : PLAYER_CONFIG.startingPotions,
     coins: typeof saved?.coins === "number" ? Math.max(0, Math.floor(saved.coins)) : 0,
@@ -470,6 +500,8 @@ function createFreshPlayerState(
     mobsDefeated: typeof saved?.mobsDefeated === "number" ? Math.max(0, Math.floor(saved.mobsDefeated)) : 0,
     unlockedWeapons,
     equippedWeaponId,
+    inventory: normalizeInventory(saved?.inventory),
+    weaponUpgrades: normalizeWeaponUpgrades(saved?.weaponUpgrades),
     highestStageNumber,
     lastUpdatedAt: now,
     lastActivityAt: now
@@ -524,7 +556,8 @@ function nearbyPlayersOnStage(
           hp: ps.hp,
           maxHp: ps.maxHp,
           equippedWeaponId: ps.equippedWeaponId,
-          ...(ps.dead ? { dead: true } : {})
+          ...(ps.dead ? { dead: true } : {}),
+          ...(ps.inMenu ? { inMenu: true } : {})
         }
       });
     }
@@ -627,6 +660,19 @@ function checkAction(context: GameContext, action: ClientGameAction): ActionChec
   }
   if (ps.dead) {
     return { ok: false, code: "player_dead", message: "Player is down", stale: true };
+  }
+  if (action.type === "setMenuMode") {
+    return { ok: true };
+  }
+  // While in Inventory/Shop safe mode, player does not interact with stage mobs, items, or hazards!
+  if (
+    ps.inMenu &&
+    (action.type === "attackMob" ||
+      action.type === "collectItem" ||
+      action.type === "playerHurt" ||
+      action.type === "changeStage")
+  ) {
+    return { ok: false, code: "in_menu_mode", message: "Player is in inventory/shop safe mode", stale: true };
   }
 
   switch (action.type) {
@@ -749,6 +795,73 @@ function checkAction(context: GameContext, action: ClientGameAction): ActionChec
       }
       return { ok: true };
     }
+    case "shopBuy": {
+      if (ps.lastEconomyActionAt && context.now - ps.lastEconomyActionAt < ECONOMY_ACTION_COOLDOWN_MS) {
+        return { ok: false, code: "economy_cooldown", message: "잠시 후 다시 시도해주세요.", stale: true };
+      }
+      const offerId = typeof action.payload.offerId === "string" ? action.payload.offerId : "";
+      const offer = SHOP_OFFERS_BY_ID[offerId];
+      if (!offer) return { ok: false, code: "invalid_offer", message: "존재하지 않는 상품입니다." };
+      const qty = Math.floor(Number(action.payload.quantity ?? 1));
+      if (!Number.isFinite(qty) || qty < 1 || qty > 20) {
+        return { ok: false, code: "invalid_quantity", message: "구매 수량이 올바르지 않습니다." };
+      }
+      const totalCost = offer.buyPrice * qty;
+      if (ps.coins < totalCost) {
+        return { ok: false, code: "insufficient_coins", message: "코인이 부족합니다.", stale: true };
+      }
+      if (offer.delivery === "inventory") {
+        const inv = normalizeInventory(ps.inventory);
+        if (!canAddItemToInventory(inv, offer.itemId, qty)) {
+          return { ok: false, code: "inventory_full", message: "인벤토리 공간이 부족합니다.", stale: true };
+        }
+      }
+      return { ok: true };
+    }
+    case "shopSell": {
+      if (ps.lastEconomyActionAt && context.now - ps.lastEconomyActionAt < ECONOMY_ACTION_COOLDOWN_MS) {
+        return { ok: false, code: "economy_cooldown", message: "잠시 후 다시 시도해주세요.", stale: true };
+      }
+      const slotIndex = Math.floor(Number(action.payload.slotIndex));
+      const qty = Math.floor(Number(action.payload.quantity ?? 1));
+      const inv = normalizeInventory(ps.inventory);
+      if (!Number.isFinite(slotIndex) || slotIndex < 0 || slotIndex >= inv.length) {
+        return { ok: false, code: "invalid_slot", message: "잘못된 인벤토리 칸입니다." };
+      }
+      const slot = inv[slotIndex];
+      if (!slot || !Number.isFinite(qty) || qty < 1 || qty > slot.quantity) {
+        return { ok: false, code: "invalid_quantity", message: "판매할 아이템이 부족합니다.", stale: true };
+      }
+      const spec = INVENTORY_ITEMS[slot.itemId];
+      if (!spec || spec.sellPrice <= 0) {
+        return { ok: false, code: "unsellable_item", message: "판매할 수 없는 아이템입니다." };
+      }
+      return { ok: true };
+    }
+    case "upgradeWeapon": {
+      if (ps.lastEconomyActionAt && context.now - ps.lastEconomyActionAt < ECONOMY_ACTION_COOLDOWN_MS) {
+        return { ok: false, code: "economy_cooldown", message: "잠시 후 다시 강화할 수 있습니다.", stale: true };
+      }
+      const wid = typeof action.payload.weaponId === "string" ? action.payload.weaponId : "";
+      const stat = action.payload.stat === "atk" || action.payload.stat === "dex" ? action.payload.stat : null;
+      const weapon = WEAPON_CATALOG[wid];
+      if (!weapon || !ps.unlockedWeapons.includes(wid) || !stat) {
+        return { ok: false, code: "invalid_upgrade", message: "강화할 수 없는 무기 또는 능력치입니다." };
+      }
+      const cur = getWeaponUpgrade(ps.weaponUpgrades, wid);
+      const preview = computeUpgradePreview(weapon, stat, cur);
+      if (preview.atCap) {
+        return { ok: false, code: "upgrade_maxed", message: "이미 최대 강화 단계(+10)에 도달했습니다.", stale: true };
+      }
+      if (ps.coins < preview.coinCost) {
+        return { ok: false, code: "insufficient_coins", message: "강화 비용(코인)이 부족합니다.", stale: true };
+      }
+      const inv = normalizeInventory(ps.inventory);
+      if (countItemInInventory(inv, preview.stoneId) < preview.stonesRequired) {
+        return { ok: false, code: "insufficient_stones", message: "강화석이 부족합니다.", stale: true };
+      }
+      return { ok: true };
+    }
     case "checkpoint":
       return { ok: true };
     default:
@@ -783,7 +896,14 @@ function applyCheckedAction(context: GameContext, action: ClientGameAction): Act
       typeof action.payload.damageRoll === "number" && Number.isFinite(action.payload.damageRoll)
         ? action.payload.damageRoll
         : ((now + ps.score + mob.hp * 17) % 100) / 100;
-    const totalAtk = ps.baseAtk + weapon.atk;
+    const combatStats = computeEffectiveCombatStats(
+      weapon,
+      ps.baseAtk,
+      ps.baseDex ?? computePlayerBaseDex(ps.level),
+      getWeaponUpgrade(ps.weaponUpgrades, weapon.id)
+    );
+    const totalAtk = combatStats.totalAtk;
+    const effCritChance = combatStats.critChance;
     let damage: number;
     let isCrit: boolean;
     let knockbackX = weapon.knockbackX;
@@ -809,14 +929,14 @@ function applyCheckedAction(context: GameContext, action: ClientGameAction): Act
       knockbackX = 0;
       knockbackY = 0;
     } else if (hitKind === "splash" && weapon.special?.splash) {
-      const base = computeDeterministicHit(totalAtk, weapon.critChance, weapon.critMult, roll);
+      const base = computeDeterministicHit(totalAtk, effCritChance, weapon.critMult, roll);
       damage = Math.max(1, Math.round(base.damage * weapon.special.splash.damageMult));
       isCrit = base.isCrit;
       knockbackX = Math.round(weapon.knockbackX * 0.7);
       knockbackY = Math.round(weapon.knockbackY * 0.7);
       appliedStatuses = weapon.special?.statuses ?? [];
     } else {
-      const base = computeDeterministicHit(totalAtk, weapon.critChance, weapon.critMult, roll);
+      const base = computeDeterministicHit(totalAtk, effCritChance, weapon.critMult, roll);
       damage = base.damage;
       isCrit = base.isCrit;
       appliedStatuses = weapon.special?.statuses ?? [];
@@ -842,6 +962,28 @@ function applyCheckedAction(context: GameContext, action: ClientGameAction): Act
       recipient.mobsDefeated += 1;
       recipient.lastUpdatedAt = now;
 
+      // Elite & Boss monsters rarely drop Upgrade Stones (auto-collected into killer's 4x6 inventory!)
+      const stageMeta = getStageById(ps.stageId).meta;
+      const dropChanceRoll = serverEntropyRoll(`edrop:${now}:${mobId}:${recipient.playerId}:${recipient.mobsDefeated}`);
+      const dropColorRoll = serverEntropyRoll(`ecolor:${now}:${mobId}:${recipient.playerId}:${recipient.mobsDefeated}`);
+      const eliteDrop = rollEliteStoneDrop(mobTpl, stageMeta.stageNumber, dropChanceRoll, dropColorRoll);
+      let droppedStonePayload:
+        | { itemId: string; name: string; quantity: number; overflow: number; color: string; iconIndex: number }
+        | undefined;
+      if (eliteDrop) {
+        const invRes = addItemToInventory(normalizeInventory(recipient.inventory), eliteDrop.itemId, eliteDrop.quantity);
+        recipient.inventory = invRes.inventory;
+        const spec = INVENTORY_ITEMS[eliteDrop.itemId]!;
+        droppedStonePayload = {
+          itemId: eliteDrop.itemId,
+          name: spec.name,
+          quantity: invRes.added,
+          overflow: invRes.overflow,
+          color: spec.color,
+          iconIndex: spec.iconIndex
+        };
+      }
+
       events.push(
         makeEvent(
           "sunny.mobDefeated",
@@ -854,6 +996,8 @@ function applyCheckedAction(context: GameContext, action: ClientGameAction): Act
             xpEfficiency: efficiency,
             score: mobTpl.score,
             respawnAt: mob.respawnAt,
+            ...(typeof mob.x === "number" && typeof mob.y === "number" ? { mobX: mob.x, mobY: mob.y } : {}),
+            ...(droppedStonePayload ? { droppedStone: droppedStonePayload } : {}),
             ...(recipientId === ps.playerId && clientHitId ? { clientHitId } : {}),
             persistPlayerIds: [recipient.playerId]
           },
@@ -864,6 +1008,7 @@ function applyCheckedAction(context: GameContext, action: ClientGameAction): Act
       if (lvlResult.levelsGained > 0) {
         recipient.maxHp = computePlayerMaxHp(recipient.level, recipient.goldenHeartBonus);
         recipient.baseAtk = computePlayerBaseAtk(recipient.level);
+        recipient.baseDex = computePlayerBaseDex(recipient.level);
         recipient.hp = recipient.maxHp;
         for (const st of ALL_STAGES) {
           if (recipient.level >= st.meta.minEntryLevel && st.meta.stageNumber > recipient.highestStageNumber) {
@@ -1028,34 +1173,76 @@ function applyCheckedAction(context: GameContext, action: ClientGameAction): Act
         item.collectedBy.push(ps.playerId);
       }
 
-      if (tpl.category === "coin") {
-        ps.coins += 1;
-      } else if (tpl.category === "heal") {
-        const healAmt = Math.max(tpl.healAmount ?? 30, Math.round(ps.maxHp * 0.25));
-        ps.hp = Math.min(ps.maxHp, ps.hp + healAmt);
-      } else if (tpl.category === "potion") {
-        ps.potions += tpl.potionCount ?? 1;
-      } else if (tpl.category === "max_hp") {
-        ps.goldenHeartBonus += tpl.maxHpBonus ?? 20;
-        ps.maxHp = computePlayerMaxHp(ps.level, ps.goldenHeartBonus);
-        ps.hp = Math.min(ps.maxHp, ps.hp + (tpl.healAmount ?? 60));
-      }
+      if (tpl.category === "chest") {
+        // Rare Treasure Chest: stage-scaled coin haul + rare Upgrade Stone drop (auto-collected!)
+        const stageMeta = getStageById(ps.stageId).meta;
+        const chestCoins = computeChestCoinReward(stageMeta.stageNumber);
+        ps.coins += chestCoins;
+        const chanceRoll = serverEntropyRoll(`cdrop:${now}:${itemId}:${ps.playerId}:${ps.coins}`);
+        const colorRoll = serverEntropyRoll(`ccolor:${now}:${itemId}:${ps.playerId}:${ps.coins}`);
+        const stoneDrop = rollChestStoneDrop(stageMeta.stageNumber, chanceRoll, colorRoll);
+        let droppedStonePayload:
+          | { itemId: string; name: string; quantity: number; overflow: number; color: string; iconIndex: number }
+          | undefined;
+        if (stoneDrop) {
+          const invRes = addItemToInventory(normalizeInventory(ps.inventory), stoneDrop.itemId, stoneDrop.quantity);
+          ps.inventory = invRes.inventory;
+          const spec = INVENTORY_ITEMS[stoneDrop.itemId]!;
+          droppedStonePayload = {
+            itemId: stoneDrop.itemId,
+            name: spec.name,
+            quantity: invRes.added,
+            overflow: invRes.overflow,
+            color: spec.color,
+            iconIndex: spec.iconIndex
+          };
+        }
+        events.push(
+          makeEvent(
+            "sunny.chestOpened",
+            {
+              stageId: ps.stageId,
+              itemId,
+              openerId: ps.playerId,
+              coins: chestCoins,
+              respawnAt: item.respawnAt,
+              ...(droppedStonePayload ? { droppedStone: droppedStonePayload } : {}),
+              ...(clientPickupId ? { clientPickupId } : {}),
+              persistProfile: true
+            },
+            now
+          )
+        );
+      } else {
+        if (tpl.category === "coin") {
+          ps.coins += 1;
+        } else if (tpl.category === "heal") {
+          const healAmt = Math.max(tpl.healAmount ?? 30, Math.round(ps.maxHp * 0.25));
+          ps.hp = Math.min(ps.maxHp, ps.hp + healAmt);
+        } else if (tpl.category === "potion") {
+          ps.potions += tpl.potionCount ?? 1;
+        } else if (tpl.category === "max_hp") {
+          ps.goldenHeartBonus += tpl.maxHpBonus ?? 20;
+          ps.maxHp = computePlayerMaxHp(ps.level, ps.goldenHeartBonus);
+          ps.hp = Math.min(ps.maxHp, ps.hp + (tpl.healAmount ?? 60));
+        }
 
-      events.push(
-        makeEvent(
-          "sunny.itemCollected",
-          {
-            stageId: ps.stageId,
-            itemId,
-            templateId: tpl.id,
-            collectorId: ps.playerId,
-            respawnAt: item.respawnAt,
-            ...(clientPickupId ? { clientPickupId } : {}),
-            persistProfile: true
-          },
-          now
-        )
-      );
+        events.push(
+          makeEvent(
+            "sunny.itemCollected",
+            {
+              stageId: ps.stageId,
+              itemId,
+              templateId: tpl.id,
+              collectorId: ps.playerId,
+              respawnAt: item.respawnAt,
+              ...(clientPickupId ? { clientPickupId } : {}),
+              persistProfile: true
+            },
+            now
+          )
+        );
+      }
     }
   } else if (action.type === "usePotion") {
     const clientPotionId =
@@ -1212,6 +1399,145 @@ function applyCheckedAction(context: GameContext, action: ClientGameAction): Act
         now
       )
     );
+  } else if (action.type === "setMenuMode") {
+    const inMenu = Boolean(action.payload.inMenu);
+    if (inMenu) {
+      ps.inMenu = true;
+      ps.vx = 0;
+      ps.vy = 0;
+      ps.animState = "idle";
+    } else {
+      delete ps.inMenu;
+    }
+    events.push(
+      makeEvent(
+        "sunny.playerMenuMode",
+        {
+          stageId: ps.stageId,
+          playerId: ps.playerId,
+          inMenu
+        },
+        now
+      )
+    );
+  } else if (action.type === "shopBuy") {
+    const offerId = String(action.payload.offerId);
+    const offer = SHOP_OFFERS_BY_ID[offerId]!;
+    const qty = Math.floor(Number(action.payload.quantity ?? 1));
+    const totalCost = offer.buyPrice * qty;
+    ps.coins = Math.max(0, ps.coins - totalCost);
+    ps.lastEconomyActionAt = now;
+
+    if (offer.delivery === "potion") {
+      ps.potions += qty;
+    } else {
+      const invRes = addItemToInventory(normalizeInventory(ps.inventory), offer.itemId, qty);
+      ps.inventory = invRes.inventory;
+    }
+
+    events.push(
+      makeEvent(
+        "sunny.shopResult",
+        {
+          stageId: ps.stageId,
+          playerId: ps.playerId,
+          kind: "buy",
+          offerId,
+          itemId: offer.itemId,
+          itemName: offer.name,
+          quantity: qty,
+          coinsDelta: -totalCost,
+          coins: ps.coins,
+          persistProfile: true
+        },
+        now,
+        "private",
+        ps.playerId
+      )
+    );
+  } else if (action.type === "shopSell") {
+    const slotIndex = Math.floor(Number(action.payload.slotIndex));
+    const qty = Math.floor(Number(action.payload.quantity ?? 1));
+    const rem = removeItemAtSlot(normalizeInventory(ps.inventory), slotIndex, qty);
+    const spec = rem.itemId ? INVENTORY_ITEMS[rem.itemId] : undefined;
+    const earned = spec ? spec.sellPrice * rem.removed : 0;
+    ps.inventory = rem.inventory;
+    ps.coins += earned;
+    ps.lastEconomyActionAt = now;
+
+    events.push(
+      makeEvent(
+        "sunny.shopResult",
+        {
+          stageId: ps.stageId,
+          playerId: ps.playerId,
+          kind: "sell",
+          slotIndex,
+          itemId: rem.itemId ?? "",
+          itemName: spec?.name ?? "",
+          quantity: rem.removed,
+          coinsDelta: earned,
+          coins: ps.coins,
+          persistProfile: true
+        },
+        now,
+        "private",
+        ps.playerId
+      )
+    );
+  } else if (action.type === "upgradeWeapon") {
+    const wid = String(action.payload.weaponId);
+    const stat = action.payload.stat as WeaponUpgradeStat;
+    const weapon = WEAPON_CATALOG[wid]!;
+    const upgrades = normalizeWeaponUpgrades(ps.weaponUpgrades);
+    const cur = getWeaponUpgrade(upgrades, wid);
+    const preview = computeUpgradePreview(weapon, stat, cur);
+
+    ps.coins = Math.max(0, ps.coins - preview.coinCost);
+    ps.inventory = removeItemFromInventory(normalizeInventory(ps.inventory), preview.stoneId, preview.stonesRequired).inventory;
+    ps.lastEconomyActionAt = now;
+    ps.upgradeAttempts = (ps.upgradeAttempts ?? 0) + 1;
+
+    const roll = serverEntropyRoll(`upg:${now}:${ps.playerId}:${wid}:${stat}:${ps.upgradeAttempts}:${ps.score}`);
+    const success = roll < preview.successRate;
+    const nextState = success
+      ? {
+          atkLevel: cur.atkLevel + (stat === "atk" ? 1 : 0),
+          dexLevel: cur.dexLevel + (stat === "dex" ? 1 : 0),
+          failStreak: 0
+        }
+      : {
+          atkLevel: cur.atkLevel,
+          dexLevel: cur.dexLevel,
+          failStreak: Math.min(10, cur.failStreak + 1)
+        };
+    upgrades[wid] = nextState;
+    ps.weaponUpgrades = upgrades;
+
+    events.push(
+      makeEvent(
+        "sunny.weaponUpgraded",
+        {
+          stageId: ps.stageId,
+          playerId: ps.playerId,
+          weaponId: wid,
+          weaponName: weapon.name,
+          stat,
+          success,
+          atkLevel: nextState.atkLevel,
+          dexLevel: nextState.dexLevel,
+          totalLevel: nextState.atkLevel + nextState.dexLevel,
+          failStreak: nextState.failStreak,
+          coinsSpent: preview.coinCost,
+          stonesSpent: preview.stonesRequired,
+          stoneId: preview.stoneId,
+          persistProfile: true
+        },
+        now,
+        "private",
+        ps.playerId
+      )
+    );
   } else if (action.type === "checkpoint") {
     const rawX = Number(action.payload.x);
     const rawY = Number(action.payload.y);
@@ -1344,6 +1670,8 @@ export const sunnyMeadowDefinition = defineGameDefinition(gameMetadata, {
       mobsDefeated: ps.mobsDefeated,
       unlockedWeapons: [...ps.unlockedWeapons],
       equippedWeaponId: ps.equippedWeaponId,
+      inventory: normalizeInventory(ps.inventory),
+      weaponUpgrades: normalizeWeaponUpgrades(ps.weaponUpgrades),
       highestStageNumber: ps.highestStageNumber,
       lastStageId: ps.stageId,
       lastX: Math.round(ps.x),
@@ -1365,8 +1693,8 @@ export const sunnyMeadowDefinition = defineGameDefinition(gameMetadata, {
     const world = getWorld(context.state.stageState);
     const repaired = reconcileWorldStages(world);
     const ps = getPlayerState(context.state.playerStates, playerId);
-    // A player who is down does not move.
-    if (!ps || ps.dead) return undefined;
+    // A player who is down or in inventory/shop safe mode does not move.
+    if (!ps || ps.dead || ps.inMenu) return undefined;
 
     const rawX = Number(signal.payload.x);
     const rawY = Number(signal.payload.y);
@@ -1596,7 +1924,12 @@ export const sunnyMeadowDefinition = defineGameDefinition(gameMetadata, {
   getPrivateView(context: GameContext, playerId: string): JsonObject {
     const ps = getPlayerState(context.state.playerStates, playerId);
     if (!ps) return {};
-    return { ...ps } as unknown as JsonObject;
+    return {
+      ...ps,
+      baseDex: ps.baseDex ?? computePlayerBaseDex(ps.level),
+      inventory: normalizeInventory(ps.inventory),
+      weaponUpgrades: normalizeWeaponUpgrades(ps.weaponUpgrades)
+    } as unknown as JsonObject;
   }
 });
 

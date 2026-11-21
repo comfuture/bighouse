@@ -602,10 +602,13 @@ function buildStageFromBlueprint(bp: StageBlueprint): NormalizedStage {
   const m2 = bp.mobs.secondary;
   const m3 = bp.mobs.elite ?? bp.mobs.secondary;
   const mBoss = bp.mobs.boss ?? m3;
+  // Strong elite guardian placed around rare treasure chests
+  const mChestGuard = bp.mobs.elite ?? (n === 1 ? "elder_hamster" : bp.mobs.boss ?? bp.mobs.secondary);
   // On early/mid stages, avoid placing flying mobs (e.g. sky_owl) right over moving platforms
   const mGrounded = n <= 5 && MOB_CATALOG[m2]?.flying ? m1 : m2;
   const mGroundedElite = n <= 5 && MOB_CATALOG[m3]?.flying ? m1 : m3;
   let weaponPlaced = false;
+  let midChestPlaced = false;
 
   // Build each 20-tile zone along the main course (screens 0 .. screenCount - 2)
   bp.zones.forEach((zone, zIdx) => {
@@ -874,6 +877,10 @@ function buildStageFromBlueprint(bp: StageBlueprint): NormalizedStage {
       if (bp.weaponPickup && !bp.weaponPickup.inChamber && !weaponPlaced) {
         weaponPlaced = true;
         addItem("it_weap", bp.weaponPickup.itemId, x0 + 9, groundY - 7);
+      } else if (n >= 6 && !midChestPlaced) {
+        midChestPlaced = true;
+        addItem("chest_mid", "treasure_chest", x0 + 11, groundY - 7);
+        addMob("mob_mid_guard", mChestGuard, x0 + 8.5, groundY - 7, x0 + 4.5, x0 + 15.5);
       } else {
         addItem(uid(`${z}_i`), "star_coin", x0 + 7, groundY - 7);
       }
@@ -914,12 +921,12 @@ function buildStageFromBlueprint(bp: StageBlueprint): NormalizedStage {
       addLadder(`${z}_lad`, x0 + 7, groundY - 5, 3);
 
       addMob("mob_boss", mBoss, x0 + 11, groundY, x0 + 3, x0 + 18);
-      addMob(uid(`${z}_m`), m2, x0 + 10, groundY - 5, x0 + 6.4, x0 + 13.6);
+      addMob("mob_chest_guard", mChestGuard, x0 + 9.5, groundY - 5, x0 + 6.4, x0 + 13.6);
       addMob(uid(`${z}_m`), m3, x0 + 16, groundY - 3, x0 + 14.3, x0 + 18.6);
 
       addItem(uid(`${z}_i`), "red_apple", x0 + 4, groundY - 2);
-      addItem(uid(`${z}_i`), "sweet_potion", x0 + 10, groundY - 5);
-      addItem(uid(`${z}_i`), "star_coin", x0 + 12, groundY - 5);
+      addItem(uid(`${z}_i`), "sweet_potion", x0 + 8, groundY - 5);
+      addItem("chest_boss", "treasure_chest", x0 + 12.2, groundY - 5);
       addDeco(uid(`${z}_sign`), "sign", x0 + 1.5, groundY, bp.signClimax);
       return;
     }
@@ -977,13 +984,15 @@ function buildStageFromBlueprint(bp: StageBlueprint): NormalizedStage {
   addMob("iso_mob1", m2, isoX + 7, isoFloorY, isoX + 3.5, isoX + 15.5);
   addMob("iso_mob2", m3, isoX + 13, isoFloorY, isoX + 9, isoX + 16.4);
   addMob("iso_mob3", m3, isoX + 9, isoFloorY - 3, isoX + 2.5, isoX + 14.5);
+  addMob("iso_guard", mChestGuard, isoX + 8.5, isoFloorY - 6, isoX + 5.4, isoX + 12.6);
 
   if (bp.weaponPickup && bp.weaponPickup.inChamber && !weaponPlaced) {
     weaponPlaced = true;
     addItem("it_weap", bp.weaponPickup.itemId, isoX + 9, isoFloorY - 6);
   }
-  addItem("iso_gh", "golden_heart", isoX + 7, isoFloorY - 6);
-  addItem("iso_po", "sweet_potion", isoX + 11, isoFloorY - 6);
+  addItem("iso_gh", "golden_heart", isoX + 6.5, isoFloorY - 6);
+  addItem("chest_iso", "treasure_chest", isoX + 10.5, isoFloorY - 6);
+  addItem("iso_po", "sweet_potion", isoX + 12, isoFloorY - 6);
   addItem("iso_c1", "star_coin", isoX + 6, isoFloorY - 3);
   addItem("iso_c2", "star_coin", isoX + 8, isoFloorY - 3);
   addItem("iso_c3", "star_coin", isoX + 10, isoFloorY - 3);

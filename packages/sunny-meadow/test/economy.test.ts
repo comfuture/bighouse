@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { RoomState } from "@bighouse/game-sdk/server";
 import { ITEM_CATALOG, MOB_CATALOG, WEAPON_CATALOG } from "../src/catalogs";
 import {
   addItemToInventory,
@@ -23,6 +24,9 @@ import {
   STONE_MAX_STACK,
   UPGRADE_STONE_IDS
 } from "../src/economy";
+import { validateNormalizedStage } from "../src/map-schema";
+import { sunnyMeadowDefinition } from "../src/server";
+import { ALL_STAGES } from "../src/stages/index";
 
 describe("@bighouse/sunny-meadow economy, 4x6 inventory, chests & weapon upgrades", () => {
   it("provides a 4x6 (24-slot) inventory that stacks upgrade stones up to 20 and keeps non-stackables separate", () => {
@@ -140,5 +144,157 @@ describe("@bighouse/sunny-meadow economy, 4x6 inventory, chests & weapon upgrade
     expect(upStats.totalDex).toBe(baseStats.totalDex + 8);
     expect(upStats.critChance).toBeGreaterThan(baseStats.critChance);
     expect(upStats.cooldownSec).toBeLessThan(baseStats.cooldownSec);
+  });
+
+  it("places rare elite-guarded treasure chests across all 10 stages with 100% map validity", () => {
+    for (const stage of ALL_STAGES) {
+      const report = validateNormalizedStage(stage);
+      expect(report.valid, `${stage.meta.id}: ${report.errors.join(", ")}`).toBe(true);
+
+      const chests = stage.layers.itemSpawns.allIds
+        .map((id) => stage.layers.itemSpawns.byId[id]!)
+        .filter((it) => it.templateId === "treasure_chest");
+      expect(chests.length, `${stage.meta.id} chests`).toBeGreaterThanOrEqual(2);
+
+      const eliteMobs = stage.layers.mobSpawns.allIds
+        .map((id) => stage.layers.mobSpawns.byId[id]!)
+        .filter((m) => Boolean(MOB_CATALOG[m.templateId]?.isElite));
+      expect(eliteMobs.length, `${stage.meta.id} elite guards`).toBeGreaterThanOrEqual(2);
+
+      for (const ch of chests) {
+        const guarded = eliteMobs.some((m) => Math.abs(m.x - ch.x) <= 6 && Math.abs(m.y - (ch.y + 1)) <= 2);
+        expect(guarded, `${stage.meta.id} chest ${ch.id} should be guarded by an elite mob`).toBe(true);
+      }
+    }
+  });
+
+  it("runs server-authoritative chest opening, menu safe mode, shop buy/sell, weapon upgrades & D1 persistence", () => {
+    const now = 1_700_002_000_000;
+    const room = {
+      roomId: "room-econ",
+      gameId: "sunny-meadow",
+      mode: "default",
+      minPlayers: 1,
+      maxPlayers: 500,
+      config: {},
+      createdAt: now
+    };
+    const p1 = { playerId: "p1", displayName: "상인", seat: 0, connected: true, ready: true, joinedAt: now };
+    const p2 = { playerId: "p2", displayName: "관전자", seat: 1, connected: true, ready: true, joinedAt: now };
+    let state: RoomState = {
+      room,
+      phase: "active",
+      version: 1,
+      players: [p1, p2],
+      stageState: sunnyMeadowDefinition.initialStageState({ room, players: [], now }),
+      playerStates: {},
+      updatedAt: now
+    };
+    state = sunnyMeadowDefinition.onPlayerJoin!({ state, now }, p1, null).state;
+    state = sunnyMeadowDefinition.onPlayerJoin!({ state, now }, p2, null).state;
+
+    // 1. Opening a Stage 1 Treasure Chest awards stage-scaled coins and blocks race duplication
+    const open1 = sunnyMeadowDefinition.applyAction(
+      { state, now: now + 100 },
+      { playerId: "p1", clientActionId: "ch1", expectedVersion: 0, type: "collectItem", payload: { itemId: "s1_chest_boss" } }
+    );
+    state = open1.state;
+    expect((state.playerStates.p1 as { coins: number }).coins).toBe(computeChestCoinReward(1));
+    expect(open1.events).toContainEqual(
+      expect.objectContaining({
+        type: "sunny.chestOpened",
+        payload: expect.objectContaining({ itemId: "s1_chest_boss", coins: computeChestCoinReward(1) })
+      })
+    );
+    const open2Race = sunnyMeadowDefinition.applyAction(
+      { state, now: now + 200 },
+      { playerId: "p2", clientActionId: "ch2", expectedVersion: 0, type: "collectItem", payload: { itemId: "s1_chest_boss" } }
+    );
+    expect((open2Race.state.playerStates.p2 as { coins: number }).coins).toBe(0);
+
+    // 2. Menu safe mode blocks damage & broadcasts inMenu: true to remote players
+    state = sunnyMeadowDefinition.applyAction(
+      { state, now: now + 300 },
+      { playerId: "p1", clientActionId: "menu_on", expectedVersion: 0, type: "setMenuMode", payload: { inMenu: true } }
+    ).state;
+    const pubForP2 = sunnyMeadowDefinition.getPublicView({ state, now: now + 310 }, "p2") as {
+      nearbyPlayers: Array<{ playerId: string; inMenu?: boolean }>;
+    };
+    expect(pubForP2.nearbyPlayers.find((p) => p.playerId === "p1")?.inMenu).toBe(true);
+    const hurtInMenu = sunnyMeadowDefinition.applyAction(
+      { state, now: now + 350 },
+      { playerId: "p1", clientActionId: "hurt_menu", expectedVersion: 0, type: "playerHurt", payload: { amount: 30 } }
+    );
+    expect((hurtInMenu.state.playerStates.p1 as { hp: number }).hp).toBe(100);
+
+    // 3. Shop Buy & Sell (with unfavorable sell price)
+    Object.assign(state.playerStates.p1!, { coins: 500 });
+    const buyRed = sunnyMeadowDefinition.applyAction(
+      { state, now: now + 600 },
+      { playerId: "p1", clientActionId: "buy1", expectedVersion: 0, type: "shopBuy", payload: { offerId: "offer_stone_red", quantity: 3 } }
+    );
+    state = buyRed.state;
+    expect((state.playerStates.p1 as { coins: number }).coins).toBe(500 - 180);
+
+    const buyGreen = sunnyMeadowDefinition.applyAction(
+      { state, now: now + 900 },
+      { playerId: "p1", clientActionId: "buy2", expectedVersion: 0, type: "shopBuy", payload: { offerId: "offer_stone_green", quantity: 2 } }
+    );
+    state = buyGreen.state;
+    expect((state.playerStates.p1 as { coins: number }).coins).toBe(320 - 110);
+
+    // Sell 1 red stone from slot 0 -> receives 15 coins (much less than 60 buy price!)
+    const sellOne = sunnyMeadowDefinition.applyAction(
+      { state, now: now + 1200 },
+      { playerId: "p1", clientActionId: "sell1", expectedVersion: 0, type: "shopSell", payload: { slotIndex: 0, quantity: 1 } }
+    );
+    state = sellOne.state;
+    expect((state.playerStates.p1 as { coins: number }).coins).toBe(210 + 15);
+
+    // 4. Weapon Enhancement: Red stone -> ATK (+1), Green stone -> DEX (+1) (100% rate at +0..+2!)
+    const upgAtk = sunnyMeadowDefinition.applyAction(
+      { state, now: now + 1500 },
+      { playerId: "p1", clientActionId: "upg1", expectedVersion: 0, type: "upgradeWeapon", payload: { weaponId: "wooden_sword", stat: "atk" } }
+    );
+    state = upgAtk.state;
+    expect(upgAtk.events).toContainEqual(
+      expect.objectContaining({
+        type: "sunny.weaponUpgraded",
+        payload: expect.objectContaining({ weaponId: "wooden_sword", stat: "atk", success: true, atkLevel: 1 })
+      })
+    );
+
+    const upgDex = sunnyMeadowDefinition.applyAction(
+      { state, now: now + 1800 },
+      { playerId: "p1", clientActionId: "upg2", expectedVersion: 0, type: "upgradeWeapon", payload: { weaponId: "wooden_sword", stat: "dex" } }
+    );
+    state = upgDex.state;
+    expect(upgDex.events).toContainEqual(
+      expect.objectContaining({
+        type: "sunny.weaponUpgraded",
+        payload: expect.objectContaining({ weaponId: "wooden_sword", stat: "dex", success: true, dexLevel: 1, totalLevel: 2 })
+      })
+    );
+
+    // 5. Hard +10 cap prevents infinite enhancement even with abundant stones & coins
+    Object.assign(state.playerStates.p1!, {
+      coins: 99999,
+      weaponUpgrades: { wooden_sword: { atkLevel: 6, dexLevel: 4, failStreak: 0 } }
+    });
+    const capped = sunnyMeadowDefinition.applyAction(
+      { state, now: now + 2100 },
+      { playerId: "p1", clientActionId: "upg_cap", expectedVersion: 0, type: "upgradeWeapon", payload: { weaponId: "wooden_sword", stat: "atk" } }
+    );
+    expect(capped.events).toContainEqual(
+      expect.objectContaining({ type: "sunny.actionIgnored", payload: expect.objectContaining({ reason: "upgrade_maxed" }) })
+    );
+
+    // 6. Profile persistence preserves inventory & weaponUpgrades cleanly
+    const profile = sunnyMeadowDefinition.extractPlayerProfile!({ state, now: now + 2200 }, "p1") as {
+      inventory?: unknown[];
+      weaponUpgrades?: Record<string, { atkLevel: number; dexLevel: number }>;
+    };
+    expect(profile.inventory).toHaveLength(24);
+    expect(profile.weaponUpgrades?.wooden_sword).toMatchObject({ atkLevel: 6, dexLevel: 4 });
   });
 });
