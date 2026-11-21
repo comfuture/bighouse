@@ -25,6 +25,7 @@ import {
   UPGRADE_STONE_IDS
 } from "../src/economy";
 import { validateNormalizedStage } from "../src/map-schema";
+import { createMenuModeSync } from "../src/menu-mode-sync";
 import { sunnyMeadowDefinition } from "../src/server";
 import { ALL_STAGES } from "../src/stages/index";
 
@@ -296,5 +297,105 @@ describe("@bighouse/sunny-meadow economy, 4x6 inventory, chests & weapon upgrade
     };
     expect(profile.inventory).toHaveLength(24);
     expect(profile.weaponUpgrades?.wooden_sword).toMatchObject({ atkLevel: 6, dexLevel: 4 });
+  });
+
+  it("excludes inMenu players from server-side mob authority selection so nearby active players can sync mobs", () => {
+    const now = 1_700_003_000_000;
+    const room = {
+      roomId: "room-mob-auth",
+      gameId: "sunny-meadow",
+      mode: "default",
+      minPlayers: 1,
+      maxPlayers: 500,
+      config: {},
+      createdAt: now
+    };
+    const p1 = { playerId: "p1", displayName: "가까운유저", seat: 0, connected: true, ready: true, joinedAt: now };
+    const p2 = { playerId: "p2", displayName: "활동유저", seat: 1, connected: true, ready: true, joinedAt: now };
+    let state: RoomState = {
+      room,
+      phase: "active",
+      version: 1,
+      players: [p1, p2],
+      stageState: sunnyMeadowDefinition.initialStageState({ room, players: [], now }),
+      playerStates: {},
+      updatedAt: now
+    };
+    state = sunnyMeadowDefinition.onPlayerJoin!({ state, now }, p1, null).state;
+    state = sunnyMeadowDefinition.onPlayerJoin!({ state, now }, p2, null).state;
+
+    const stageRt = (state.stageState as { stages: Record<string, { mobs: Record<string, { x: number; y: number; spawnProtectUntil: number; authorityPlayerId?: string }> }> }).stages["stage-1"]!;
+    const [mobId, mob] = Object.entries(stageRt.mobs)[0]!;
+    mob.spawnProtectUntil = 0;
+    const baseX = mob.x;
+    const baseY = mob.y;
+
+    // Place p1 right beside the mob and p2 320px away (well beyond the 140-160px hysteresis margin).
+    Object.assign(state.playerStates.p1!, { x: baseX, y: baseY });
+    Object.assign(state.playerStates.p2!, { x: baseX + 320, y: baseY });
+
+    // While p1 is active, p1 holds authority and p2's mob kinematics update is rejected.
+    const p1Sync = sunnyMeadowDefinition.handleSignal!(
+      { state, now: now + 100 },
+      "p1",
+      { type: "playerPose", payload: { x: baseX, y: baseY, vx: 0, vy: 0, facing: 1, animState: "idle", mobs: [[mobId, baseX + 12, baseY, 40, 0, 1]] } }
+    );
+    expect(p1Sync?.payload.mobs).toHaveLength(1);
+    expect(mob.authorityPlayerId).toBe("p1");
+
+    const p2Rejected = sunnyMeadowDefinition.handleSignal!(
+      { state, now: now + 150 },
+      "p2",
+      { type: "playerPose", payload: { x: baseX + 320, y: baseY, vx: 0, vy: 0, facing: -1, animState: "walk", mobs: [[mobId, baseX + 30, baseY, 60, 0, 1]] } }
+    );
+    expect(p2Rejected?.payload.mobs).toBeUndefined();
+
+    // Once p1 opens inventory/shop (inMenu: true), p1 is excluded and p2 immediately takes mob authority.
+    state = sunnyMeadowDefinition.applyAction(
+      { state, now: now + 200 },
+      { playerId: "p1", clientActionId: "menu1", expectedVersion: 0, type: "setMenuMode", payload: { inMenu: true } }
+    ).state;
+
+    const p1Ignored = sunnyMeadowDefinition.handleSignal!(
+      { state, now: now + 250 },
+      "p1",
+      { type: "playerPose", payload: { x: baseX, y: baseY, vx: 0, vy: 0, facing: 1, animState: "idle", mobs: [[mobId, baseX + 5, baseY, 10, 0, 1]] } }
+    );
+    expect(p1Ignored).toBeUndefined();
+
+    const p2Accepted = sunnyMeadowDefinition.handleSignal!(
+      { state, now: now + 260 },
+      "p2",
+      { type: "playerPose", payload: { x: baseX + 320, y: baseY, vx: 0, vy: 0, facing: -1, animState: "walk", mobs: [[mobId, baseX + 48, baseY, 75, 0, 1]] } }
+    );
+    expect(p2Accepted?.payload.mobs).toEqual([[mobId, baseX + 48, baseY, 75, 0, 1]]);
+    const updatedMob = (p2Accepted?.stageState as typeof state.stageState & { stages: Record<string, { mobs: Record<string, { x: number; authorityPlayerId?: string }> }> }).stages["stage-1"]!.mobs[mobId]!;
+    expect(updatedMob.x).toBe(baseX + 48);
+    expect(updatedMob.authorityPlayerId).toBe("p2");
+  });
+
+  it("reconciles menu mode after refresh or offline dialog transitions when the connection is restored", () => {
+    // 1. Page refresh while server still retains inMenu: true during disconnect grace period
+    const afterRefresh = createMenuModeSync();
+    afterRefresh.observeServer(true);
+    expect(afterRefresh.shouldResync({ connected: true, desired: false, now: 1000 })).toBe(true);
+    afterRefresh.markSent(1000);
+    // Avoid spamming before throttle interval elapses
+    expect(afterRefresh.shouldResync({ connected: true, desired: false, now: 1100 })).toBe(false);
+    // Once server confirms inMenu: false, no further resync needed
+    afterRefresh.observeServer(false);
+    expect(afterRefresh.shouldResync({ connected: true, desired: false, now: 2000 })).toBe(false);
+
+    // 2. Dialog closed while disconnected, then socket reconnects
+    const offlineClose = createMenuModeSync();
+    offlineClose.observeServer(true);
+    expect(offlineClose.shouldResync({ connected: false, desired: false, now: 1000 })).toBe(false);
+    expect(offlineClose.shouldResync({ connected: true, desired: false, now: 1050, force: true })).toBe(true);
+
+    // 3. Dialog opened while disconnected, then socket reconnects
+    const offlineOpen = createMenuModeSync();
+    offlineOpen.observeServer(false);
+    expect(offlineOpen.shouldResync({ connected: false, desired: true, now: 1000 })).toBe(false);
+    expect(offlineOpen.shouldResync({ connected: true, desired: true, now: 1050, force: true })).toBe(true);
   });
 });

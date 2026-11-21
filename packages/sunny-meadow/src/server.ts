@@ -277,7 +277,7 @@ function canPlayerSyncMob(
   now: number
 ): boolean {
   const sender = getPlayerState(playerStates, playerId);
-  if (!sender || sender.dead || sender.stageId !== stageId) return false;
+  if (!sender || sender.dead || sender.inMenu || sender.stageId !== stageId) return false;
   const mobX = mob.x ?? 0;
   const mobY = mob.y ?? 0;
   const senderDist = Math.hypot(sender.x - mobX, sender.y - mobY);
@@ -288,7 +288,7 @@ function canPlayerSyncMob(
   for (const [pid, sid] of Object.entries(world.playerStageMap)) {
     if (sid !== stageId) continue;
     const ps = getPlayerState(playerStates, pid);
-    if (!ps || ps.dead) continue;
+    if (!ps || ps.dead || ps.inMenu) continue;
     const dist = Math.hypot(ps.x - mobX, ps.y - mobY);
     if (dist < closestDist - 1 || (Math.abs(dist - closestDist) <= 1 && pid < closestId)) {
       closestDist = dist;
@@ -299,9 +299,11 @@ function canPlayerSyncMob(
   if (closestId === playerId) return true;
   // Hysteresis prevents authority ping-pong when two players stand at similar distance.
   const prevAuth = mob.authorityPlayerId;
+  const prevAuthState = prevAuth ? getPlayerState(playerStates, prevAuth) : undefined;
   const prevAuthFresh =
     Boolean(prevAuth) &&
     prevAuth !== playerId &&
+    Boolean(prevAuthState && !prevAuthState.dead && !prevAuthState.inMenu) &&
     typeof mob.stateUpdatedAt === "number" &&
     now - mob.stateUpdatedAt < 550;
   if (!prevAuthFresh && senderDist <= closestDist + 160) return true;
