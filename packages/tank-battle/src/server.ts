@@ -8,6 +8,7 @@ import type {
   GameEvent,
   JsonObject,
   PlayerSeat,
+  RoomState,
   ServerGamePlugin,
   TimerIntent,
   ValidationResult
@@ -52,6 +53,48 @@ const playerColors = ["#49b6ff", "#ff6b5f"] as const;
 const validItems = new Set<TankItem>(["megaBlast", "warhead", "scope"]);
 
 export const gameMetadata = baseGameMetadata;
+
+type AppliedLegacyResolution = PendingShotResolution & {
+  legacyAlreadyApplied: true;
+  legacyNextPlayerId: string;
+};
+
+/** Convert the flat turn fields stored before the turn union was introduced. */
+export function normalizeLegacyTankBattleStage(stageState: JsonObject, room: RoomState): JsonObject {
+  if (stageState.turn || (stageState.turnPhase !== "aiming" && stageState.turnPhase !== "resolving")) return stageState;
+
+  const {
+    turnPhase, currentPlayerId, turnDeadline, resolutionDeadline, pendingResolution, pendingNextPlayerId, result,
+    winnerPlayerId, ...rest
+  } = stageState;
+  const playerId = typeof currentPlayerId === "string" ? currentPlayerId : undefined;
+  const lastShot = rest.lastShot as LastShot | undefined;
+  let turn: TankTurn = { kind: "idle" };
+  if (result === "draw") {
+    turn = { kind: "finished", result: "draw" };
+  } else if (typeof winnerPlayerId === "string" && winnerPlayerId) {
+    turn = { kind: "finished", result: "win", winnerPlayerId };
+  } else if (turnPhase === "resolving" && typeof resolutionDeadline === "number" && Number.isFinite(resolutionDeadline)) {
+    const shooterPlayerId = lastShot?.shooterPlayerId ?? playerId;
+    if (shooterPlayerId) {
+      // Older versions changed terrain and health when firing, not on the alarm.
+      const resolution = pendingResolution as PendingShotResolution | undefined ?? ({
+        terrain: rest.terrain as number[],
+        tanks: rest.tanks as TankState[],
+        damage: lastShot?.damage ?? [],
+        legacyAlreadyApplied: true,
+        legacyNextPlayerId: typeof pendingNextPlayerId === "string" ? pendingNextPlayerId : playerId ?? shooterPlayerId
+      } satisfies AppliedLegacyResolution);
+      turn = { kind: "resolving", shooterPlayerId, deadline: resolutionDeadline, resolution };
+    }
+  } else if (playerId) {
+    const deadline = typeof turnDeadline === "number" && Number.isFinite(turnDeadline)
+      ? turnDeadline
+      : room.updatedAt + TURN_MS;
+    turn = { kind: "aiming", playerId, deadline };
+  }
+  return { ...rest, botAimHistory: rest.botAimHistory ?? {}, turn };
+}
 
 export const tankBattleDefinition = defineGameDefinition(gameMetadata, {
   initialStageState(context): JsonObject {
@@ -299,6 +342,21 @@ export const tankBattleDefinition = defineGameDefinition(gameMetadata, {
 
     if (timer.payload?.reason !== "shot_resolution") return unchanged;
     const { resolution, shooterPlayerId } = turn;
+    if ("legacyAlreadyApplied" in resolution) {
+      // The older firing path already emitted all shot effects. Only release the turn.
+      const { legacyNextPlayerId } = resolution as AppliedLegacyResolution;
+      if (stage.lastShot) stage.lastShot = { ...stage.lastShot, resolved: true };
+      advanceTurnClock(stage);
+      stage.turn = { kind: "aiming", playerId: legacyNextPlayerId, deadline: context.now + TURN_MS };
+      return {
+        state,
+        events: [event("tankBattle.turnChanged", "public", {
+          previousPlayerId: shooterPlayerId,
+          currentPlayerId: legacyNextPlayerId,
+          wind: stage.wind
+        }, context.now)]
+      };
+    }
     stage.terrain = resolution.terrain;
     stage.tanks = resolution.tanks;
     if (resolution.botAimUpdate) {
@@ -494,12 +552,16 @@ function startNextTurn(stage: TankBattleStageState, players: PlayerSeat[], after
       break;
     }
   }
+  advanceTurnClock(stage);
+  stage.turn = nextPlayerId ? { kind: "aiming", playerId: nextPlayerId, deadline: now + TURN_MS } : { kind: "idle" };
+  return nextPlayerId;
+}
+
+function advanceTurnClock(stage: TankBattleStageState): void {
   const randomWind = windFromState(stage.rngState);
   stage.rngState = randomWind.state;
   stage.wind = randomWind.wind;
   stage.turnNumber += 1;
-  stage.turn = nextPlayerId ? { kind: "aiming", playerId: nextPlayerId, deadline: now + TURN_MS } : { kind: "idle" };
-  return nextPlayerId;
 }
 
 function event(type: string, visibility: "public" | "private" | "system", payload: JsonObject, now: number): GameEvent {

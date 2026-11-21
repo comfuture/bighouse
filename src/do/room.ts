@@ -23,6 +23,7 @@ import {
   type ServerMessage,
   type SnapshotPayload
 } from "../core/protocol";
+import { normalizeLegacyStage } from "../games/legacy-stage";
 import { getGameDefinition } from "../games/registry";
 import { D1Repository } from "../storage/d1";
 import type { Env } from "../types";
@@ -1340,7 +1341,15 @@ export class RoomDO extends DurableObject<Env> {
 
   private loadState(): RoomState | null {
     const row = this.ctx.storage.sql.exec<RoomStateRow>("SELECT id, state_json FROM room_state WHERE id = 1").toArray()[0];
-    return row ? (JSON.parse(row.state_json) as RoomState) : null;
+    if (!row) return null;
+    const state = JSON.parse(row.state_json) as RoomState;
+    const stageState = normalizeLegacyStage(state);
+    if (stageState !== state.stageState) {
+      // Schema-only rewrite: no turn, version, event, or timer is advanced.
+      state.stageState = stageState;
+      this.saveState(state);
+    }
+    return state;
   }
 
   private requireState(): RoomState {

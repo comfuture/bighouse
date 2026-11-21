@@ -38,8 +38,12 @@ export type ChessOutcome =
 export type ChessStageState = {
   /** Current position. */
   fen: string;
-  /** Moves from the starting position, replayed so repetition draws are detected. */
+  /** Moves from the replay base, replayed so repetition draws are detected. */
   moveHistory: ChessMoveRecord[];
+  /** A verified position for histories that cannot be replayed from the standard start. */
+  replayBaseFen?: string;
+  /** Legacy moves whose notation and coordinates were not stored. */
+  unrecordedMoveCount?: number;
   /** The same moves in SAN, for display. */
   history: string[];
   lastMove?: ChessMovePayload;
@@ -148,14 +152,18 @@ export const chessDefinition = defineGameDefinition(gameMetadata, {
       throw new Error("Chess move payload must be validated before applying");
     }
     const mover = colorName(turnOf(stage));
-    const chess = chessFromStage(stage);
+    const replay = replayMoves(stage.moveHistory, stage.fen, stage.replayBaseFen);
+    const chess = replay ?? new Chess(stage.fen);
+    const replayBaseFen = replay ? stage.replayBaseFen : stage.fen;
     const move = chess.move(chessMoveInput(parsed), { strict: true });
     const lastMove = movePayload(action.playerId, move);
     const outcome = outcomeOfPosition(chess, state.players);
 
     const nextStage: ChessStageState = {
       fen: chess.fen(),
-      moveHistory: [...stage.moveHistory, moveRecord(move)],
+      moveHistory: [...(replay ? stage.moveHistory : []), moveRecord(move)],
+      ...(replayBaseFen ? { replayBaseFen } : {}),
+      ...(stage.unrecordedMoveCount ? { unrecordedMoveCount: stage.unrecordedMoveCount } : {}),
       history: [...stage.history, move.san],
       lastMove,
       // The mover pays for the time they used; the opponent's clock starts now unless the game is over.
@@ -194,6 +202,7 @@ export const chessDefinition = defineGameDefinition(gameMetadata, {
     stage.clocks = { ...stage.clocks, [colorName(turn)]: 0 };
     stage.clockStartedAt = null;
     stage.outcome = outcome;
+    state.stageState = stage as unknown as JsonObject;
     state.phase = "finished";
 
     const events: GameEvent[] = [
@@ -228,7 +237,7 @@ export const chessDefinition = defineGameDefinition(gameMetadata, {
       clocks: stage.clocks,
       ...(stage.clockStartedAt === null ? {} : { activeClockStartedAt: stage.clockStartedAt }),
       ...(deadline === null ? {} : { turnDeadline: deadline }),
-      moveCount: stage.moveHistory.length,
+      moveCount: Math.max(stage.history.length, stage.moveHistory.length) + (stage.unrecordedMoveCount ?? 0),
       history: stage.history,
       ...(stage.lastMove ? { lastMove: stage.lastMove } : {}),
       check: chess.isCheck(),
@@ -429,21 +438,96 @@ function stableChessNoise(seed: string, key: string): number {
   return (hash >>> 0) / 0xffffffff;
 }
 
-function chessStage(value: JsonObject): ChessStageState {
-  return value as unknown as ChessStageState;
+/** Deserializes pre-#31 flat stages without resetting the position or the running clock. */
+export function normalizeLegacyChessStage(stageState: JsonObject): JsonObject {
+  if (
+    (stageState.clockStartedAt === null || typeof stageState.clockStartedAt === "number") &&
+    (stageState.outcome === null || isJsonRecord(stageState.outcome)) &&
+    Array.isArray(stageState.moveHistory)
+  ) return stageState;
+
+  // Some waiting rooms have no stage yet; this is not an older Chess position.
+  if (typeof stageState.fen !== "string") return stageState;
+  const position = new Chess(stageState.fen);
+  const fen = position.fen();
+  const rawClocks = isJsonRecord(stageState.clocks) ? stageState.clocks : undefined;
+  const white = finiteNumber(rawClocks?.white) ?? playerClockMs;
+  const black = finiteNumber(rawClocks?.black) ?? playerClockMs;
+  const clocks = { white: Math.max(0, white), black: Math.max(0, black) };
+  const outcome = legacyOutcome(stageState);
+  const deadline = finiteNumber(stageState.turnDeadline);
+  const clockStartedAt = outcome
+    ? null
+    : (deadline === undefined
+      ? finiteNumber(stageState.activeClockStartedAt) ?? null
+      : deadline - clocks[colorName(position.turn())]);
+
+  const history = Array.isArray(stageState.history)
+    ? stageState.history.filter((move): move is string => typeof move === "string")
+    : [];
+  const coordinateMoves = Array.isArray(stageState.moveHistory) ? stageState.moveHistory : [];
+  const recovered = replayMoves(coordinateMoves, fen) ?? replayMoves(history, fen);
+  const moveHistory = recovered?.history({ verbose: true }).map(moveRecord) ?? [];
+  const missingMoves = Math.max(0, (finiteNumber(stageState.moveCount) ?? 0) - Math.max(history.length, moveHistory.length));
+  return {
+    fen,
+    moveHistory,
+    ...(!recovered ? { replayBaseFen: fen } : {}),
+    ...(missingMoves ? { unrecordedMoveCount: missingMoves } : {}),
+    history,
+    ...(isJsonRecord(stageState.lastMove) ? { lastMove: stageState.lastMove } : {}),
+    clocks,
+    clockStartedAt,
+    outcome
+  } as unknown as JsonObject;
 }
 
-/** The position as a chess.js game, with its move history when it was played out from the start. */
+function finiteNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function legacyOutcome(stage: JsonObject): ChessOutcome | null {
+  switch (stage.result) {
+    case "checkmate":
+    case "timeout":
+      return {
+        kind: stage.result,
+        winnerPlayerId: typeof stage.winnerPlayerId === "string" ? stage.winnerPlayerId : undefined
+      };
+    case "stalemate":
+      return { kind: "stalemate" };
+    case "draw":
+      return { kind: "draw", reason: typeof stage.drawReason === "string" ? stage.drawReason : "draw" };
+    default:
+      return null;
+  }
+}
+
+function chessStage(value: JsonObject): ChessStageState {
+  return normalizeLegacyChessStage(value) as unknown as ChessStageState;
+}
+
+/** Accept history only if replay reaches the persisted position, not merely if moves are legal. */
+function replayMoves(moves: unknown[], fen: string, baseFen?: string): Chess | null {
+  try {
+    const chess = new Chess(baseFen);
+    for (const move of moves) {
+      if (typeof move === "string") {
+        chess.move(move, { strict: true });
+      } else {
+        const parsed = parseMovePayload(move);
+        if (!parsed.ok) return null;
+        chess.move(chessMoveInput(parsed), { strict: true });
+      }
+    }
+    return chess.fen() === fen ? chess : null;
+  } catch {
+    return null;
+  }
+}
+
 function chessFromStage(stage: ChessStageState): Chess {
-  // A position set up directly (no recorded moves) can only be loaded from its FEN.
-  if (stage.moveHistory.length === 0) {
-    return new Chess(stage.fen);
-  }
-  const chess = new Chess();
-  for (const move of stage.moveHistory) {
-    chess.move(chessMoveInput(move), { strict: true });
-  }
-  return chess;
+  return replayMoves(stage.moveHistory, stage.fen, stage.replayBaseFen) ?? new Chess(stage.fen);
 }
 
 function turnOf(stage: ChessStageState): Color {

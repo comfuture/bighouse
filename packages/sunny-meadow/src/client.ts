@@ -20,6 +20,7 @@ import {
 } from "./catalogs";
 import { SunnyAudioManager } from "./audio";
 import { gameMetadata } from "./client-metadata";
+import { createWeaponSwitchSequence } from "./weapon-switch-sequence";
 import { compileStageForRuntime, type CompiledStage, type RuntimeLadder } from "./map-schema";
 import {
   aabbOverlap,
@@ -422,7 +423,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
   const optimisticItemLocks = new Map<string, number>();
   let localPredSeq = 0;
   const nextPredId = (prefix: string) => `${prefix}_${++localPredSeq}_${Date.now().toString(36)}`;
-  let weaponSwitchSeq = 0;
+  const weaponSwitchSequence = createWeaponSwitchSequence();
   let pendingWeaponSwitch: { weaponId: string; seq: number; expiresAt: number } | null = null;
   let serverClockOffset = 0;
   let clockSynced = false;
@@ -439,7 +440,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
   function selectWeaponLocal(wid: string): void {
     if (downed()) return;
     if (!localPlayer.unlockedWeapons.includes(wid) || localPlayer.equippedWeaponId === wid) return;
-    weaponSwitchSeq += 1;
+    const weaponSwitchSeq = weaponSwitchSequence.next();
     pendingWeaponSwitch = {
       weaponId: wid,
       seq: weaponSwitchSeq,
@@ -815,8 +816,8 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
     if (typeof priv.score === "number") localPlayer.score = priv.score;
     if (typeof priv.mobsDefeated === "number") localPlayer.mobsDefeated = priv.mobsDefeated;
     if (Array.isArray(priv.unlockedWeapons)) localPlayer.unlockedWeapons = [...priv.unlockedWeapons];
+    const srvSeq = weaponSwitchSequence.observe(priv.weaponSwitchSeq);
     if (typeof priv.equippedWeaponId === "string") {
-      const srvSeq = typeof priv.weaponSwitchSeq === "number" ? priv.weaponSwitchSeq : 0;
       if (pendingWeaponSwitch && nowClock < pendingWeaponSwitch.expiresAt) {
         const caughtUp =
           (pendingWeaponSwitch.seq > 0 && srvSeq >= pendingWeaponSwitch.seq) ||

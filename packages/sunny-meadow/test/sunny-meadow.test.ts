@@ -761,6 +761,32 @@ describe("@bighouse/sunny-meadow multiplayer synchronization", () => {
     expect(pub.mobs["s1_iso_mob1"]).toBeDefined();
   });
 
+  it("updates persisted mob max HP without refilling live damage or changing the respawn deadline", () => {
+    const state = setupTwoPlayers();
+    const stage1 = (state.stageState as {
+      stages: Record<string, { mobs: Record<string, {
+        alive: boolean; hp: number; maxHp: number; respawnAt: number; x: number;
+      }> }>;
+    }).stages["stage-1"]!;
+    const live = stage1.mobs.s1_mob_1a!;
+    const dead = stage1.mobs.s1_mob_1b!;
+    const newMax = MOB_CATALOG.red_mushroom!.hp;
+    const respawnAt = now + 5_000;
+    const x = live.x + 10;
+    Object.assign(live, { maxHp: newMax + 6, hp: newMax + 5, x });
+    Object.assign(dead, { alive: false, maxHp: newMax + 6, hp: 0, respawnAt });
+
+    const timer = sunnyMeadowDefinition.nextTimers!({ state, now })[0]!;
+    expect(timer.runAt).toBe(respawnAt);
+    expect(live).toMatchObject({ alive: true, maxHp: newMax, hp: newMax - 1, x });
+    expect(dead).toMatchObject({ alive: false, maxHp: newMax, hp: 0, respawnAt });
+    sunnyMeadowDefinition.applyTimer!({ state, now: respawnAt - 1 }, timer);
+    expect(dead).toMatchObject({ alive: false, hp: 0, respawnAt });
+    sunnyMeadowDefinition.applyTimer!({ state, now: respawnAt }, timer);
+    expect(dead).toMatchObject({ alive: true, maxHp: newMax, hp: newMax, respawnAt: 0 });
+    expect(live).toMatchObject({ alive: true, hp: newMax - 1, x });
+  });
+
   it("syncs mob positions from the closest player via handleSignal and rejects farther-player overwrites", () => {
     const state = setupTwoPlayers();
     const mobId = "s1_mob_1a";
@@ -1203,6 +1229,46 @@ describe("@bighouse/sunny-meadow idle HP regeneration", () => {
     res = stepIdleRegen({ idleTimer: 10, tickTimer: 2 }, { hasInput: false, isResting: true, hp: maxHp, maxHp, dt: 0.5 });
     expect(res.active).toBe(false);
     expect(res.shouldHeal).toBe(false);
+  });
+
+  it("heals after resting on a ladder and resets that delay when climbing resumes", () => {
+    const now = 1_700_000_950_000;
+    const room = {
+      roomId: "room-ladder-rest", gameId: "sunny-meadow", mode: "default", minPlayers: 1,
+      maxPlayers: 500, config: {}, createdAt: now
+    };
+    const p1 = { playerId: "p1", seat: 0, connected: true, ready: true, joinedAt: now };
+    let state: RoomState = {
+      room, phase: "active", version: 1, players: [p1],
+      stageState: sunnyMeadowDefinition.initialStageState({ room, players: [], now }),
+      playerStates: {}, updatedAt: now
+    };
+    state = sunnyMeadowDefinition.onPlayerJoin!({ state, now }, p1, null).state;
+    const player = state.playerStates.p1!;
+    player.hp = 80;
+    const x = Number(player.x);
+    const y = Number(player.y);
+    const sendClimb = (elapsed: number, movedY: number, vy: number) => {
+      const result = sunnyMeadowDefinition.handleSignal!({ state, now: now + elapsed }, "p1", {
+        type: "playerPose",
+        payload: { x, y: movedY, vx: 0, vy, animState: "climb" }
+      })!;
+      Object.assign(player, result.playerStatePatch);
+      return result.playerStatePatch;
+    };
+
+    expect(sendClimb(9_000, y, 0)).not.toHaveProperty("lastActivityAt");
+    const heal = sunnyMeadowDefinition.applyAction({ state, now: now + 10_000 }, {
+      playerId: "p1", clientActionId: "heal-from-ladder", expectedVersion: 0, type: "idleRegen", payload: {}
+    });
+    expect(heal.events).toContainEqual(expect.objectContaining({ type: "sunny.playerHealed" }));
+    expect(sendClimb(11_000, y - 8, -80)).toHaveProperty("lastActivityAt", now + 11_000);
+    const tooEarly = sunnyMeadowDefinition.applyAction({ state, now: now + 14_000 }, {
+      playerId: "p1", clientActionId: "after-ladder-motion", expectedVersion: 0, type: "idleRegen", payload: {}
+    });
+    expect(tooEarly.events).toContainEqual(expect.objectContaining({
+      type: "sunny.actionIgnored", payload: expect.objectContaining({ reason: "not_idle_long_enough" })
+    }));
   });
 
   it("enforces 10s idle delay, clamps at maxHp, and preserves already-recovered HP when interrupted by input or attack", () => {

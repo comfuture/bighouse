@@ -170,14 +170,28 @@ function reconcileWorldStages(world: SunnyMeadowWorldState): boolean {
       if (!existing || existing.templateId !== spawn.templateId) {
         stageRt.mobs[mobId] = createInitialMobState(stage, mobId);
         mutated = true;
-      } else if (typeof existing.x !== "number" || typeof existing.y !== "number") {
-        const home = computeMobHome(stage, spawn, tpl);
-        existing.x = home.x;
-        existing.y = home.y;
-        existing.vx = 0;
-        existing.vy = 0;
-        existing.facing = home.facing;
-        mutated = true;
+      } else {
+        if (existing.maxHp !== tpl.hp) {
+          if (existing.alive) {
+            // Carry forward damage without refilling or killing an in-flight mob.
+            const damage = Math.max(0, existing.maxHp - existing.hp);
+            existing.hp = damage === 0
+              ? tpl.hp
+              : Math.max(1, Math.min(existing.hp, tpl.hp - damage));
+          }
+          // A defeated mob keeps its current respawn deadline and uses the new max on respawn.
+          existing.maxHp = tpl.hp;
+          mutated = true;
+        }
+        if (typeof existing.x !== "number" || typeof existing.y !== "number") {
+          const home = computeMobHome(stage, spawn, tpl);
+          existing.x = home.x;
+          existing.y = home.y;
+          existing.vx = 0;
+          existing.vy = 0;
+          existing.facing = home.facing;
+          mutated = true;
+        }
       }
     }
 
@@ -1369,8 +1383,10 @@ export const sunnyMeadowDefinition = defineGameDefinition(gameMetadata, {
     const { x, y } = clampToStage(ps.stageId, rawX, rawY);
     const vx = Number.isFinite(rawVx) ? Math.max(-600, Math.min(600, Math.round(rawVx))) : 0;
     const vy = Number.isFinite(rawVy) ? Math.max(-900, Math.min(900, Math.round(rawVy))) : 0;
+    // The client emits "climb" while hanging still as well as while climbing.
+    const activeAnimation = animState !== "idle" && animState !== "climb";
     const movedOrActive =
-      animState !== "idle" || Math.abs(vx) > 8 || Math.abs(vy) > 8 || Math.abs(x - prevX) > 2 || Math.abs(y - prevY) > 2;
+      activeAnimation || Math.abs(vx) > 8 || Math.abs(vy) > 8 || Math.abs(x - prevX) > 2 || Math.abs(y - prevY) > 2;
 
     // Update sender position on the cloned state before evaluating nearest-player mob authority
     ps.x = x;
