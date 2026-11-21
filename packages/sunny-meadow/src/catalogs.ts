@@ -1,11 +1,61 @@
 import type {
   ItemTemplate,
+  MobAiKind,
   MobTemplate,
   StageTheme,
+  StatusEffectKind,
   WeaponTemplate
 } from "./types";
 
 export const SCHEMA_VERSION = "2.0.0";
+
+export const STATUS_METADATA: Record<
+  StatusEffectKind,
+  { label: string; color: string; bg: string; isDot?: boolean }
+> = {
+  stun: { label: "기절", color: "#FFD740", bg: "rgba(93, 58, 26, 0.88)" },
+  crystal_dot: { label: "수정 파편", color: "#80DEEA", bg: "rgba(13, 71, 161, 0.88)", isDot: true },
+  burn: { label: "화상", color: "#FFAB40", bg: "rgba(183, 28, 28, 0.88)", isDot: true },
+  shock: { label: "감전", color: "#FFFF00", bg: "rgba(69, 39, 160, 0.88)", isDot: true },
+  slow: { label: "감속", color: "#E1BEE7", bg: "rgba(74, 20, 140, 0.88)" },
+  poison: { label: "중독", color: "#CCFF90", bg: "rgba(51, 105, 30, 0.88)", isDot: true }
+};
+
+/** Delay (seconds) an active mob telegraphs a red '!' before launching its attack. */
+export const MOB_ALERT_TELEGRAPH_SEC = 0.5;
+
+export function isActiveMobAi(ai: MobAiKind): boolean {
+  return ai !== "patrol";
+}
+
+export type LeggedSpriteSpec = {
+  splitY: number;
+  midX: number;
+  strideX: number;
+  liftY: number;
+  rot: number;
+  gait: "biped" | "quad" | "spider";
+};
+
+/**
+ * Anatomy metadata (in 128x128 sprite pixel space) for every legged character
+ * and monster so SunnyRenderer generates a crisp 4-frame walk-cycle + jump
+ * leg-stride sprite sheet sequence automatically.
+ */
+export const LEGGED_SPRITE_CONFIG: Record<string, LeggedSpriteSpec> = {
+  hero: { splitY: 96, midX: 64, strideX: 7.5, liftY: 6.5, rot: 0.24, gait: "biped" },
+  red_mushroom: { splitY: 105, midX: 64, strideX: 5.5, liftY: 5, rot: 0.18, gait: "biped" },
+  yellow_hamster: { splitY: 106, midX: 68, strideX: 6, liftY: 5, rot: 0.18, gait: "biped" },
+  blue_rabbit: { splitY: 104, midX: 64, strideX: 6.5, liftY: 6, rot: 0.2, gait: "biped" },
+  emerald_frog: { splitY: 95, midX: 66, strideX: 6, liftY: 5, rot: 0.16, gait: "quad" },
+  orange_fox: { splitY: 94, midX: 66, strideX: 7.5, liftY: 6.5, rot: 0.22, gait: "quad" },
+  crimson_boar: { splitY: 92, midX: 58, strideX: 7.5, liftY: 6, rot: 0.22, gait: "quad" },
+  cobalt_golem: { splitY: 95, midX: 65, strideX: 7, liftY: 6, rot: 0.18, gait: "biped" },
+  violet_spider: { splitY: 86, midX: 62, strideX: 6, liftY: 5.5, rot: 0.2, gait: "spider" },
+  scarlet_drake: { splitY: 98, midX: 72, strideX: 6.5, liftY: 6, rot: 0.2, gait: "biped" }
+};
+
+export const WALK_CYCLE_FRAMES = 4;
 
 export const VIEWPORT = {
   width: 960,
@@ -40,8 +90,87 @@ export const PLAYER_CONFIG = {
   portalCooldown: 0.7,
   startingPotions: 2,
   potionHealRatio: 0.45,
-  minPotionHeal: 55
+  minPotionHeal: 55,
+  /** Seconds of zero player input before gentle idle HP regeneration begins */
+  idleRegenDelaySec: 10,
+  /** Interval (seconds) between gentle idle HP regeneration ticks */
+  idleRegenIntervalSec: 2.0,
+  /** Fraction of maxHp recovered per idle tick (much smaller than apple 25% / potion 45%) */
+  idleRegenRatio: 0.03,
+  minIdleRegenHeal: 2
 } as const;
+
+export function computeIdleRegenAmount(maxHp: number): number {
+  return Math.max(PLAYER_CONFIG.minIdleRegenHeal, Math.round(maxHp * PLAYER_CONFIG.idleRegenRatio));
+}
+
+export type IdleRegenState = {
+  idleTimer: number;
+  tickTimer: number;
+};
+
+/**
+ * Pure idle HP regeneration state machine:
+ * - Resets immediately on any player input, damage, or non-resting movement.
+ * - Activates after 10 seconds of zero input when hp < maxHp.
+ * - Triggers a gentle heal tick at 10s and every `idleRegenIntervalSec` thereafter, never exceeding maxHp.
+ */
+export function stepIdleRegen(
+  state: IdleRegenState,
+  input: {
+    hasInput: boolean;
+    isResting: boolean;
+    hp: number;
+    maxHp: number;
+    dt: number;
+  }
+): IdleRegenState & { active: boolean; shouldHeal: boolean } {
+  if (input.hasInput || !input.isResting) {
+    return { idleTimer: 0, tickTimer: 0, active: false, shouldHeal: false };
+  }
+
+  const prevIdle = state.idleTimer;
+  const nextIdle = prevIdle + input.dt;
+  if (nextIdle < PLAYER_CONFIG.idleRegenDelaySec) {
+    return { idleTimer: nextIdle, tickTimer: 0, active: false, shouldHeal: false };
+  }
+
+  if (input.hp >= input.maxHp) {
+    return {
+      idleTimer: PLAYER_CONFIG.idleRegenDelaySec,
+      tickTimer: 0,
+      active: false,
+      shouldHeal: false
+    };
+  }
+
+  // Trigger first gentle heal right when crossing the 10s idle threshold
+  if (prevIdle < PLAYER_CONFIG.idleRegenDelaySec) {
+    return {
+      idleTimer: PLAYER_CONFIG.idleRegenDelaySec,
+      tickTimer: 0,
+      active: true,
+      shouldHeal: true
+    };
+  }
+
+  const nextTick = state.tickTimer + input.dt;
+  if (nextTick >= PLAYER_CONFIG.idleRegenIntervalSec) {
+    return {
+      idleTimer: PLAYER_CONFIG.idleRegenDelaySec,
+      tickTimer: nextTick - PLAYER_CONFIG.idleRegenIntervalSec,
+      active: true,
+      shouldHeal: true
+    };
+  }
+
+  return {
+    idleTimer: PLAYER_CONFIG.idleRegenDelaySec,
+    tickTimer: nextTick,
+    active: true,
+    shouldHeal: false
+  };
+}
 
 export const WEAPON_CATALOG: Record<string, WeaponTemplate> = {
   wooden_sword: {
@@ -116,14 +245,17 @@ export const WEAPON_CATALOG: Record<string, WeaponTemplate> = {
     accentColor: "#F57F17",
     iconIndex: 7,
     sfx: "sfx_attack_sword",
-    description: "강력한 일격과 큰 밀림 효과의 황금 망치"
+    special: {
+      statuses: [{ kind: "stun", durationSec: 1.0 }]
+    },
+    description: "적중 시 대상을 1초간 기절(별 헤일로)시키는 황금 망치"
   },
   maple_greatsword: {
     id: "maple_greatsword",
     name: "단풍 대검",
     type: "melee",
     atk: 58,
-    cooldown: 0.32,
+    cooldown: 0.34,
     reach: 80,
     height: 54,
     knockbackX: 270,
@@ -132,16 +264,26 @@ export const WEAPON_CATALOG: Record<string, WeaponTemplate> = {
     critMult: 1.6,
     slashColor: "#FF8A65",
     accentColor: "#D84315",
-    iconIndex: 5,
+    iconIndex: 8,
     sfx: "sfx_attack_sword",
-    description: "단풍 협곡의 열기를 품은 장검"
+    special: {
+      splash: {
+        rangeTiles: 2.0,
+        heightPx: 62,
+        damageMult: 0.68,
+        waveColor: "#FF7043",
+        accentColor: "#FFD54F",
+        style: "maple_wave"
+      }
+    },
+    description: "전방 2칸 범위의 단풍 검기 스플래시 파동을 날리는 대검"
   },
   crystal_rod: {
     id: "crystal_rod",
     name: "수정 지팡이",
     type: "ranged",
     atk: 72,
-    cooldown: 0.32,
+    cooldown: 0.33,
     reach: 52,
     height: 46,
     projectileSpeed: 640,
@@ -153,9 +295,12 @@ export const WEAPON_CATALOG: Record<string, WeaponTemplate> = {
     critMult: 1.6,
     slashColor: "#40C4FF",
     accentColor: "#0277BD",
-    iconIndex: 6,
+    iconIndex: 9,
     sfx: "sfx_attack_staff",
-    description: "적을 꿰뚫는 수정 광선을 발사"
+    special: {
+      statuses: [{ kind: "crystal_dot", durationSec: 4.0, dotRatio: 0.16, tickIntervalSec: 0.8 }]
+    },
+    description: "적을 꿰뚫고 4초간 수정 파편 지속 피해를 입히는 지팡이"
   },
   thunder_dagger: {
     id: "thunder_dagger",
@@ -171,16 +316,19 @@ export const WEAPON_CATALOG: Record<string, WeaponTemplate> = {
     critMult: 1.65,
     slashColor: "#FFFF00",
     accentColor: "#F9A825",
-    iconIndex: 5,
+    iconIndex: 10,
     sfx: "sfx_attack_sword",
-    description: "초고속 연타와 높은 치명타의 번개 검"
+    special: {
+      statuses: [{ kind: "shock", durationSec: 2.4, dotRatio: 0.14, tickIntervalSec: 0.8, speedMult: 0.6 }]
+    },
+    description: "초고속 연타로 감전(감속 + 전기 지속 피해)을 거는 단검"
   },
   solar_hammer: {
     id: "solar_hammer",
     name: "태양 해머",
     type: "melee",
     atk: 118,
-    cooldown: 0.4,
+    cooldown: 0.42,
     reach: 84,
     height: 60,
     knockbackX: 370,
@@ -189,16 +337,27 @@ export const WEAPON_CATALOG: Record<string, WeaponTemplate> = {
     critMult: 1.7,
     slashColor: "#FFCA28",
     accentColor: "#FF6F00",
-    iconIndex: 7,
+    iconIndex: 11,
     sfx: "sfx_attack_sword",
-    description: "구름 신전의 태양빛을 응축한 대망치"
+    special: {
+      statuses: [{ kind: "stun", durationSec: 1.4 }],
+      splash: {
+        rangeTiles: 1.6,
+        heightPx: 66,
+        damageMult: 0.6,
+        waveColor: "#FFD740",
+        accentColor: "#FF6F00",
+        style: "solar_shockwave"
+      }
+    },
+    description: "1.4초 기절과 태양 충격파 스플래시를 터뜨리는 대망치"
   },
   dragon_blade: {
     id: "dragon_blade",
     name: "용린 블레이드",
     type: "melee",
     atk: 148,
-    cooldown: 0.28,
+    cooldown: 0.29,
     reach: 86,
     height: 58,
     knockbackX: 300,
@@ -207,16 +366,27 @@ export const WEAPON_CATALOG: Record<string, WeaponTemplate> = {
     critMult: 1.7,
     slashColor: "#FF5252",
     accentColor: "#B71C1C",
-    iconIndex: 5,
+    iconIndex: 12,
     sfx: "sfx_attack_sword",
-    description: "화산 용의 비늘로 벼려낸 붉은 검"
+    special: {
+      statuses: [{ kind: "burn", durationSec: 3.5, dotRatio: 0.18, tickIntervalSec: 0.7 }],
+      splash: {
+        rangeTiles: 2.2,
+        heightPx: 66,
+        damageMult: 0.7,
+        waveColor: "#FF3D00",
+        accentColor: "#FFD54F",
+        style: "dragon_flame"
+      }
+    },
+    description: "2.2칸 화염 검기 스플래시와 3.5초 화상 지속 피해를 입히는 대검"
   },
   nebula_staff: {
     id: "nebula_staff",
     name: "성운 지팡이",
     type: "ranged",
     atk: 175,
-    cooldown: 0.29,
+    cooldown: 0.3,
     reach: 56,
     height: 50,
     projectileSpeed: 720,
@@ -228,9 +398,15 @@ export const WEAPON_CATALOG: Record<string, WeaponTemplate> = {
     critMult: 1.75,
     slashColor: "#EA80FC",
     accentColor: "#6A1B9A",
-    iconIndex: 6,
+    iconIndex: 13,
     sfx: "sfx_attack_staff",
-    description: "별빛 정상의 성운 탄환을 날리는 궁극 지팡이"
+    special: {
+      statuses: [
+        { kind: "stun", durationSec: 0.8 },
+        { kind: "burn", durationSec: 4.0, dotRatio: 0.18, tickIntervalSec: 0.8 }
+      ]
+    },
+    description: "3관통 성운탄으로 중력 기절과 4초 성운 화상을 동시에 부여"
   }
 };
 
@@ -254,26 +430,27 @@ export const WEAPON_ORDER = [
  * stronger monsters with increasingly distinct movement & attack patterns.
  */
 export const MOB_CATALOG: Record<string, MobTemplate> = {
-  // Stage 1 (Lv 1-3)
+  // Stage 1 (Lv 1-3): welcoming tutorial curve — generous XP, gentle damage, narrow ~2-tile aggro, same-floor only
   red_mushroom: {
     id: "red_mushroom",
     name: "빨간 버섯",
     spriteKey: "red_mushroom",
     primaryColor: "#E53935",
     level: 1,
-    hp: 38,
-    atk: 10,
-    exp: 36,
+    hp: 32,
+    atk: 7,
+    exp: 46,
     score: 100,
-    speed: 68,
+    speed: 58,
     width: 36,
     height: 38,
     drawScale: 1.0,
     ai: "patrol",
-    aggroRange: 170,
+    aggroRange: 96,
+    aggroVerticalRange: 40,
     knockbackResist: 0.0,
     respawnSec: 9,
-    dropChance: 0.25,
+    dropChance: 0.28,
     dropItem: "red_apple"
   },
   yellow_hamster: {
@@ -282,43 +459,45 @@ export const MOB_CATALOG: Record<string, MobTemplate> = {
     spriteKey: "yellow_hamster",
     primaryColor: "#FFB300",
     level: 2,
-    hp: 56,
-    atk: 13,
-    exp: 52,
+    hp: 44,
+    atk: 9,
+    exp: 64,
     score: 140,
-    speed: 108,
-    dashSpeed: 190,
+    speed: 74,
+    dashSpeed: 126,
     width: 38,
     height: 38,
     drawScale: 1.0,
     ai: "dash",
-    aggroRange: 210,
-    knockbackResist: 0.05,
+    aggroRange: 100, // ~2 tiles (96px): only approaches nearby players on the same floor
+    aggroVerticalRange: 40,
+    knockbackResist: 0.0,
     respawnSec: 10,
-    dropChance: 0.28,
+    dropChance: 0.3,
     dropItem: "red_apple"
   },
 
-  // Stage 2 (Lv 3-5): Blue Rabbit moved from Stage 1 + Emerald Frog
+  // Stage 2 (Lv 3-5): Blue Rabbit moved from Stage 1 + Emerald Frog (gentle early active range)
   blue_rabbit: {
     id: "blue_rabbit",
     name: "파란 토끼",
     spriteKey: "blue_rabbit",
     primaryColor: "#2266EE",
     level: 4,
-    hp: 96,
-    atk: 18,
-    exp: 88,
+    hp: 78,
+    atk: 14,
+    exp: 108,
     score: 200,
-    speed: 96,
-    hopVelocity: -390,
-    hopInterval: 1.3,
+    speed: 86,
+    hopVelocity: -375,
+    hopInterval: 1.45,
     width: 36,
     height: 46,
     drawScale: 1.08,
     ai: "hopper",
-    aggroRange: 230,
-    knockbackResist: 0.08,
+    aggroRange: 112, // ~2.3 tiles, same floor only
+    aggroVerticalRange: 44,
+    knockbackResist: 0.06,
     respawnSec: 10,
     dropChance: 0.3,
     dropItem: "red_apple"
@@ -329,19 +508,20 @@ export const MOB_CATALOG: Record<string, MobTemplate> = {
     spriteKey: "emerald_frog",
     primaryColor: "#00C853",
     level: 5,
-    hp: 124,
-    atk: 21,
-    exp: 118,
+    hp: 104,
+    atk: 16,
+    exp: 138,
     score: 240,
-    speed: 88,
-    hopVelocity: -490,
-    hopInterval: 1.55,
+    speed: 82,
+    hopVelocity: -465,
+    hopInterval: 1.65,
     width: 38,
     height: 38,
     drawScale: 1.04,
     ai: "double_hop",
-    aggroRange: 245,
-    knockbackResist: 0.1,
+    aggroRange: 124, // ~2.6 tiles, same floor only
+    aggroVerticalRange: 44,
+    knockbackResist: 0.08,
     respawnSec: 11,
     dropChance: 0.3,
     dropItem: "sweet_potion"
@@ -354,18 +534,19 @@ export const MOB_CATALOG: Record<string, MobTemplate> = {
     spriteKey: "purple_snake",
     primaryColor: "#9B27D8",
     level: 7,
-    hp: 175,
-    atk: 27,
-    exp: 185,
+    hp: 155,
+    atk: 22,
+    exp: 208,
     score: 300,
-    speed: 106,
-    lungeSpeed: 265,
+    speed: 98,
+    lungeSpeed: 235,
     width: 40,
     height: 40,
     drawScale: 1.06,
     ai: "lunge",
-    aggroRange: 240,
-    knockbackResist: 0.14,
+    aggroRange: 152,
+    aggroVerticalRange: 44,
+    knockbackResist: 0.12,
     respawnSec: 11,
     dropChance: 0.32,
     dropItem: "sweet_potion"
@@ -376,17 +557,18 @@ export const MOB_CATALOG: Record<string, MobTemplate> = {
     spriteKey: "orange_fox",
     primaryColor: "#FF6D00",
     level: 8,
-    hp: 215,
-    atk: 31,
-    exp: 240,
+    hp: 192,
+    atk: 26,
+    exp: 265,
     score: 360,
-    speed: 126,
-    dashSpeed: 260,
+    speed: 116,
+    dashSpeed: 235,
     width: 42,
     height: 42,
     drawScale: 1.08,
     ai: "backstep",
-    aggroRange: 260,
+    aggroRange: 170,
+    aggroVerticalRange: 44,
     knockbackResist: 0.12,
     respawnSec: 11,
     dropChance: 0.32,
@@ -780,7 +962,7 @@ export const ITEM_CATALOG: Record<string, ItemTemplate> = {
     category: "weapon",
     weaponId: "maple_greatsword",
     score: 400,
-    iconIndex: 5,
+    iconIndex: 8,
     glowColor: "#FF8A65",
     sfx: "sfx_potion",
     respawnSec: 0
@@ -791,7 +973,7 @@ export const ITEM_CATALOG: Record<string, ItemTemplate> = {
     category: "weapon",
     weaponId: "crystal_rod",
     score: 500,
-    iconIndex: 6,
+    iconIndex: 9,
     glowColor: "#40C4FF",
     sfx: "sfx_potion",
     respawnSec: 0
@@ -802,7 +984,7 @@ export const ITEM_CATALOG: Record<string, ItemTemplate> = {
     category: "weapon",
     weaponId: "thunder_dagger",
     score: 600,
-    iconIndex: 5,
+    iconIndex: 10,
     glowColor: "#FFFF00",
     sfx: "sfx_potion",
     respawnSec: 0
@@ -813,7 +995,7 @@ export const ITEM_CATALOG: Record<string, ItemTemplate> = {
     category: "weapon",
     weaponId: "solar_hammer",
     score: 750,
-    iconIndex: 7,
+    iconIndex: 11,
     glowColor: "#FFCA28",
     sfx: "sfx_potion",
     respawnSec: 0
@@ -824,7 +1006,7 @@ export const ITEM_CATALOG: Record<string, ItemTemplate> = {
     category: "weapon",
     weaponId: "dragon_blade",
     score: 900,
-    iconIndex: 5,
+    iconIndex: 12,
     glowColor: "#FF5252",
     sfx: "sfx_potion",
     respawnSec: 0
@@ -835,7 +1017,7 @@ export const ITEM_CATALOG: Record<string, ItemTemplate> = {
     category: "weapon",
     weaponId: "nebula_staff",
     score: 1200,
-    iconIndex: 6,
+    iconIndex: 13,
     glowColor: "#EA80FC",
     sfx: "sfx_potion",
     respawnSec: 0

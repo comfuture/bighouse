@@ -12,9 +12,11 @@ import type {
 } from "@bighouse/game-sdk/server";
 import { createGameEventId, defineGameDefinition } from "@bighouse/game-sdk/server";
 import {
+  computeIdleRegenAmount,
   ITEM_CATALOG,
   MOB_CATALOG,
   PLAYER_CONFIG,
+  STATUS_METADATA,
   WEAPON_CATALOG,
   WEAPON_ORDER
 } from "./catalogs";
@@ -38,6 +40,7 @@ import type {
   ServerItemState,
   ServerMobState,
   ServerStageRuntime,
+  StatusEffectKind,
   SunnyMeadowWorldState,
   WorldPlayerState
 } from "./types";
@@ -66,43 +69,305 @@ export function computeDeterministicHit(
   return { damage, isCrit };
 }
 
+function computeMobHome(
+  stage: ReturnType<typeof getStageById>,
+  spawn: { x: number; y: number; facing: number },
+  tpl: { width: number; height: number; flying?: boolean }
+): { x: number; y: number; facing: number } {
+  const ts = stage.meta.tileSize;
+  const x = Math.round(spawn.x * ts - tpl.width * 0.5);
+  const y = Math.round(tpl.flying ? spawn.y * ts - tpl.height - 76 : spawn.y * ts - tpl.height);
+  return { x, y, facing: spawn.facing < 0 ? -1 : 1 };
+}
+
+function createInitialMobState(
+  stage: ReturnType<typeof getStageById>,
+  mobId: string
+): ServerMobState {
+  const spawn = stage.layers.mobSpawns.byId[mobId]!;
+  const tpl = MOB_CATALOG[spawn.templateId]!;
+  const home = computeMobHome(stage, spawn, tpl);
+  return {
+    id: mobId,
+    templateId: spawn.templateId,
+    alive: true,
+    hp: tpl.hp,
+    maxHp: tpl.hp,
+    inCombat: false,
+    respawnAt: 0,
+    spawnProtectUntil: 0,
+    lastHitAt: 0,
+    x: home.x,
+    y: home.y,
+    vx: 0,
+    vy: 0,
+    facing: home.facing,
+    contributors: {},
+    defeatedAt: 0,
+    rewardedPlayers: []
+  };
+}
+
+function createInitialItemState(itemId: string, templateId: string): ServerItemState {
+  return {
+    id: itemId,
+    templateId,
+    available: true,
+    respawnAt: 0,
+    collectedAt: 0,
+    collectedBy: []
+  };
+}
+
 function buildInitialWorldState(): SunnyMeadowWorldState {
   const stages: Record<string, ServerStageRuntime> = {};
   for (const stage of ALL_STAGES) {
     const mobs: Record<string, ServerMobState> = {};
     for (const mobId of stage.layers.mobSpawns.allIds) {
-      const spawn = stage.layers.mobSpawns.byId[mobId]!;
-      const tpl = MOB_CATALOG[spawn.templateId]!;
-      mobs[mobId] = {
-        id: mobId,
-        templateId: spawn.templateId,
-        alive: true,
-        hp: tpl.hp,
-        maxHp: tpl.hp,
-        inCombat: false,
-        respawnAt: 0,
-        spawnProtectUntil: 0,
-        lastHitAt: 0,
-        contributors: {},
-        defeatedAt: 0,
-        rewardedPlayers: []
-      };
+      mobs[mobId] = createInitialMobState(stage, mobId);
     }
     const items: Record<string, ServerItemState> = {};
     for (const itemId of stage.layers.itemSpawns.allIds) {
       const spawn = stage.layers.itemSpawns.byId[itemId]!;
-      items[itemId] = {
-        id: itemId,
-        templateId: spawn.templateId,
-        available: true,
-        respawnAt: 0,
-        collectedAt: 0,
-        collectedBy: []
-      };
+      items[itemId] = createInitialItemState(itemId, spawn.templateId);
     }
     stages[stage.meta.id] = { stageId: stage.meta.id, mobs, items };
   }
   return { stages, playerStageMap: {}, joinCounter: 0 };
+}
+
+/**
+ * Keeps long-lived persistent rooms synchronized with the current stage catalog
+ * after map updates: adds new mob/item spawns, prunes removed IDs, and backfills
+ * missing mob kinematics while preserving live HP/respawn timers of unchanged IDs.
+ */
+function reconcileWorldStages(world: SunnyMeadowWorldState): boolean {
+  let mutated = false;
+  if (!world.stages) {
+    world.stages = {};
+    mutated = true;
+  }
+  for (const stage of ALL_STAGES) {
+    const stageId = stage.meta.id;
+    let stageRt = world.stages[stageId];
+    if (!stageRt) {
+      stageRt = { stageId, mobs: {}, items: {} };
+      world.stages[stageId] = stageRt;
+      mutated = true;
+    }
+
+    const validMobIds = new Set(stage.layers.mobSpawns.allIds);
+    for (const existingId of Object.keys(stageRt.mobs)) {
+      if (!validMobIds.has(existingId)) {
+        delete stageRt.mobs[existingId];
+        mutated = true;
+      }
+    }
+    for (const mobId of stage.layers.mobSpawns.allIds) {
+      const spawn = stage.layers.mobSpawns.byId[mobId]!;
+      const tpl = MOB_CATALOG[spawn.templateId]!;
+      const existing = stageRt.mobs[mobId];
+      if (!existing || existing.templateId !== spawn.templateId) {
+        stageRt.mobs[mobId] = createInitialMobState(stage, mobId);
+        mutated = true;
+      } else {
+        if (existing.maxHp !== tpl.hp) {
+          if (existing.alive) {
+            // Carry forward damage without refilling or killing an in-flight mob.
+            const damage = Math.max(0, existing.maxHp - existing.hp);
+            existing.hp = damage === 0
+              ? tpl.hp
+              : Math.max(1, Math.min(existing.hp, tpl.hp - damage));
+          }
+          // A defeated mob keeps its current respawn deadline and uses the new max on respawn.
+          existing.maxHp = tpl.hp;
+          mutated = true;
+        }
+        if (typeof existing.x !== "number" || typeof existing.y !== "number") {
+          const home = computeMobHome(stage, spawn, tpl);
+          existing.x = home.x;
+          existing.y = home.y;
+          existing.vx = 0;
+          existing.vy = 0;
+          existing.facing = home.facing;
+          mutated = true;
+        }
+      }
+    }
+
+    const validItemIds = new Set(stage.layers.itemSpawns.allIds);
+    for (const existingId of Object.keys(stageRt.items)) {
+      if (!validItemIds.has(existingId)) {
+        delete stageRt.items[existingId];
+        mutated = true;
+      }
+    }
+    for (const itemId of stage.layers.itemSpawns.allIds) {
+      const spawn = stage.layers.itemSpawns.byId[itemId]!;
+      const existing = stageRt.items[itemId];
+      if (!existing || existing.templateId !== spawn.templateId) {
+        stageRt.items[itemId] = createInitialItemState(itemId, spawn.templateId);
+        mutated = true;
+      }
+    }
+  }
+  return mutated;
+}
+
+function clampMobPosition(
+  stageId: string,
+  mobId: string,
+  rawX: number,
+  rawY: number
+): { x: number; y: number } | null {
+  if (!Number.isFinite(rawX) || !Number.isFinite(rawY)) return null;
+  const stage = getStageById(stageId);
+  const spawn = stage.layers.mobSpawns.byId[mobId];
+  if (!spawn) return null;
+  const tpl = MOB_CATALOG[spawn.templateId];
+  if (!tpl) return null;
+  const ts = stage.meta.tileSize;
+  const worldW = stage.meta.widthTiles * ts;
+  const worldH = stage.meta.heightTiles * ts;
+  const minX = Math.max(0, Math.round(spawn.patrolMinX * ts - 180));
+  const maxX = Math.min(worldW - tpl.width, Math.round(spawn.patrolMaxX * ts + 180));
+  const minY = 0;
+  const maxY = Math.max(0, worldH - tpl.height);
+  return {
+    x: Math.max(minX, Math.min(maxX, Math.round(rawX))),
+    y: Math.max(minY, Math.min(maxY, Math.round(rawY)))
+  };
+}
+
+function canPlayerSyncMob(
+  world: SunnyMeadowWorldState,
+  playerStates: Record<string, JsonObject>,
+  stageId: string,
+  playerId: string,
+  mob: ServerMobState,
+  now: number
+): boolean {
+  const sender = getPlayerState(playerStates, playerId);
+  if (!sender || sender.dead || sender.stageId !== stageId) return false;
+  const mobX = mob.x ?? 0;
+  const mobY = mob.y ?? 0;
+  const senderDist = Math.hypot(sender.x - mobX, sender.y - mobY);
+  if (senderDist > 1600) return false;
+
+  let closestId = playerId;
+  let closestDist = senderDist;
+  for (const [pid, sid] of Object.entries(world.playerStageMap)) {
+    if (sid !== stageId) continue;
+    const ps = getPlayerState(playerStates, pid);
+    if (!ps || ps.dead) continue;
+    const dist = Math.hypot(ps.x - mobX, ps.y - mobY);
+    if (dist < closestDist - 1 || (Math.abs(dist - closestDist) <= 1 && pid < closestId)) {
+      closestDist = dist;
+      closestId = pid;
+    }
+  }
+
+  if (closestId === playerId) return true;
+  // Hysteresis prevents authority ping-pong when two players stand at similar distance.
+  const prevAuth = mob.authorityPlayerId;
+  const prevAuthFresh =
+    Boolean(prevAuth) &&
+    prevAuth !== playerId &&
+    typeof mob.stateUpdatedAt === "number" &&
+    now - mob.stateUpdatedAt < 550;
+  if (!prevAuthFresh && senderDist <= closestDist + 160) return true;
+  if (prevAuth === playerId && senderDist <= closestDist + 140) return true;
+  return false;
+}
+
+function processDueRespawns(world: SunnyMeadowWorldState, now: number): GameEvent[] {
+  const events: GameEvent[] = [];
+  for (const stageRt of Object.values(world.stages)) {
+    const stage = STAGES_BY_ID[stageRt.stageId];
+    if (!stage) continue;
+
+    const respawnedMobs: Array<{
+      id: string;
+      hp: number;
+      maxHp: number;
+      x: number;
+      y: number;
+      facing: number;
+      spawnProtectUntil: number;
+    }> = [];
+    const respawnedItems: string[] = [];
+
+    for (const mob of Object.values(stageRt.mobs)) {
+      if (!mob.alive && mob.respawnAt > 0 && mob.respawnAt <= now) {
+        const spawn = stage.layers.mobSpawns.byId[mob.id];
+        const tpl = MOB_CATALOG[mob.templateId];
+        const home = spawn && tpl ? computeMobHome(stage, spawn, tpl) : { x: mob.x ?? 0, y: mob.y ?? 0, facing: -1 };
+        mob.alive = true;
+        mob.hp = mob.maxHp;
+        mob.inCombat = false;
+        mob.respawnAt = 0;
+        mob.contributors = {};
+        mob.defeatedAt = 0;
+        mob.rewardedPlayers = [];
+        mob.x = home.x;
+        mob.y = home.y;
+        mob.vx = 0;
+        mob.vy = 0;
+        mob.facing = home.facing;
+        mob.stateUpdatedAt = now;
+        delete mob.authorityPlayerId;
+        delete mob.statuses;
+        // 2-second blinking spawn protection: cannot attack or be damaged!
+        mob.spawnProtectUntil = now + SPAWN_PROTECTION_MS;
+        respawnedMobs.push({
+          id: mob.id,
+          hp: mob.hp,
+          maxHp: mob.maxHp,
+          x: home.x,
+          y: home.y,
+          facing: home.facing,
+          spawnProtectUntil: mob.spawnProtectUntil
+        });
+      }
+    }
+
+    for (const item of Object.values(stageRt.items)) {
+      if (!item.available && item.respawnAt > 0 && item.respawnAt <= now) {
+        item.available = true;
+        item.respawnAt = 0;
+        item.collectedAt = 0;
+        item.collectedBy = [];
+        respawnedItems.push(item.id);
+      }
+    }
+
+    if (respawnedMobs.length > 0) {
+      events.push(
+        makeEvent(
+          "sunny.mobsRespawned",
+          {
+            stageId: stageRt.stageId,
+            mobs: respawnedMobs
+          },
+          now
+        )
+      );
+    }
+
+    if (respawnedItems.length > 0) {
+      events.push(
+        makeEvent(
+          "sunny.itemsRespawned",
+          {
+            stageId: stageRt.stageId,
+            itemIds: respawnedItems
+          },
+          now
+        )
+      );
+    }
+  }
+  return events;
 }
 
 function getWorld(stageState: JsonObject): SunnyMeadowWorldState {
@@ -206,7 +471,8 @@ function createFreshPlayerState(
     unlockedWeapons,
     equippedWeaponId,
     highestStageNumber,
-    lastUpdatedAt: now
+    lastUpdatedAt: now,
+    lastActivityAt: now
   };
 }
 
@@ -257,7 +523,8 @@ function nearbyPlayersOnStage(
           level: ps.level,
           hp: ps.hp,
           maxHp: ps.maxHp,
-          equippedWeaponId: ps.equippedWeaponId
+          equippedWeaponId: ps.equippedWeaponId,
+          ...(ps.dead ? { dead: true } : {})
         }
       });
     }
@@ -294,15 +561,45 @@ function clampToStage(stageId: string, rawX: number, rawY: number): { x: number;
   };
 }
 
-/** Reviving costs the experience earned toward the next level and every coin held. */
-export function deathPenaltyOf(ps: Pick<WorldPlayerState, "xp" | "coins">): DeathPenalty {
-  return { lostXp: Math.max(0, ps.xp), lostCoins: Math.max(0, ps.coins) };
+/**
+ * Reviving penalty scales gently for tutorial levels and early stages:
+ * - Lv. 1~3 (tutorial protection): 0% XP lost, 20% coins lost.
+ * - Stage 1 (Lv. 4+): 20% XP lost, 30% coins lost.
+ * - Lv. 4~5 or Stage 2: 35% XP lost, 50% coins lost.
+ * - Stage 3+ & Lv. 6+: full current-level XP and coins lost.
+ */
+export function deathPenaltyOf(
+  ps: Pick<WorldPlayerState, "xp" | "coins"> & Partial<Pick<WorldPlayerState, "level" | "stageId">>
+): DeathPenalty {
+  const safeXp = Math.max(0, Math.floor(ps.xp));
+  const safeCoins = Math.max(0, Math.floor(ps.coins));
+  const level = typeof ps.level === "number" && ps.level >= 1 ? Math.floor(ps.level) : 6;
+  const stageNum = ps.stageId ? getStageById(ps.stageId).meta.stageNumber : 3;
+
+  let xpRatio = 1.0;
+  let coinRatio = 1.0;
+  if (level <= 3) {
+    xpRatio = 0.0;
+    coinRatio = 0.2;
+  } else if (stageNum === 1) {
+    xpRatio = 0.2;
+    coinRatio = 0.3;
+  } else if (level <= 5 || stageNum === 2) {
+    xpRatio = 0.35;
+    coinRatio = 0.5;
+  }
+
+  return {
+    lostXp: Math.floor(safeXp * xpRatio),
+    lostCoins: Math.floor(safeCoins * coinRatio)
+  };
 }
 
 /** Pays the death penalty and stands the player back up at 60% health. */
 function applyRevival(ps: WorldPlayerState): void {
-  ps.xp = 0;
-  ps.coins = 0;
+  const penalty = deathPenaltyOf(ps);
+  ps.xp = Math.max(0, ps.xp - penalty.lostXp);
+  ps.coins = Math.max(0, ps.coins - penalty.lostCoins);
   ps.hp = Math.max(20, Math.round(ps.maxHp * 0.6));
   ps.vx = 0;
   ps.vy = 0;
@@ -321,6 +618,7 @@ function checkAction(context: GameContext, action: ClientGameAction): ActionChec
   const ps = getPlayerState(context.state.playerStates, action.playerId);
   if (!ps) return { ok: false, code: "player_not_found", message: "Player state missing" };
   const world = getWorld(context.state.stageState);
+  reconcileWorldStages(world);
   const stageRt = world.stages[ps.stageId];
   if (!stageRt) return { ok: false, code: "invalid_action", message: "Unknown player stage" };
 
@@ -353,6 +651,25 @@ function checkAction(context: GameContext, action: ClientGameAction): ActionChec
           return { ok: false, code: "mob_defeated", message: "Target mob is already defeated", stale: true };
         }
       }
+      const hitKind = action.payload.hitKind === "splash" || action.payload.hitKind === "dot" ? action.payload.hitKind : "primary";
+      if (hitKind === "splash") {
+        const weapon = WEAPON_CATALOG[ps.equippedWeaponId] ?? WEAPON_CATALOG.wooden_sword!;
+        if (!weapon.special?.splash) {
+          return { ok: false, code: "no_weapon_splash", message: "Equipped weapon has no splash wave", stale: true };
+        }
+      } else if (hitKind === "dot") {
+        const dotStatus = typeof action.payload.dotStatus === "string" ? (action.payload.dotStatus as StatusEffectKind) : undefined;
+        if (!dotStatus || !STATUS_METADATA[dotStatus]?.isDot) {
+          return { ok: false, code: "invalid_dot_status", message: "Invalid DoT status", stale: true };
+        }
+        const expiresAt = mob.statuses?.[dotStatus] ?? 0;
+        const hasDoTWeapon = ps.unlockedWeapons.some((wid) =>
+          WEAPON_CATALOG[wid]?.special?.statuses?.some((s) => s.kind === dotStatus)
+        );
+        if (expiresAt < context.now - 1000 && !hasDoTWeapon) {
+          return { ok: false, code: "status_expired", message: "DoT status not active on target", stale: true };
+        }
+      }
       return { ok: true };
     }
     case "collectItem": {
@@ -362,11 +679,14 @@ function checkAction(context: GameContext, action: ClientGameAction): ActionChec
       const tpl = ITEM_CATALOG[item.templateId];
       if (!tpl) return { ok: false, code: "invalid_action", message: "Unknown item template" };
       if (tpl.category !== "weapon" && !item.available) {
-        // Cooperative simultaneous item pickup grace window:
-        // Allow another player who touched the item nearly simultaneously to also claim it!
+        // Cooperative simultaneous item pickup grace window applies only to ordinary
+        // consumables (coins, apples, potions). Important rare upgrades (golden heart
+        // permanent max HP) cannot be duplicated across a lost race.
+        const allowRaceDuplicate =
+          tpl.category === "coin" || tpl.category === "heal" || tpl.category === "potion";
         const collectedAt = item.collectedAt ?? 0;
         const collectedBy = item.collectedBy ?? [];
-        const withinGrace = collectedAt > 0 && context.now - collectedAt <= ITEM_COOP_GRACE_MS;
+        const withinGrace = allowRaceDuplicate && collectedAt > 0 && context.now - collectedAt <= ITEM_COOP_GRACE_MS;
         if (!withinGrace || collectedBy.includes(action.playerId)) {
           return { ok: false, code: "item_taken", message: "Item is respawning", stale: true };
         }
@@ -376,6 +696,24 @@ function checkAction(context: GameContext, action: ClientGameAction): ActionChec
     case "usePotion": {
       if (ps.potions <= 0 || ps.hp >= ps.maxHp) {
         return { ok: false, code: "potion_unusable", message: "Cannot use potion right now", stale: true };
+      }
+      return { ok: true };
+    }
+    case "idleRegen": {
+      if (ps.hp >= ps.maxHp) {
+        return { ok: false, code: "hp_full", message: "HP is already full", stale: true };
+      }
+      const lastAct = ps.lastActivityAt ?? 0;
+      if (context.now - lastAct < PLAYER_CONFIG.idleRegenDelaySec * 1000 - 400) {
+        return {
+          ok: false,
+          code: "not_idle_long_enough",
+          message: "Must remain idle for 10 seconds before regenerating",
+          stale: true
+        };
+      }
+      if (ps.lastIdleRegenAt && context.now - ps.lastIdleRegenAt < PLAYER_CONFIG.idleRegenIntervalSec * 1000 - 300) {
+        return { ok: false, code: "regen_cooldown", message: "Idle regen cooling down", stale: true };
       }
       return { ok: true };
     }
@@ -422,9 +760,10 @@ function applyCheckedAction(context: GameContext, action: ClientGameAction): Act
   const state = context.state;
   const now = context.now;
   const world = getWorld(state.stageState);
+  reconcileWorldStages(world);
   const ps = getPlayerState(state.playerStates, action.playerId)!;
   const stageRt = world.stages[ps.stageId]!;
-  const events: GameEvent[] = [];
+  const events: GameEvent[] = processDueRespawns(world, now);
 
   if (action.type === "attackMob") {
     const mobId = String(action.payload.mobId);
@@ -432,6 +771,12 @@ function applyCheckedAction(context: GameContext, action: ClientGameAction): Act
     const mobTpl = MOB_CATALOG[mob.templateId]!;
     const weapon = WEAPON_CATALOG[ps.equippedWeaponId] ?? WEAPON_CATALOG.wooden_sword!;
     const clientHitId = typeof action.payload.clientHitId === "string" ? action.payload.clientHitId : undefined;
+    const hitKind: "primary" | "splash" | "dot" =
+      action.payload.hitKind === "splash" || action.payload.hitKind === "dot" ? action.payload.hitKind : "primary";
+    const dotStatus =
+      hitKind === "dot" && typeof action.payload.dotStatus === "string"
+        ? (action.payload.dotStatus as StatusEffectKind)
+        : undefined;
 
     // Deterministic hit roll shared with client prediction
     const roll =
@@ -439,8 +784,44 @@ function applyCheckedAction(context: GameContext, action: ClientGameAction): Act
         ? action.payload.damageRoll
         : ((now + ps.score + mob.hp * 17) % 100) / 100;
     const totalAtk = ps.baseAtk + weapon.atk;
-    const { damage, isCrit } = computeDeterministicHit(totalAtk, weapon.critChance, weapon.critMult, roll);
-    const knockDir = Number(action.payload.knockDir) < 0 ? -1 : 1;
+    let damage: number;
+    let isCrit: boolean;
+    let knockbackX = weapon.knockbackX;
+    let knockbackY = weapon.knockbackY;
+    let appliedStatuses: NonNullable<NonNullable<typeof weapon.special>["statuses"]> = [];
+
+    if (hitKind === "dot" && dotStatus) {
+      let dotRatio = 0.15;
+      const equippedSpec = weapon.special?.statuses?.find((s) => s.kind === dotStatus);
+      if (equippedSpec?.dotRatio) {
+        dotRatio = equippedSpec.dotRatio;
+      } else {
+        for (const wid of ps.unlockedWeapons) {
+          const spec = WEAPON_CATALOG[wid]?.special?.statuses?.find((s) => s.kind === dotStatus);
+          if (spec?.dotRatio) {
+            dotRatio = spec.dotRatio;
+            break;
+          }
+        }
+      }
+      damage = Math.max(1, Math.round(totalAtk * dotRatio));
+      isCrit = false;
+      knockbackX = 0;
+      knockbackY = 0;
+    } else if (hitKind === "splash" && weapon.special?.splash) {
+      const base = computeDeterministicHit(totalAtk, weapon.critChance, weapon.critMult, roll);
+      damage = Math.max(1, Math.round(base.damage * weapon.special.splash.damageMult));
+      isCrit = base.isCrit;
+      knockbackX = Math.round(weapon.knockbackX * 0.7);
+      knockbackY = Math.round(weapon.knockbackY * 0.7);
+      appliedStatuses = weapon.special?.statuses ?? [];
+    } else {
+      const base = computeDeterministicHit(totalAtk, weapon.critChance, weapon.critMult, roll);
+      damage = base.damage;
+      isCrit = base.isCrit;
+      appliedStatuses = weapon.special?.statuses ?? [];
+    }
+    const knockDir = hitKind === "dot" ? 0 : Number(action.payload.knockDir) < 0 ? -1 : 1;
 
     mob.contributors = mob.contributors ?? {};
     mob.rewardedPlayers = mob.rewardedPlayers ?? [];
@@ -524,6 +905,27 @@ function applyCheckedAction(context: GameContext, action: ClientGameAction): Act
       mob.hp = Math.max(0, mob.hp - damage);
       mob.contributors[ps.playerId] = (mob.contributors[ps.playerId] ?? 0) + damage;
 
+      // Apply weapon status effects (stun, crystal DoT, burn, shock, etc.)
+      if (appliedStatuses.length > 0) {
+        mob.statuses = mob.statuses ?? {};
+        for (const st of appliedStatuses) {
+          const expiresAt = now + Math.round(st.durationSec * 1000);
+          mob.statuses[st.kind] = Math.max(mob.statuses[st.kind] ?? 0, expiresAt);
+        }
+      }
+
+      // Sync mob position from attacker so all players see knockback & hit VFX at the same spot
+      const hitPos = clampMobPosition(ps.stageId, mobId, Number(action.payload.mobX), Number(action.payload.mobY));
+      if (hitPos) {
+        mob.x = hitPos.x;
+        mob.y = hitPos.y;
+        if (knockDir !== 0) {
+          mob.facing = -knockDir;
+        }
+        mob.stateUpdatedAt = now;
+        mob.authorityPlayerId = ps.playerId;
+      }
+
       events.push(
         makeEvent(
           "sunny.mobHit",
@@ -533,11 +935,25 @@ function applyCheckedAction(context: GameContext, action: ClientGameAction): Act
             attackerId: ps.playerId,
             damage,
             isCrit,
+            hitKind,
+            ...(dotStatus ? { dotStatus } : {}),
             knockDir,
-            knockbackX: weapon.knockbackX,
-            knockbackY: weapon.knockbackY,
+            knockbackX,
+            knockbackY,
             hp: mob.hp,
             maxHp: mob.maxHp,
+            ...(appliedStatuses.length > 0
+              ? {
+                  appliedStatuses: appliedStatuses.map((s) => ({
+                    kind: s.kind,
+                    durationSec: s.durationSec,
+                    ...(typeof s.dotRatio === "number" ? { dotRatio: s.dotRatio } : {}),
+                    ...(typeof s.tickIntervalSec === "number" ? { tickIntervalSec: s.tickIntervalSec } : {}),
+                    ...(typeof s.speedMult === "number" ? { speedMult: s.speedMult } : {})
+                  }))
+                }
+              : {}),
+            ...(typeof mob.x === "number" && typeof mob.y === "number" ? { x: mob.x, y: mob.y } : {}),
             ...(clientHitId ? { clientHitId } : {})
           },
           now
@@ -548,6 +964,7 @@ function applyCheckedAction(context: GameContext, action: ClientGameAction): Act
         mob.alive = false;
         mob.inCombat = false;
         mob.defeatedAt = now;
+        delete mob.statuses;
 
         // Calculate dynamic player-count-scaled respawn delay
         const activeCount = countPlayersInStage(world, ps.stageId);
@@ -666,8 +1083,36 @@ function applyCheckedAction(context: GameContext, action: ClientGameAction): Act
         now
       )
     );
+  } else if (action.type === "idleRegen") {
+    const clientRegenId =
+      typeof action.payload.clientRegenId === "string" ? action.payload.clientRegenId : undefined;
+    const healAmt = computeIdleRegenAmount(ps.maxHp);
+    const before = ps.hp;
+    ps.hp = Math.min(ps.maxHp, ps.hp + healAmt);
+    ps.lastIdleRegenAt = now;
+    events.push(
+      makeEvent(
+        "sunny.playerHealed",
+        {
+          stageId: ps.stageId,
+          playerId: ps.playerId,
+          amount: ps.hp - before,
+          hp: ps.hp,
+          maxHp: ps.maxHp,
+          potions: ps.potions,
+          reason: "idle_regen",
+          ...(clientRegenId ? { clientRegenId } : {}),
+          persistProfile: true
+        },
+        now
+      )
+    );
   } else if (action.type === "switchWeapon") {
     ps.equippedWeaponId = String(action.payload.weaponId);
+    const seq = Number(action.payload.switchSeq);
+    if (Number.isFinite(seq) && seq > 0) {
+      ps.weaponSwitchSeq = Math.max(ps.weaponSwitchSeq ?? 0, Math.floor(seq));
+    }
     events.push(
       makeEvent(
         "sunny.weaponChanged",
@@ -675,6 +1120,7 @@ function applyCheckedAction(context: GameContext, action: ClientGameAction): Act
           stageId: ps.stageId,
           playerId: ps.playerId,
           weaponId: ps.equippedWeaponId,
+          ...(ps.weaponSwitchSeq !== undefined ? { switchSeq: ps.weaponSwitchSeq } : {}),
           persistProfile: true
         },
         now
@@ -789,6 +1235,13 @@ function applyCheckedAction(context: GameContext, action: ClientGameAction): Act
     );
   }
 
+  if (
+    action.type !== "idleRegen" &&
+    action.type !== "checkpoint" &&
+    !(action.type === "attackMob" && action.payload.hitKind === "dot")
+  ) {
+    ps.lastActivityAt = now;
+  }
   ps.lastUpdatedAt = now;
   state.playerStates[action.playerId] = ps as unknown as JsonObject;
   return { state, events };
@@ -806,6 +1259,8 @@ export const sunnyMeadowDefinition = defineGameDefinition(gameMetadata, {
   onPlayerJoin(context, player, persistedProfile): ActionResult {
     const state = context.state;
     const world = getWorld(state.stageState);
+    reconcileWorldStages(world);
+    const respawnEvents = processDueRespawns(world, context.now);
     world.joinCounter = (world.joinCounter ?? 0) + 1;
 
     const ps = createFreshPlayerState(player, world.joinCounter, context.now, persistedProfile);
@@ -814,6 +1269,7 @@ export const sunnyMeadowDefinition = defineGameDefinition(gameMetadata, {
 
     const stageCount = countPlayersInStage(world, ps.stageId);
     const events: GameEvent[] = [
+      ...respawnEvents,
       makeEvent(
         "sunny.playerJoined",
         {
@@ -907,6 +1363,7 @@ export const sunnyMeadowDefinition = defineGameDefinition(gameMetadata, {
   handleSignal(context, playerId, signal) {
     if (signal.type !== "playerPose") return undefined;
     const world = getWorld(context.state.stageState);
+    const repaired = reconcileWorldStages(world);
     const ps = getPlayerState(context.state.playerStates, playerId);
     // A player who is down does not move.
     if (!ps || ps.dead) return undefined;
@@ -921,11 +1378,54 @@ export const sunnyMeadowDefinition = defineGameDefinition(gameMetadata, {
       anim === "walk" || anim === "jump" || anim === "climb" || anim === "attack" ? anim : "idle";
 
     if (!Number.isFinite(rawX) || !Number.isFinite(rawY)) return undefined;
+    const prevX = ps.x;
+    const prevY = ps.y;
     const { x, y } = clampToStage(ps.stageId, rawX, rawY);
     const vx = Number.isFinite(rawVx) ? Math.max(-600, Math.min(600, Math.round(rawVx))) : 0;
     const vy = Number.isFinite(rawVy) ? Math.max(-900, Math.min(900, Math.round(rawVy))) : 0;
+    // The client emits "climb" while hanging still as well as while climbing.
+    const activeAnimation = animState !== "idle" && animState !== "climb";
+    const movedOrActive =
+      activeAnimation || Math.abs(vx) > 8 || Math.abs(vy) > 8 || Math.abs(x - prevX) > 2 || Math.abs(y - prevY) > 2;
 
-    // Spatial interest management: only send pose to nearby players on the same stage!
+    // Update sender position on the cloned state before evaluating nearest-player mob authority
+    ps.x = x;
+    ps.y = y;
+
+    // Nearest-player mob kinematics sync: accept compact tuples [mobId, x, y, vx, vy, facing]
+    // from the player closest to each mob and relay them to all nearby players on the same stage.
+    const stageRt = world.stages[ps.stageId];
+    const syncedMobs: Array<[string, number, number, number, number, number]> = [];
+    let stageMutated = repaired;
+    if (stageRt && Array.isArray(signal.payload.mobs)) {
+      const incoming = signal.payload.mobs.slice(0, 16);
+      for (const entry of incoming) {
+        if (!Array.isArray(entry) || entry.length < 6) continue;
+        const mobId = typeof entry[0] === "string" ? entry[0] : "";
+        const mob = stageRt.mobs[mobId];
+        if (!mob || !mob.alive || context.now < mob.spawnProtectUntil) continue;
+        if (!canPlayerSyncMob(world, context.state.playerStates, ps.stageId, playerId, mob, context.now)) {
+          continue;
+        }
+        const clamped = clampMobPosition(ps.stageId, mobId, Number(entry[1]), Number(entry[2]));
+        if (!clamped) continue;
+        const mvx = Number.isFinite(Number(entry[3])) ? Math.max(-700, Math.min(700, Math.round(Number(entry[3])))) : 0;
+        const mvy = Number.isFinite(Number(entry[4])) ? Math.max(-900, Math.min(900, Math.round(Number(entry[4])))) : 0;
+        const mFacing = Number(entry[5]) < 0 ? -1 : 1;
+
+        mob.x = clamped.x;
+        mob.y = clamped.y;
+        mob.vx = mvx;
+        mob.vy = mvy;
+        mob.facing = mFacing;
+        mob.stateUpdatedAt = context.now;
+        mob.authorityPlayerId = playerId;
+        stageMutated = true;
+        syncedMobs.push([mobId, clamped.x, clamped.y, mvx, mvy, mFacing]);
+      }
+    }
+
+    // Spatial interest management: only send pose & mob sync to nearby players on the same stage!
     const nearby = nearbyPlayersOnStage(world, context.state.playerStates, ps.stageId, x, playerId);
     const recipientPlayerIds = nearby.map((p) => p.playerId);
 
@@ -945,7 +1445,8 @@ export const sunnyMeadowDefinition = defineGameDefinition(gameMetadata, {
         level: ps.level,
         hp: ps.hp,
         maxHp: ps.maxHp,
-        equippedWeaponId: ps.equippedWeaponId
+        equippedWeaponId: ps.equippedWeaponId,
+        ...(syncedMobs.length > 0 ? { mobs: syncedMobs } : {})
       },
       playerStatePatch: {
         x,
@@ -954,8 +1455,10 @@ export const sunnyMeadowDefinition = defineGameDefinition(gameMetadata, {
         vy,
         facing,
         animState,
-        lastUpdatedAt: context.now
-      }
+        lastUpdatedAt: context.now,
+        ...(movedOrActive ? { lastActivityAt: context.now } : {})
+      },
+      ...(stageMutated ? { stageState: world as unknown as JsonObject } : {})
     };
   },
 
@@ -969,9 +1472,15 @@ export const sunnyMeadowDefinition = defineGameDefinition(gameMetadata, {
   applyAction(context: GameContext, action: ClientGameAction): ActionResult {
     const check = checkAction(context, action);
     if (!check.ok) {
+      const world = getWorld(context.state.stageState);
+      reconcileWorldStages(world);
+      const respawnEvents = processDueRespawns(world, context.now);
       return {
         state: context.state,
-        events: [makeEvent("sunny.actionIgnored", { action: action.type, reason: check.code }, context.now, "private", action.playerId)]
+        events: [
+          ...respawnEvents,
+          makeEvent("sunny.actionIgnored", { action: action.type, reason: check.code }, context.now, "private", action.playerId)
+        ]
       };
     }
     return applyCheckedAction(context, action);
@@ -982,6 +1491,7 @@ export const sunnyMeadowDefinition = defineGameDefinition(gameMetadata, {
       return [];
     }
     const world = getWorld(context.state.stageState);
+    reconcileWorldStages(world);
     let earliest = Infinity;
 
     for (const stageRt of Object.values(world.stages)) {
@@ -1015,74 +1525,14 @@ export const sunnyMeadowDefinition = defineGameDefinition(gameMetadata, {
     const state = context.state;
     const now = context.now;
     const world = getWorld(state.stageState);
-    const events: GameEvent[] = [];
-
-    for (const stageRt of Object.values(world.stages)) {
-      const respawnedMobs: Array<{ id: string; hp: number; maxHp: number; spawnProtectUntil: number }> = [];
-      const respawnedItems: string[] = [];
-
-      for (const mob of Object.values(stageRt.mobs)) {
-        if (!mob.alive && mob.respawnAt > 0 && mob.respawnAt <= now) {
-          mob.alive = true;
-          mob.hp = mob.maxHp;
-          mob.inCombat = false;
-          mob.respawnAt = 0;
-          mob.contributors = {};
-          mob.defeatedAt = 0;
-          mob.rewardedPlayers = [];
-          // 2-second blinking spawn protection: cannot attack or be damaged!
-          mob.spawnProtectUntil = now + SPAWN_PROTECTION_MS;
-          respawnedMobs.push({
-            id: mob.id,
-            hp: mob.hp,
-            maxHp: mob.maxHp,
-            spawnProtectUntil: mob.spawnProtectUntil
-          });
-        }
-      }
-
-      for (const item of Object.values(stageRt.items)) {
-        if (!item.available && item.respawnAt > 0 && item.respawnAt <= now) {
-          item.available = true;
-          item.respawnAt = 0;
-          item.collectedAt = 0;
-          item.collectedBy = [];
-          respawnedItems.push(item.id);
-        }
-      }
-
-      if (respawnedMobs.length > 0) {
-        events.push(
-          makeEvent(
-            "sunny.mobsRespawned",
-            {
-              stageId: stageRt.stageId,
-              mobs: respawnedMobs
-            },
-            now
-          )
-        );
-      }
-
-      if (respawnedItems.length > 0) {
-        events.push(
-          makeEvent(
-            "sunny.itemsRespawned",
-            {
-              stageId: stageRt.stageId,
-              itemIds: respawnedItems
-            },
-            now
-          )
-        );
-      }
-    }
-
+    reconcileWorldStages(world);
+    const events = processDueRespawns(world, now);
     return { state, events };
   },
 
   getPublicView(context: GameContext, viewerPlayerId?: string): JsonObject {
     const world = getWorld(context.state.stageState);
+    reconcileWorldStages(world);
     const viewerPs = viewerPlayerId
       ? getPlayerState(context.state.playerStates, viewerPlayerId)
       : undefined;
@@ -1108,12 +1558,35 @@ export const sunnyMeadowDefinition = defineGameDefinition(gameMetadata, {
       totalPlayersOnline: context.state.players.length,
       stagePlayerCount: stagePlayerCounts[stageId] ?? 0,
       stagePlayerCounts,
-      // Only what a client draws. Who damaged or was paid for a mob stays on the server.
+      // Only what a client draws (including synced mob kinematics). Who damaged or was paid stays on the server.
       mobs: Object.fromEntries(
-        Object.entries(stageRt.mobs).map(([id, mob]) => [
-          id,
-          { alive: mob.alive, hp: mob.hp, maxHp: mob.maxHp, inCombat: mob.inCombat, spawnProtectUntil: mob.spawnProtectUntil }
-        ])
+        Object.entries(stageRt.mobs).map(([id, mob]) => {
+          const activeStatuses = mob.statuses
+            ? Object.entries(mob.statuses)
+                .filter(([, exp]) => typeof exp === "number" && exp > context.now)
+                .map(([k]) => k)
+            : [];
+          return [
+            id,
+            {
+              alive: mob.alive,
+              hp: mob.hp,
+              maxHp: mob.maxHp,
+              inCombat: mob.inCombat,
+              spawnProtectUntil: mob.spawnProtectUntil,
+              ...(typeof mob.x === "number" && typeof mob.y === "number"
+                ? {
+                    x: mob.x,
+                    y: mob.y,
+                    vx: mob.vx ?? 0,
+                    vy: mob.vy ?? 0,
+                    facing: mob.facing ?? -1
+                  }
+                : {}),
+              ...(activeStatuses.length > 0 ? { statuses: activeStatuses } : {})
+            }
+          ];
+        })
       ),
       items: Object.fromEntries(Object.entries(stageRt.items).map(([id, item]) => [id, { available: item.available }])),
       nearbyPlayers

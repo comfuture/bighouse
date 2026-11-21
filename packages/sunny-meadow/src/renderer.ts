@@ -23,14 +23,17 @@ import mobStarlightDragonUrl from "./assets/images/mob_starlight_dragon.png?url"
 
 import {
   ITEM_CATALOG,
+  LEGGED_SPRITE_CONFIG,
+  STATUS_METADATA,
   THEME_CATALOG,
   VIEWPORT,
+  WALK_CYCLE_FRAMES,
   WEAPON_CATALOG,
   WEAPON_ORDER
 } from "./catalogs";
 import type { CompiledStage, RuntimeDecoration, RuntimePlatform, RuntimePortal } from "./map-schema";
 import { computeXpEfficiency } from "./progression";
-import type { RemotePlayerView, StageTheme } from "./types";
+import type { ActiveStatusEffect, RemotePlayerView, StageTheme, StatusEffectKind } from "./types";
 
 const IMAGE_URLS: Record<string, string> = {
   bg_sky: bgSkyUrl,
@@ -77,6 +80,7 @@ export type ClientMobRender = {
   displayHp: number;
   inCombat: boolean;
   spawnProtectUntil: number;
+  alertTimer: number;
   hitFlashTimer: number;
   hitStunTimer: number;
   animTimer: number;
@@ -84,6 +88,7 @@ export type ClientMobRender = {
   hasCrown: boolean;
   squashX: number;
   squashY: number;
+  statuses: Partial<Record<StatusEffectKind, ActiveStatusEffect>>;
 };
 
 export type ClientItemRender = {
@@ -142,6 +147,19 @@ export type ClientHitEffect =
       duration: number;
     }
   | {
+      type: "wave";
+      x: number;
+      y: number;
+      facing: number;
+      rangePx: number;
+      heightPx: number;
+      color: string;
+      accentColor: string;
+      style: "maple_wave" | "solar_shockwave" | "dragon_flame";
+      age: number;
+      duration: number;
+    }
+  | {
       type: "levelup_pillar";
       x: number;
       y: number;
@@ -189,6 +207,8 @@ export type LocalPlayerRender = {
   equippedWeaponId: string;
   invulnTimer: number;
   slowTimer: number;
+  statuses: Partial<Record<StatusEffectKind, ActiveStatusEffect>>;
+  idleRegenActive: boolean;
   attackAnimTimer: number;
   attackAnimDuration: number;
   animTimer: number;
@@ -239,6 +259,7 @@ export class SunnyRenderer {
   private tintCanvas: HTMLCanvasElement;
   private tintCtx: CanvasRenderingContext2D;
   private biomeTilesets = new Map<string, HTMLCanvasElement>();
+  private walkSheets = new Map<string, HTMLCanvasElement>();
   private time = 0;
 
   constructor(
@@ -1331,8 +1352,8 @@ export class SunnyRenderer {
       ctx.fill();
 
       const moving = Math.abs(mob.vx) > 8 && mob.grounded;
-      const walkBob = moving ? Math.abs(Math.sin(mob.animTimer * 10)) * 4.5 : Math.sin(mob.animTimer * 3.5) * 1.5;
-      const tilt = mob.hitStunTimer > 0 ? -mob.facing * 0.2 : moving ? Math.sin(mob.animTimer * 10) * 0.06 : 0;
+      const walkBob = moving ? Math.abs(Math.sin(mob.animTimer * 10)) * 3.2 : Math.sin(mob.animTimer * 3.5) * 1.4;
+      const tilt = mob.hitStunTimer > 0 ? -mob.facing * 0.2 : moving ? Math.sin(mob.animTimer * 10) * 0.05 : 0;
       const drawSize = 62 * mob.drawScale;
 
       ctx.translate(footX, footY - walkBob);
@@ -1340,11 +1361,18 @@ export class SunnyRenderer {
       ctx.scale(mob.facing * mob.squashX, mob.squashY);
 
       if (spr) {
-        if (mob.hitFlashTimer > 0) {
-          this.drawTintedSprite(ctx, spr, -drawSize * 0.5, -drawSize + 4, drawSize, drawSize, "#FFFFFF");
-        } else {
-          ctx.drawImage(spr, -drawSize * 0.5, -drawSize + 4, drawSize, drawSize);
-        }
+        const frameIdx = this.pickSpriteFrame(mob.spriteKey, moving, mob.grounded, mob.animTimer, Math.abs(mob.vx));
+        this.drawAnimatedSprite(
+          ctx,
+          mob.spriteKey,
+          spr,
+          frameIdx,
+          -drawSize * 0.5,
+          -drawSize + 4,
+          drawSize,
+          drawSize,
+          mob.hitFlashTimer > 0 ? "#FFFFFF" : null
+        );
       }
 
       if (mob.hasCrown) {
@@ -1380,7 +1408,202 @@ export class SunnyRenderer {
       } else if (mob.inCombat) {
         this.drawMobHpBar(ctx, mob, footX, mob.y - (mob.hasCrown ? 32 : 16));
       }
+
+      // Red exclamation mark (!) alert telegraph shown for 0.5s before active mob attacks!
+      if (!isSpawnProtected && mob.alertTimer > 0) {
+        const alertY = mob.y - (mob.inCombat ? (mob.hasCrown ? 62 : 46) : mob.hasCrown ? 40 : 24);
+        this.drawMobAlertMark(ctx, footX, alertY, mob.alertTimer);
+      }
+
+      // Active status visuals (spinning star halo for stun, elemental auras for DoTs/slow)
+      if (!isSpawnProtected && mob.statuses) {
+        this.drawActorStatuses(ctx, footX, mob.y, mob.w, mob.h, mob.statuses, mob.hasCrown ? 16 : 6);
+      }
     }
+  }
+
+  private drawStunHalo(ctx: CanvasRenderingContext2D, cx: number, cy: number, width: number): void {
+    const rx = Math.max(18, width * 0.45);
+    const ry = Math.max(6, rx * 0.34);
+    ctx.save();
+    // Dashed golden dizzy ring
+    ctx.strokeStyle = "rgba(255, 224, 130, 0.82)";
+    ctx.lineWidth = 2;
+    ctx.setLineDash([4, 4]);
+    ctx.beginPath();
+    ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // 3 orbiting golden 5-point stars with depth scaling
+    for (let i = 0; i < 3; i++) {
+      const ang = this.time * 5.6 + (i * Math.PI * 2) / 3;
+      const sx = cx + Math.cos(ang) * rx;
+      const sy = cy + Math.sin(ang) * ry;
+      const depthScale = 0.8 + (Math.sin(ang) + 1) * 0.2;
+      ctx.save();
+      ctx.translate(sx, sy);
+      ctx.rotate(this.time * 4 + i);
+      this.drawStar(ctx, 0, 0, 7.5 * depthScale, 5, "#FFD740", "#6D4C00");
+      ctx.restore();
+    }
+    ctx.restore();
+  }
+
+  private drawActorStatuses(
+    ctx: CanvasRenderingContext2D,
+    cx: number,
+    topY: number,
+    w: number,
+    h: number,
+    statuses: Partial<Record<StatusEffectKind, ActiveStatusEffect>>,
+    haloOffsetY = 6
+  ): void {
+    const midY = topY + h * 0.5;
+    if (statuses.stun && statuses.stun.remaining > 0) {
+      this.drawStunHalo(ctx, cx, topY - haloOffsetY, w);
+    }
+    if (statuses.crystal_dot && statuses.crystal_dot.remaining > 0) {
+      ctx.save();
+      for (let i = 0; i < 3; i++) {
+        const ang = this.time * 3.8 + (i * Math.PI * 2) / 3;
+        const sx = cx + Math.cos(ang) * (w * 0.58);
+        const sy = midY + Math.sin(ang) * (h * 0.36);
+        ctx.save();
+        ctx.translate(sx, sy);
+        ctx.rotate(ang + Math.PI * 0.25);
+        ctx.fillStyle = "#40C4FF";
+        ctx.strokeStyle = "#E1F5FE";
+        ctx.lineWidth = 1.4;
+        ctx.beginPath();
+        ctx.moveTo(0, -6.5);
+        ctx.lineTo(4.2, 0);
+        ctx.lineTo(0, 6.5);
+        ctx.lineTo(-4.2, 0);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        ctx.restore();
+      }
+      ctx.restore();
+    }
+    if (statuses.burn && statuses.burn.remaining > 0) {
+      ctx.save();
+      for (let i = 0; i < 4; i++) {
+        const phase = (this.time * 2.4 + i * 0.27) % 1;
+        const fx = cx + Math.sin(this.time * 6 + i * 1.7) * (w * 0.38);
+        const fy = topY + h - phase * (h * 0.95);
+        ctx.globalAlpha = Math.max(0, 1 - phase);
+        ctx.fillStyle = i % 2 === 0 ? "#FF5722" : "#FFD54F";
+        ctx.beginPath();
+        ctx.arc(fx, fy, 4.5 * (1 - phase * 0.45), 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.restore();
+    }
+    if (statuses.shock && statuses.shock.remaining > 0) {
+      ctx.save();
+      ctx.strokeStyle = "#FFFF00";
+      ctx.lineWidth = 2.2;
+      ctx.lineJoin = "round";
+      for (let i = 0; i < 2; i++) {
+        const side = i === 0 ? -1 : 1;
+        const jitter = Math.sin(this.time * 38 + i * 3) * 4;
+        ctx.beginPath();
+        ctx.moveTo(cx + side * (w * 0.42), topY + 6 + jitter);
+        ctx.lineTo(cx + side * (w * 0.58), midY - 3);
+        ctx.lineTo(cx + side * (w * 0.36), midY + 5);
+        ctx.lineTo(cx + side * (w * 0.54), topY + h - 8 - jitter);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+    if (statuses.poison && statuses.poison.remaining > 0) {
+      ctx.save();
+      for (let i = 0; i < 3; i++) {
+        const phase = (this.time * 1.8 + i * 0.33) % 1;
+        const bx = cx + Math.cos(i * 2.2 + this.time * 3) * (w * 0.35);
+        const by = topY + h * 0.7 - phase * (h * 0.75);
+        ctx.globalAlpha = 0.85 * (1 - phase);
+        ctx.fillStyle = i % 2 === 0 ? "#B2FF59" : "#9C27B0";
+        ctx.beginPath();
+        ctx.arc(bx, by, 3.6 + phase * 2, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.restore();
+    }
+    if (statuses.slow && statuses.slow.remaining > 0) {
+      ctx.save();
+      ctx.strokeStyle = "rgba(179, 136, 255, 0.85)";
+      ctx.lineWidth = 2.2;
+      ctx.setLineDash([4, 3]);
+      ctx.beginPath();
+      ctx.ellipse(cx, topY + h - 3, w * 0.55, 7, 0, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+    }
+  }
+
+  private drawMobAlertMark(ctx: CanvasRenderingContext2D, cx: number, cy: number, alertTimer: number): void {
+    const duration = 0.5;
+    const elapsed = Math.max(0, duration - alertTimer);
+    const pop = elapsed < 0.12 ? 0.55 + (elapsed / 0.12) * 0.72 : elapsed < 0.22 ? 1.27 - ((elapsed - 0.12) / 0.1) * 0.27 : 1.0;
+    const shake = Math.sin(elapsed * 42) * 1.4;
+
+    ctx.save();
+    ctx.translate(cx + shake, cy - Math.sin(Math.min(1, elapsed / 0.16) * Math.PI * 0.5) * 6);
+    ctx.scale(pop, pop);
+
+    // Glowing crimson outer halo
+    const glow = ctx.createRadialGradient(0, 0, 2, 0, 0, 22);
+    glow.addColorStop(0, "rgba(255, 23, 68, 0.75)");
+    glow.addColorStop(1, "rgba(255, 23, 68, 0)");
+    ctx.fillStyle = glow;
+    ctx.beginPath();
+    ctx.arc(0, 0, 22, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Small diagonal alert sparks
+    ctx.strokeStyle = "#FF5252";
+    ctx.lineWidth = 2.4;
+    ctx.lineCap = "round";
+    for (const side of [-1, 1]) {
+      ctx.beginPath();
+      ctx.moveTo(side * 12, -11);
+      ctx.lineTo(side * 17, -15);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(side * 13, -1);
+      ctx.lineTo(side * 18, -2);
+      ctx.stroke();
+    }
+
+    // Bold cel-shaded exclamation stem & dot
+    ctx.lineJoin = "round";
+    ctx.fillStyle = "#FF1744";
+    ctx.strokeStyle = "#FFFFFF";
+    ctx.lineWidth = 4.2;
+
+    // Stem
+    ctx.beginPath();
+    ctx.moveTo(-4.8, -15);
+    ctx.lineTo(4.8, -15);
+    ctx.lineTo(3.2, 2.5);
+    ctx.lineTo(-3.2, 2.5);
+    ctx.closePath();
+    ctx.stroke();
+    ctx.fill();
+
+    // Dot
+    ctx.beginPath();
+    ctx.arc(0, 10, 4.1, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.fill();
+
+    // Inner specular highlight
+    ctx.fillStyle = "#FF8A80";
+    ctx.fillRect(-1.5, -13, 2, 11);
+    ctx.restore();
   }
 
   private drawMobHpBar(ctx: CanvasRenderingContext2D, mob: ClientMobRender, cx: number, barY: number): void {
@@ -1439,10 +1662,11 @@ export class SunnyRenderer {
       const footX = rp.x + 14;
       const footY = rp.y + 42;
       const moving = rp.animState === "walk" || Math.abs(rp.vx) > 15;
-      const walkBob = moving ? Math.abs(Math.sin(this.time * 12 + rp.x * 0.05)) * 4 : Math.sin(this.time * 3 + rp.x) * 1;
+      const grounded = rp.animState !== "jump";
+      const walkBob = moving ? Math.abs(Math.sin(this.time * 12 + rp.x * 0.05)) * 3 : Math.sin(this.time * 3 + rp.x) * 1;
 
       ctx.save();
-      ctx.globalAlpha = 0.92;
+      ctx.globalAlpha = rp.dead ? 0.38 : 0.92;
       ctx.fillStyle = "rgba(45, 32, 18, 0.22)";
       ctx.beginPath();
       ctx.ellipse(footX, footY + 1, 15, 4, 0, 0, Math.PI * 2);
@@ -1451,11 +1675,21 @@ export class SunnyRenderer {
       ctx.translate(footX, footY - walkBob);
       ctx.scale(rp.facing >= 0 ? 1 : -1, 1);
       if (spr) {
-        ctx.drawImage(spr, -32, -60, 64, 64);
+        const frameIdx = this.pickSpriteFrame("hero", moving, grounded, this.time + rp.x * 0.01, Math.max(Math.abs(rp.vx), moving ? 180 : 0));
+        this.drawAnimatedSprite(ctx, "hero", spr, frameIdx, -32, -60, 64, 64, null);
       }
       if (sheet) {
         const w = WEAPON_CATALOG[rp.equippedWeaponId] ?? WEAPON_CATALOG.wooden_sword!;
-        ctx.drawImage(sheet, w.iconIndex * 96, 0, 96, 96, 6, -46, 32, 32);
+        ctx.save();
+        ctx.translate(10, -22);
+        if (rp.animState === "attack") {
+          ctx.rotate(0.85 + Math.sin(this.time * 28) * 0.35);
+          ctx.scale(1.15, 1.15);
+        } else {
+          ctx.rotate(-0.2);
+        }
+        ctx.drawImage(sheet, w.iconIndex * 96, 0, 96, 96, -4, -26, 34, 34);
+        ctx.restore();
       }
       ctx.restore();
 
@@ -1482,7 +1716,7 @@ export class SunnyRenderer {
 
     const moving = Math.abs(p.vx) > 15 && p.grounded;
     const walkBob = moving
-      ? Math.abs(Math.sin(p.animTimer * 13)) * 4.5
+      ? Math.abs(Math.sin(p.animTimer * 13)) * 3.2
       : p.onLadder
         ? Math.sin(p.animTimer * 10) * 2
         : Math.sin(p.animTimer * 3.2) * 1.2;
@@ -1491,7 +1725,7 @@ export class SunnyRenderer {
       : !p.grounded
         ? Math.max(-0.14, Math.min(0.14, p.vy * 0.00022)) * p.facing
         : moving
-          ? Math.sin(p.animTimer * 13) * 0.055
+          ? Math.sin(p.animTimer * 13) * 0.045
           : 0;
 
     ctx.translate(footX, footY - walkBob);
@@ -1499,7 +1733,8 @@ export class SunnyRenderer {
     ctx.scale(p.facing * p.squashX, p.squashY);
 
     if (spr) {
-      ctx.drawImage(spr, -33, -62, 66, 66);
+      const frameIdx = this.pickSpriteFrame("hero", moving || p.onLadder, p.grounded || p.onLadder, p.animTimer, Math.abs(p.vx));
+      this.drawAnimatedSprite(ctx, "hero", spr, frameIdx, -33, -62, 66, 66, null);
     }
     if (sheet) {
       const w = WEAPON_CATALOG[p.equippedWeaponId] ?? WEAPON_CATALOG.wooden_sword!;
@@ -1519,6 +1754,38 @@ export class SunnyRenderer {
 
     // Local Player Overhead Name + Level Tag
     this.drawPlayerNameTag(ctx, footX, p.y - 24, p.displayName, p.level, true);
+
+    // Local player active status visuals
+    if (p.statuses) {
+      this.drawActorStatuses(ctx, footX, p.y - 12, p.w + 8, p.h + 8, p.statuses, 22);
+    }
+
+    // Gentle green resting aura & rising '+' motes when idle HP regen is active
+    if (p.idleRegenActive) {
+      ctx.save();
+      const pulse = 0.5 + 0.5 * Math.sin(this.time * 3.6);
+      ctx.strokeStyle = `rgba(105, 240, 174, ${0.38 + pulse * 0.28})`;
+      ctx.lineWidth = 2.2;
+      ctx.beginPath();
+      ctx.ellipse(footX, footY - 1, 20 + pulse * 4, 6 + pulse * 1.5, 0, 0, Math.PI * 2);
+      ctx.stroke();
+
+      for (let i = 0; i < 3; i++) {
+        const phase = (this.time * 0.75 + i * 0.33) % 1;
+        const mx = footX + Math.sin(this.time * 2.4 + i * 2.1) * 16;
+        const my = footY - 8 - phase * 42;
+        ctx.globalAlpha = Math.sin(phase * Math.PI) * 0.9;
+        ctx.strokeStyle = "#69F0AE";
+        ctx.lineWidth = 2.2;
+        ctx.beginPath();
+        ctx.moveTo(mx - 3.5, my);
+        ctx.lineTo(mx + 3.5, my);
+        ctx.moveTo(mx, my - 3.5);
+        ctx.lineTo(mx, my + 3.5);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
   }
 
   private drawPlayerNameTag(
@@ -1620,6 +1887,86 @@ export class SunnyRenderer {
         ctx.translate(fx.x, fx.y);
         ctx.rotate(fx.rotation + t * 0.8);
         this.drawStar(ctx, 0, 0, fx.radius * scale, fx.isCrit ? 8 : 6, fx.color, "#FFFFFF");
+      } else if (fx.type === "wave") {
+        // Upgraded weapon forward splash wave (maple_wave, solar_shockwave, dragon_flame)
+        const travel = fx.rangePx * (0.25 + 0.78 * Math.min(1, t * 1.15));
+        const halfH = fx.heightPx * 0.5;
+        ctx.translate(fx.x, fx.y);
+        ctx.scale(fx.facing, 1);
+
+        if (fx.style === "solar_shockwave") {
+          // Expanding golden solar shockwave rings + radiant spikes
+          const r = Math.max(18, travel * 0.85);
+          const grad = ctx.createRadialGradient(travel * 0.35, 0, 6, travel * 0.35, 0, r);
+          grad.addColorStop(0, "rgba(255, 253, 231, 0.78)");
+          grad.addColorStop(0.55, "rgba(255, 215, 64, 0.42)");
+          grad.addColorStop(1, "rgba(255, 111, 0, 0)");
+          ctx.fillStyle = grad;
+          ctx.beginPath();
+          ctx.ellipse(travel * 0.35, 0, r, halfH * (0.8 + t * 0.4), 0, 0, Math.PI * 2);
+          ctx.fill();
+
+          ctx.strokeStyle = fx.color;
+          ctx.lineWidth = Math.max(2, (1 - t) * 7);
+          ctx.beginPath();
+          ctx.ellipse(travel * 0.35, 0, r * 0.92, halfH * (0.65 + t * 0.35), 0, 0, Math.PI * 2);
+          ctx.stroke();
+
+          ctx.strokeStyle = fx.accentColor;
+          ctx.lineWidth = Math.max(1.5, (1 - t) * 4);
+          for (let i = 0; i < 6; i++) {
+            const ang = (i * Math.PI) / 3 + t * 1.4;
+            ctx.beginPath();
+            ctx.moveTo(travel * 0.35 + Math.cos(ang) * r * 0.45, Math.sin(ang) * halfH * 0.35);
+            ctx.lineTo(travel * 0.35 + Math.cos(ang) * r * 1.05, Math.sin(ang) * halfH * 0.85);
+            ctx.stroke();
+          }
+        } else {
+          // Sweeping crescent sword-energy wave (maple_wave / dragon_flame)
+          const grad = ctx.createLinearGradient(0, 0, travel + 16, 0);
+          grad.addColorStop(0, "rgba(255, 255, 255, 0)");
+          grad.addColorStop(0.5, fx.color);
+          grad.addColorStop(1, fx.accentColor);
+          ctx.fillStyle = grad;
+          ctx.beginPath();
+          ctx.moveTo(travel * 0.35, -halfH);
+          ctx.quadraticCurveTo(travel + 26, 0, travel * 0.35, halfH);
+          ctx.quadraticCurveTo(travel * 0.72, 0, travel * 0.35, -halfH);
+          ctx.closePath();
+          ctx.fill();
+
+          // Bright leading blade arc
+          ctx.strokeStyle = "#FFF8E1";
+          ctx.lineWidth = Math.max(2.5, (1 - t) * 7.5);
+          ctx.lineCap = "round";
+          ctx.beginPath();
+          ctx.moveTo(travel * 0.48, -halfH * 0.92);
+          ctx.quadraticCurveTo(travel + 22, 0, travel * 0.48, halfH * 0.92);
+          ctx.stroke();
+
+          // Secondary inner arc for dragon_flame or drifting maple petals for maple_wave
+          if (fx.style === "dragon_flame") {
+            ctx.strokeStyle = "#FFD740";
+            ctx.lineWidth = Math.max(2, (1 - t) * 5);
+            ctx.beginPath();
+            ctx.moveTo(travel * 0.22, -halfH * 0.7);
+            ctx.quadraticCurveTo(travel * 0.88, 0, travel * 0.22, halfH * 0.7);
+            ctx.stroke();
+          } else {
+            ctx.fillStyle = "#FF5722";
+            for (let i = 0; i < 4; i++) {
+              const lx = travel * (0.3 + i * 0.22);
+              const ly = Math.sin(t * 9 + i * 2.1) * (halfH * 0.65);
+              ctx.save();
+              ctx.translate(lx, ly);
+              ctx.rotate(t * 7 + i * 1.3);
+              ctx.beginPath();
+              ctx.ellipse(0, 0, 6.5, 3.2, 0, 0, Math.PI * 2);
+              ctx.fill();
+              ctx.restore();
+            }
+          }
+        }
       } else if (fx.type === "levelup_pillar") {
         // Golden ascending Level-Up Light Pillar!
         const beamW = 54 * (1 - t * 0.45);
@@ -1774,6 +2121,51 @@ export class SunnyRenderer {
     ctx.fillStyle = p.potions > 0 ? "#FFCDD2" : "#9E9E9E";
     ctx.fillText(`포션 ×${p.potions} [F]`, barX + 102, 71);
 
+    // Active Player Status Pills & Idle Regen Badge directly beneath top-left HUD card
+    {
+      const activeList = p.statuses
+        ? (Object.values(p.statuses) as Array<ActiveStatusEffect | undefined>).filter(
+            (s): s is ActiveStatusEffect => Boolean(s && s.remaining > 0)
+          )
+        : [];
+      if (activeList.length > 0 || p.idleRegenActive) {
+        let px = 14;
+        const py = 98;
+        ctx.font = 'bold 11px "Pretendard", sans-serif';
+        ctx.textAlign = "left";
+        ctx.textBaseline = "middle";
+        if (p.idleRegenActive) {
+          const label = "+ 휴식 회복 중";
+          const pillW = ctx.measureText(label).width + 16;
+          ctx.fillStyle = "rgba(16, 46, 32, 0.86)";
+          ctx.strokeStyle = "#69F0AE";
+          ctx.lineWidth = 1.8;
+          ctx.beginPath();
+          ctx.roundRect(px, py, pillW, 20, 9);
+          ctx.fill();
+          ctx.stroke();
+          ctx.fillStyle = "#69F0AE";
+          ctx.fillText(label, px + 8, py + 10);
+          px += pillW + 6;
+        }
+        for (const st of activeList) {
+          const meta = STATUS_METADATA[st.kind];
+          const label = `${meta.label} ${st.remaining.toFixed(1)}s`;
+          const pillW = ctx.measureText(label).width + 16;
+          ctx.fillStyle = "rgba(32, 20, 12, 0.86)";
+          ctx.strokeStyle = meta.color;
+          ctx.lineWidth = 1.8;
+          ctx.beginPath();
+          ctx.roundRect(px, py, pillW, 20, 9);
+          ctx.fill();
+          ctx.stroke();
+          ctx.fillStyle = meta.color;
+          ctx.fillText(label, px + 8, py + 10);
+          px += pillW + 6;
+        }
+      }
+    }
+
     // --- Top-Center: Stage Progress & Online Population ---
     const progW = 290;
     const progX = W * 0.5 - progW * 0.5;
@@ -1893,16 +2285,168 @@ export class SunnyRenderer {
     ctx.textAlign = "center";
     ctx.strokeStyle = "rgba(42, 26, 14, 0.85)";
     ctx.lineWidth = 3;
-    const wInfo = `${wObj.name} (무기 +${wObj.atk} / 총 ATK ${p.baseAtk + wObj.atk}) · Q/E 교체`;
+    const traits: string[] = [];
+    if (wObj.special?.splash) {
+      traits.push(`${wObj.special.splash.rangeTiles}칸 스플래시`);
+    }
+    if (wObj.special?.statuses) {
+      for (const st of wObj.special.statuses) {
+        const meta = STATUS_METADATA[st.kind];
+        traits.push(`${meta.label} ${st.durationSec}초`);
+      }
+    }
+    const traitText = traits.length > 0 ? ` · ★ ${traits.join(" + ")}` : "";
+    const wInfo = `${wObj.name} (ATK +${wObj.atk} / 총 ${p.baseAtk + wObj.atk})${traitText} · Q/E 교체`;
     ctx.strokeText(wInfo, W * 0.5, barTop - 10);
     ctx.fillStyle = "#FFF8E1";
     ctx.fillText(wInfo, W * 0.5, barTop - 10);
     ctx.restore();
   }
 
+  /**
+   * Picks the sprite-sheet frame index:
+   * -1 = neutral idle pose (original sprite)
+   * 0..3 = 4-frame leg-stride walk cycle sequence
+   * 4 = airborne jump stride pose
+   */
+  private pickSpriteFrame(
+    spriteKey: string,
+    moving: boolean,
+    grounded: boolean,
+    animTimer: number,
+    speedPx: number
+  ): number {
+    if (!LEGGED_SPRITE_CONFIG[spriteKey]) return -1;
+    if (!grounded) return WALK_CYCLE_FRAMES;
+    if (!moving) return -1;
+    const rate = Math.max(6.5, Math.min(14, 5.5 + speedPx * 0.032));
+    return Math.floor(animTimer * rate) % WALK_CYCLE_FRAMES;
+  }
+
+  /**
+   * Builds and caches a 5-frame (640x128) walk & jump leg-stride sprite sheet
+   * for any legged character or monster using its base 128x128 SD sprite.
+   */
+  private getWalkSpriteSheet(spriteKey: string, img: HTMLImageElement): HTMLCanvasElement | null {
+    const spec = LEGGED_SPRITE_CONFIG[spriteKey];
+    if (!spec) return null;
+    const cached = this.walkSheets.get(spriteKey);
+    if (cached) return cached;
+
+    const frameSize = 128;
+    const totalFrames = WALK_CYCLE_FRAMES + 1;
+    const canvas = document.createElement("canvas");
+    canvas.width = frameSize * totalFrames;
+    canvas.height = frameSize;
+    const c = canvas.getContext("2d")!;
+
+    const { splitY, midX, strideX, liftY, rot, gait } = spec;
+    const legH = frameSize - splitY;
+    const bodyOverlap = 3;
+
+    // 4-frame walk sequence + 1 airborne jump stride frame
+    const poses: Array<{
+      leftDx: number;
+      leftDy: number;
+      leftRot: number;
+      rightDx: number;
+      rightDy: number;
+      rightRot: number;
+      midDx?: number;
+      midDy?: number;
+      bodyDy: number;
+    }> = [
+      // Frame 0: Left leg swings forward & up, right leg pushes back
+      { leftDx: strideX, leftDy: -liftY, leftRot: -rot, rightDx: -strideX, rightDy: 1, rightRot: rot, midDx: -2, midDy: -2, bodyDy: -1.5 },
+      // Frame 1: Passing step A (right leg tucked mid-swing, body rises)
+      { leftDx: 1, leftDy: 0, leftRot: 0.04, rightDx: 1.5, rightDy: -liftY * 0.72, rightRot: -rot * 0.45, midDx: 3, midDy: -liftY * 0.6, bodyDy: -3.5 },
+      // Frame 2: Right leg swings forward & up, left leg pushes back
+      { leftDx: -strideX, leftDy: 1, leftRot: rot, rightDx: strideX, rightDy: -liftY, rightRot: -rot, midDx: 2, midDy: -2, bodyDy: -1.5 },
+      // Frame 3: Passing step B (left leg tucked mid-swing, body rises)
+      { leftDx: -1.5, leftDy: -liftY * 0.72, leftRot: rot * 0.45, rightDx: -1, rightDy: 0, rightRot: -0.04, midDx: -3, midDy: -liftY * 0.6, bodyDy: -3.5 },
+      // Frame 4: Jump / mid-air stride
+      { leftDx: -strideX * 0.85, leftDy: -liftY * 0.45, leftRot: rot * 1.15, rightDx: strideX * 0.75, rightDy: -liftY * 1.05, rightRot: -rot * 1.15, midDx: 0, midDy: -liftY * 0.7, bodyDy: -2 }
+    ];
+
+    const drawSlice = (
+      ox: number,
+      sx: number,
+      sw: number,
+      dx: number,
+      dy: number,
+      angle: number
+    ) => {
+      if (sw <= 0) return;
+      const pivotX = sx + sw * 0.5;
+      const pivotY = splitY;
+      c.save();
+      c.translate(ox + pivotX + dx, pivotY + dy);
+      c.rotate(angle);
+      c.drawImage(img, sx, splitY, sw, legH, -sw * 0.5, 0, sw, legH);
+      c.restore();
+    };
+
+    poses.forEach((pose, idx) => {
+      const ox = idx * frameSize;
+      // 1. Draw animated legs first
+      if (gait === "spider") {
+        // 3 alternating scuttling leg clusters (rear, mid, front)
+        drawSlice(ox, 0, 44, pose.leftDx, pose.leftDy, pose.leftRot);
+        drawSlice(ox, 44, 38, pose.midDx ?? 0, pose.midDy ?? 0, -pose.leftRot * 0.6);
+        drawSlice(ox, 82, frameSize - 82, pose.rightDx, pose.rightDy, pose.rightRot);
+      } else {
+        drawSlice(ox, 0, midX, pose.leftDx, pose.leftDy, pose.leftRot);
+        drawSlice(ox, midX, frameSize - midX, pose.rightDx, pose.rightDy, pose.rightRot);
+      }
+      // 2. Draw crisp upper torso on top with 3px seamless overlap so joints never tear
+      c.drawImage(
+        img,
+        0,
+        0,
+        frameSize,
+        Math.min(frameSize, splitY + bodyOverlap),
+        ox,
+        Math.round(pose.bodyDy),
+        frameSize,
+        Math.min(frameSize, splitY + bodyOverlap)
+      );
+    });
+
+    this.walkSheets.set(spriteKey, canvas);
+    return canvas;
+  }
+
+  private drawAnimatedSprite(
+    ctx: CanvasRenderingContext2D,
+    spriteKey: string,
+    baseImg: HTMLImageElement,
+    frameIdx: number,
+    dx: number,
+    dy: number,
+    dw: number,
+    dh: number,
+    tintColor: string | null
+  ): void {
+    const sheet = frameIdx >= 0 ? this.getWalkSpriteSheet(spriteKey, baseImg) : null;
+    const src: HTMLImageElement | HTMLCanvasElement = sheet ?? baseImg;
+    const sx = sheet ? frameIdx * 128 : 0;
+    const sw = sheet ? 128 : baseImg.width || 128;
+    const sh = sheet ? 128 : baseImg.height || 128;
+
+    if (tintColor) {
+      this.drawTintedSprite(ctx, src, sx, 0, sw, sh, dx, dy, dw, dh, tintColor);
+    } else {
+      ctx.drawImage(src, sx, 0, sw, sh, dx, dy, dw, dh);
+    }
+  }
+
   private drawTintedSprite(
     ctx: CanvasRenderingContext2D,
-    img: HTMLImageElement,
+    img: HTMLImageElement | HTMLCanvasElement,
+    sx: number,
+    sy: number,
+    sw: number,
+    sh: number,
     dx: number,
     dy: number,
     dw: number,
@@ -1912,7 +2456,7 @@ export class SunnyRenderer {
     const tc = this.tintCtx;
     tc.clearRect(0, 0, 128, 128);
     tc.globalCompositeOperation = "source-over";
-    tc.drawImage(img, 0, 0, 128, 128);
+    tc.drawImage(img, sx, sy, sw, sh, 0, 0, 128, 128);
     tc.globalCompositeOperation = "source-atop";
     tc.fillStyle = color;
     tc.fillRect(0, 0, 128, 128);

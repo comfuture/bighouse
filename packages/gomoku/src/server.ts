@@ -42,6 +42,23 @@ const TURN_TIMER_ID = "turn-timeout";
 
 export const gameMetadata = baseGameMetadata;
 
+/** Convert the flat stage stored before the turn/status refactor. */
+export function normalizeLegacyGomokuStage(stageState: JsonObject, room: RoomState): JsonObject {
+  if (stageState.status || !Array.isArray(stageState.board)) return stageState;
+
+  const { boardSize: _boardSize, currentPlayerId, turnDeadline, winnerPlayerId, ...rest } = stageState;
+  const playerId = typeof currentPlayerId === "string" ? currentPlayerId : room.players[0]?.playerId;
+  const savedDeadline = typeof turnDeadline === "number" && Number.isFinite(turnDeadline) ? turnDeadline : null;
+  let status: GomokuStatus = { kind: "idle" };
+  if (typeof winnerPlayerId === "string" && winnerPlayerId) {
+    status = { kind: "won", winnerPlayerId };
+  } else if (playerId && (savedDeadline !== null || room.phase === "active")) {
+    // A legacy opening had neither a deadline nor an alarm until the first move.
+    status = { kind: "playing", playerId, deadline: savedDeadline };
+  }
+  return { ...rest, status };
+}
+
 export const gomokuDefinition = defineGameDefinition(gameMetadata, {
   initialStageState({ players, now }): JsonObject {
     const first = players[0];
@@ -151,7 +168,7 @@ export const gomokuDefinition = defineGameDefinition(gameMetadata, {
 
   nextTimers(context: GameContext): TimerIntent[] {
     const { status } = gomokuStage(context.state);
-    if (context.state.phase !== "active" || status.kind !== "playing") {
+    if (context.state.phase !== "active" || status.kind !== "playing" || status.deadline === null) {
       return [];
     }
     return [{ id: TURN_TIMER_ID, kind: "turn_timeout", runAt: status.deadline, payload: { playerId: status.playerId } }];

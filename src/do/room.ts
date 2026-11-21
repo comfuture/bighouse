@@ -23,6 +23,7 @@ import {
   type ServerMessage,
   type SnapshotPayload
 } from "../core/protocol";
+import { normalizeLegacyStage } from "../games/legacy-stage";
 import { getGameDefinition } from "../games/registry";
 import { D1Repository } from "../storage/d1";
 import type { Env } from "../types";
@@ -877,9 +878,14 @@ export class RoomDO extends DurableObject<Env> {
       throw new GameServerError("invalid_action", "Please wait before sending another suggestion", 429);
     }
     this.ctx.storage.sql.exec("INSERT INTO signal_limits (player_id, sent_at) VALUES (?, ?) ON CONFLICT(player_id) DO UPDATE SET sent_at = excluded.sent_at", playerId, now);
-    if (isPersistentWorld && result.playerStatePatch) {
-      const currentPs = state.playerStates[playerId] ?? {};
-      state.playerStates[playerId] = { ...currentPs, ...result.playerStatePatch };
+    if (isPersistentWorld && (result.playerStatePatch || result.stageState)) {
+      if (result.playerStatePatch) {
+        const currentPs = state.playerStates[playerId] ?? {};
+        state.playerStates[playerId] = { ...currentPs, ...result.playerStatePatch };
+      }
+      if (result.stageState) {
+        state.stageState = result.stageState;
+      }
       this.saveState(state);
     }
     // Transient signals are delivered only to adapter-approved recipients. They never
@@ -1335,7 +1341,15 @@ export class RoomDO extends DurableObject<Env> {
 
   private loadState(): RoomState | null {
     const row = this.ctx.storage.sql.exec<RoomStateRow>("SELECT id, state_json FROM room_state WHERE id = 1").toArray()[0];
-    return row ? (JSON.parse(row.state_json) as RoomState) : null;
+    if (!row) return null;
+    const state = JSON.parse(row.state_json) as RoomState;
+    const stageState = normalizeLegacyStage(state);
+    if (stageState !== state.stageState) {
+      // Schema-only rewrite: no turn, version, event, or timer is advanced.
+      state.stageState = stageState;
+      this.saveState(state);
+    }
+    return state;
   }
 
   private requireState(): RoomState {

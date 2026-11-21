@@ -32,6 +32,8 @@ export type MobTemplate = {
   drawScale: number;
   ai: MobAiKind;
   aggroRange: number;
+  /** Maximum vertical distance (px) at which this mob notices players (keeps grounded mobs on their own floor) */
+  aggroVerticalRange?: number;
   knockbackResist: number;
   respawnSec: number;
   flying?: boolean;
@@ -50,6 +52,45 @@ export type MobTemplate = {
   isBoss?: boolean;
   dropChance: number;
   dropItem: string;
+};
+
+export type StatusEffectKind = "stun" | "crystal_dot" | "burn" | "shock" | "slow" | "poison";
+
+export type WeaponStatusSpec = {
+  kind: StatusEffectKind;
+  durationSec: number;
+  /** Periodic DoT tick damage as a fraction of total ATK (for DoT statuses) */
+  dotRatio?: number;
+  tickIntervalSec?: number;
+  /** Movement speed multiplier while afflicted (e.g. 0.6) */
+  speedMult?: number;
+};
+
+export type WeaponSplashSpec = {
+  /** Forward wave reach in tiles (e.g. 2.0 tiles = 96px) */
+  rangeTiles: number;
+  heightPx: number;
+  /** Splash wave damage multiplier relative to base hit */
+  damageMult: number;
+  waveColor: string;
+  accentColor: string;
+  style: "maple_wave" | "solar_shockwave" | "dragon_flame";
+};
+
+export type WeaponSpecialEffect = {
+  statuses?: WeaponStatusSpec[];
+  splash?: WeaponSplashSpec;
+};
+
+export type ActiveStatusEffect = {
+  kind: StatusEffectKind;
+  remaining: number;
+  duration: number;
+  tickDamage?: number;
+  tickInterval?: number;
+  tickTimer?: number;
+  speedMult?: number;
+  sourcePlayerId?: string;
 };
 
 export type WeaponTemplate = {
@@ -72,6 +113,7 @@ export type WeaponTemplate = {
   projectileRange?: number;
   pierce?: number;
   minLevel?: number;
+  special?: WeaponSpecialEffect;
   description: string;
 };
 
@@ -271,6 +313,7 @@ export type PersistedPlayerProfile = {
   mobsDefeated: number;
   unlockedWeapons: string[];
   equippedWeaponId: string;
+  weaponSwitchSeq?: number;
   highestStageNumber: number;
   lastStageId: string;
   lastX: number;
@@ -301,8 +344,13 @@ export type WorldPlayerState = {
   mobsDefeated: number;
   unlockedWeapons: string[];
   equippedWeaponId: string;
+  weaponSwitchSeq?: number;
   highestStageNumber: number;
   lastUpdatedAt: number;
+  /** Server timestamp of last active input/combat (used to validate 10s idle HP regen). */
+  lastActivityAt?: number;
+  /** Server timestamp of last idle HP regen tick (rate-limits gentle regen interval). */
+  lastIdleRegenAt?: number;
   /**
    * Set while the player is down and waiting to revive. A dead player takes no
    * actions and does not move. Absent on states saved before death existed.
@@ -326,6 +374,16 @@ export type ServerMobState = {
   respawnAt: number;
   spawnProtectUntil: number;
   lastHitAt: number;
+  /** Synchronized world position & kinematics (pixels), led by nearest alive player */
+  x?: number;
+  y?: number;
+  vx?: number;
+  vy?: number;
+  facing?: number;
+  stateUpdatedAt?: number;
+  authorityPlayerId?: string;
+  /** Active server-tracked status effects on this mob (kind -> expiresAt ms) */
+  statuses?: Partial<Record<StatusEffectKind, number>>;
   /** Cooperative hunting: tracks damage dealt per playerId in the current life cycle */
   contributors?: Record<string, number>;
   /** Timestamp when mob was defeated (enables grace-window simultaneous kill credit) */
@@ -371,4 +429,5 @@ export type RemotePlayerView = {
   hp: number;
   maxHp: number;
   equippedWeaponId: string;
+  dead?: boolean;
 };

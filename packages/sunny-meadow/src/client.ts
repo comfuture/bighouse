@@ -5,15 +5,22 @@ import type {
   MountedGameClient
 } from "@bighouse/game-sdk/client";
 import {
+  computeIdleRegenAmount,
+  isActiveMobAi,
   ITEM_CATALOG,
+  MOB_ALERT_TELEGRAPH_SEC,
   MOB_CATALOG,
   PLAYER_CONFIG,
+  STATUS_METADATA,
+  stepIdleRegen,
   VIEWPORT,
   WEAPON_CATALOG,
-  WEAPON_ORDER
+  WEAPON_ORDER,
+  type IdleRegenState
 } from "./catalogs";
 import { SunnyAudioManager } from "./audio";
 import { gameMetadata } from "./client-metadata";
+import { createWeaponSwitchSequence } from "./weapon-switch-sequence";
 import { compileStageForRuntime, type CompiledStage, type RuntimeLadder } from "./map-schema";
 import {
   aabbOverlap,
@@ -21,6 +28,7 @@ import {
   findOverlappingLadder,
   findOverlappingPortal,
   resolvePlatformLanding,
+  stepOnLadder,
   updateMovingPlatforms
 } from "./physics";
 import {
@@ -35,14 +43,17 @@ import {
   type LocalPlayerRender
 } from "./renderer";
 import { ALL_STAGES, getStageById } from "./stages/index";
-import { computeDeterministicHit } from "./server";
+import { computeDeterministicHit, deathPenaltyOf } from "./server";
 import { registerBighouseUi, type BighouseGameChatElement } from "@bighouse/ui";
 import "./style.css";
 import type {
+  ActiveStatusEffect,
   MobTemplate,
   RemotePlayerView,
   ServerItemState,
   ServerMobState,
+  StatusEffectKind,
+  WeaponStatusSpec,
   WorldPlayerState
 } from "./types";
 
@@ -58,6 +69,14 @@ type ClientMobEntity = ClientMobRender & {
   aiPhase: string;
   shootTimer: number;
   teleportTimer: number;
+  alerted: boolean;
+  alertResetTimer: number;
+  authX: number;
+  authY: number;
+  authVx: number;
+  authVy: number;
+  authFacing: number;
+  lastAuthAt: number;
 };
 
 type ClientProjectile = ClientProjectileRender & {
@@ -291,6 +310,8 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
     equippedWeaponId: "wooden_sword",
     invulnTimer: 0,
     slowTimer: 0,
+    statuses: {},
+    idleRegenActive: false,
     attackAnimTimer: 0,
     attackAnimDuration: 0.22,
     animTimer: 0,
@@ -309,6 +330,12 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
   let attackCooldown = 0;
   let hurtStunTimer = 0;
   let ladderStepTimer = 0;
+  let ladderGrabCooldown = 0;
+  let idleRegenState: IdleRegenState = { idleTimer: 0, tickTimer: 0 };
+  const resetIdleRegen = () => {
+    idleRegenState = { idleTimer: 0, tickTimer: 0 };
+    localPlayer.idleRegenActive = false;
+  };
   let lastSafeX = 160;
   let lastSafeY = 660;
   let poseSendTimer = 0;
@@ -323,17 +350,19 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
   const downed = (): boolean => dead || localPlayer.hp <= 0;
 
   function enterDeath(lostXp: number, lostCoins: number): void {
-    const loss = (amount: number): string => {
-      const value = Math.max(0, Math.round(amount));
-      return value === 0 ? "잃을 것 없음" : `-${value.toLocaleString()}`;
-    };
-    deathXp.textContent = loss(lostXp);
-    deathCoins.textContent = loss(lostCoins);
+    const xpVal = Math.max(0, Math.round(lostXp));
+    const coinVal = Math.max(0, Math.round(lostCoins));
+    deathXp.textContent =
+      xpVal === 0 ? (localPlayer.level <= 3 ? "초반 보호 (0)" : "잃을 것 없음") : `-${xpVal.toLocaleString()}`;
+    deathCoins.textContent = coinVal === 0 ? "잃을 것 없음" : `-${coinVal.toLocaleString()}`;
     if (dead) return;
     dead = true;
     localPlayer.hp = 0;
     localPlayer.vx = 0;
     localPlayer.vy = 0;
+    localPlayer.statuses = {};
+    localPlayer.slowTimer = 0;
+    resetIdleRegen();
     keysDown.clear();
     virtualDown.clear();
     stageFrame.classList.add("is-dead");
@@ -389,16 +418,91 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
   const predictedHitIds = new Set<string>();
   const predictedPickupIds = new Set<string>();
   const predictedPotionIds = new Set<string>();
+  const predictedRegenIds = new Set<string>();
   const optimisticMobLocks = new Map<string, { hp: number; alive: boolean; expiresAt: number }>();
   const optimisticItemLocks = new Map<string, number>();
   let localPredSeq = 0;
   const nextPredId = (prefix: string) => `${prefix}_${++localPredSeq}_${Date.now().toString(36)}`;
+  const weaponSwitchSequence = createWeaponSwitchSequence();
+  let pendingWeaponSwitch: { weaponId: string; seq: number; expiresAt: number } | null = null;
+  let serverClockOffset = 0;
+  let clockSynced = false;
+
+  function hashId(str: string): number {
+    let h = 2166136261;
+    for (let i = 0; i < str.length; i++) {
+      h ^= str.charCodeAt(i);
+      h = Math.imul(h, 16777619);
+    }
+    return (h >>> 0) / 4294967296;
+  }
+
+  function selectWeaponLocal(wid: string): void {
+    if (downed()) return;
+    if (!localPlayer.unlockedWeapons.includes(wid) || localPlayer.equippedWeaponId === wid) return;
+    const weaponSwitchSeq = weaponSwitchSequence.next();
+    pendingWeaponSwitch = {
+      weaponId: wid,
+      seq: weaponSwitchSeq,
+      expiresAt: Date.now() + 2500
+    };
+    localPlayer.equippedWeaponId = wid;
+    actions.sendAction({ type: "switchWeapon", payload: { weaponId: wid, switchSeq: weaponSwitchSeq } });
+  }
+
+  function getMobAuthority(mob: ClientMobEntity, now: number): {
+    targetX: number;
+    targetY: number;
+    hasTarget: boolean;
+    isLocalAuthority: boolean;
+    localDist: number;
+  } {
+    const mx = mob.x + mob.w * 0.5;
+    const my = mob.y + mob.h * 0.5;
+    let bestId = "";
+    let bestDist = Infinity;
+    let bestX = mx;
+    let bestY = my;
+    let localDist = Infinity;
+
+    if (!downed()) {
+      const lx = localPlayer.x + localPlayer.w * 0.5;
+      const ly = localPlayer.y + localPlayer.h * 0.5;
+      localDist = Math.hypot(lx - mx, ly - my);
+      bestId = localPlayer.playerId;
+      bestDist = localDist;
+      bestX = lx;
+      bestY = ly;
+    }
+
+    for (const rp of remotePlayers.values()) {
+      if (rp.dead || now - rp.lastSeenAt > 12_000) continue;
+      const rx = rp.x + 14;
+      const ry = rp.y + 21;
+      const dist = Math.hypot(rx - mx, ry - my);
+      if (dist < bestDist - 1 || (Math.abs(dist - bestDist) <= 1 && rp.playerId < bestId)) {
+        bestDist = dist;
+        bestId = rp.playerId;
+        bestX = rx;
+        bestY = ry;
+      }
+    }
+
+    return {
+      targetX: bestX,
+      targetY: bestY,
+      hasTarget: bestId !== "",
+      isLocalAuthority: bestId === localPlayer.playerId && bestDist <= 1400,
+      localDist
+    };
+  }
 
   function spawnText(
     x: number,
     y: number,
     text: string,
-    kind: ClientDamageText["kind"] = "normal"
+    kind: ClientDamageText["kind"] = "normal",
+    colorOverride?: string
   ): void {
     const colorMap: Record<ClientDamageText["kind"], [string, string, number]> = {
       normal: ["#FFF176", "#5D3A1A", 20],
@@ -409,7 +513,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
       levelup: ["#FFD740", "#5D3A1A", 24],
       info: ["#FFF59D", "#5D3A1A", 16]
     };
-    const [color, stroke, fontSize] = colorMap[kind];
+    const [baseColor, stroke, fontSize] = colorMap[kind];
     damageTexts.push({
       x: x + (Math.random() - 0.5) * 14,
       y,
@@ -418,10 +522,74 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
       kind,
       age: 0,
       duration: kind === "crit" || kind === "levelup" ? 1.15 : 0.9,
-      color,
+      color: colorOverride ?? baseColor,
       stroke,
       fontSize
     });
+  }
+
+  function applyStatusesToMob(
+    mob: ClientMobEntity,
+    specs: WeaponStatusSpec[] | undefined,
+    totalAtk: number,
+    sourcePlayerId?: string
+  ): void {
+    if (!specs || specs.length === 0 || !mob.alive) return;
+    for (const spec of specs) {
+      const prev = mob.statuses[spec.kind];
+      const isFresh = !prev || prev.remaining <= 0.05;
+      const tickDamage =
+        typeof spec.dotRatio === "number" ? Math.max(1, Math.round(totalAtk * spec.dotRatio)) : prev?.tickDamage;
+      const tickInterval = spec.tickIntervalSec ?? prev?.tickInterval ?? 0.8;
+      mob.statuses[spec.kind] = {
+        kind: spec.kind,
+        duration: spec.durationSec,
+        remaining: Math.max(prev?.remaining ?? 0, spec.durationSec),
+        ...(typeof tickDamage === "number" ? { tickDamage, tickInterval, tickTimer: prev?.tickTimer ?? tickInterval } : {}),
+        ...(typeof spec.speedMult === "number" ? { speedMult: spec.speedMult } : {}),
+        ...(sourcePlayerId ? { sourcePlayerId } : prev?.sourcePlayerId ? { sourcePlayerId: prev.sourcePlayerId } : {})
+      };
+      if (spec.kind === "stun") {
+        mob.alertTimer = 0;
+        mob.alerted = false;
+        if (isFresh) {
+          spawnText(mob.x + mob.w * 0.5, mob.y - 30, "★ 기절!", "info", "#FFD740");
+        }
+      } else if (isFresh) {
+        const meta = STATUS_METADATA[spec.kind];
+        spawnText(mob.x + mob.w * 0.5, mob.y - 28, `${meta.label}!`, "info", meta.color);
+      }
+    }
+  }
+
+  function applyStatusToPlayer(
+    kind: StatusEffectKind,
+    durationSec: number,
+    opts?: { tickDamage?: number; tickInterval?: number; speedMult?: number }
+  ): void {
+    const prev = localPlayer.statuses[kind];
+    const isFresh = !prev || prev.remaining <= 0.05;
+    const tickInterval = opts?.tickInterval ?? prev?.tickInterval;
+    localPlayer.statuses[kind] = {
+      kind,
+      duration: durationSec,
+      remaining: Math.max(prev?.remaining ?? 0, durationSec),
+      ...(typeof opts?.tickDamage === "number"
+        ? {
+            tickDamage: opts.tickDamage,
+            tickInterval: tickInterval ?? 1.0,
+            tickTimer: prev?.tickTimer ?? (tickInterval ?? 1.0)
+          }
+        : {}),
+      ...(typeof opts?.speedMult === "number" ? { speedMult: opts.speedMult } : {})
+    };
+    if (kind === "slow") {
+      localPlayer.slowTimer = Math.max(localPlayer.slowTimer, durationSec);
+    }
+    if (isFresh) {
+      const meta = STATUS_METADATA[kind];
+      spawnText(localPlayer.x + localPlayer.w * 0.5, localPlayer.y - 34, `${meta.label}!`, "info", meta.color);
+    }
   }
 
   function spawnHitBurst(x: number, y: number, color: string, isCrit: boolean): void {
@@ -517,7 +685,9 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
     mobsById.clear();
     for (const ms of compiledStage.mobSpawns) {
       const tpl = MOB_CATALOG[ms.templateId]!;
+      const startX = ms.x - tpl.width * 0.5;
       const startY = tpl.flying ? ms.y - tpl.height - 76 : ms.y - tpl.height;
+      const seed = hashId(ms.id);
       const mob: ClientMobEntity = {
         id: ms.id,
         tpl,
@@ -527,9 +697,9 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
         primaryColor: tpl.primaryColor,
         w: tpl.width,
         h: tpl.height,
-        x: ms.x - tpl.width * 0.5,
+        x: startX,
         y: startY,
-        homeX: ms.x - tpl.width * 0.5,
+        homeX: startX,
         homeY: startY,
         vx: 0,
         vy: 0,
@@ -541,19 +711,29 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
         displayHp: tpl.hp,
         inCombat: false,
         spawnProtectUntil: 0,
+        alertTimer: 0,
+        alerted: false,
+        alertResetTimer: 0,
         hitFlashTimer: 0,
         hitStunTimer: 0,
-        animTimer: Math.random() * 10,
+        animTimer: seed * 10,
         drawScale: tpl.drawScale,
         hasCrown: Boolean(tpl.hasCrown),
         squashX: 1,
         squashY: 1,
+        statuses: {},
         patrolMinX: ms.patrolMinX,
         patrolMaxX: ms.patrolMaxX,
-        aiTimer: 0.6 + Math.random() * 0.9,
+        aiTimer: 0.6 + seed * 0.9,
         aiPhase: "idle",
-        shootTimer: 1.2 + Math.random() * 1.2,
-        teleportTimer: 2.2 + Math.random() * 1.4
+        shootTimer: 1.2 + seed * 1.2,
+        teleportTimer: 2.2 + seed * 1.4,
+        authX: startX,
+        authY: startY,
+        authVx: 0,
+        authVy: 0,
+        authFacing: ms.facing,
+        lastAuthAt: 0
       };
       mobs.push(mob);
       mobsById.set(mob.id, mob);
@@ -587,6 +767,8 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
       localPlayer.vy = 0;
       localPlayer.grounded = false;
       localPlayer.onLadder = false;
+      localPlayer.statuses = {};
+      localPlayer.slowTimer = 0;
       standingPlatform = null;
       currentLadder = null;
       lastSafeX = spawnX;
@@ -607,10 +789,19 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
       stagePlayerCount?: number;
       totalPlayersOnline?: number;
       stagePlayerCounts?: Record<string, number>;
-      mobs?: Record<string, ServerMobState>;
+      mobs?: Record<string, Omit<ServerMobState, "statuses"> & { statuses?: StatusEffectKind[] }>;
       items?: Record<string, ServerItemState>;
       nearbyPlayers?: RemotePlayerView[];
     };
+
+    const nowClock = Date.now();
+    const measuredOffset = snap.serverTime - nowClock;
+    if (!clockSynced || Math.abs(measuredOffset - serverClockOffset) > 1500) {
+      serverClockOffset = measuredOffset;
+      clockSynced = true;
+    } else {
+      serverClockOffset += (measuredOffset - serverClockOffset) * 0.25;
+    }
 
     const seat = snap.room.players.find((p) => p.playerId === snap.playerId);
     localPlayer.displayName = priv.displayName || seat?.displayName || localPlayer.displayName;
@@ -625,12 +816,40 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
     if (typeof priv.score === "number") localPlayer.score = priv.score;
     if (typeof priv.mobsDefeated === "number") localPlayer.mobsDefeated = priv.mobsDefeated;
     if (Array.isArray(priv.unlockedWeapons)) localPlayer.unlockedWeapons = [...priv.unlockedWeapons];
-    if (typeof priv.equippedWeaponId === "string") localPlayer.equippedWeaponId = priv.equippedWeaponId;
+    const srvSeq = weaponSwitchSequence.observe(priv.weaponSwitchSeq);
+    if (typeof priv.equippedWeaponId === "string") {
+      if (pendingWeaponSwitch && nowClock < pendingWeaponSwitch.expiresAt) {
+        const caughtUp =
+          (pendingWeaponSwitch.seq > 0 && srvSeq >= pendingWeaponSwitch.seq) ||
+          (pendingWeaponSwitch.seq === 0 && priv.equippedWeaponId === pendingWeaponSwitch.weaponId);
+        if (caughtUp) {
+          localPlayer.equippedWeaponId = priv.equippedWeaponId;
+          pendingWeaponSwitch = null;
+        } else if (localPlayer.unlockedWeapons.includes(pendingWeaponSwitch.weaponId)) {
+          localPlayer.equippedWeaponId = pendingWeaponSwitch.weaponId;
+        } else {
+          localPlayer.equippedWeaponId = priv.equippedWeaponId;
+          pendingWeaponSwitch = null;
+        }
+      } else {
+        pendingWeaponSwitch = null;
+        localPlayer.equippedWeaponId = priv.equippedWeaponId;
+      }
+    }
     if (typeof priv.highestStageNumber === "number") highestStageNumber = priv.highestStageNumber;
-    if (priv.dead === true) enterDeath(localPlayer.xp, localPlayer.coins);
-    else leaveDeath();
-
     const targetStageId = priv.stageId || pub.stageId || "stage-1";
+    if (priv.dead === true) {
+      const pen = deathPenaltyOf({
+        xp: localPlayer.xp,
+        coins: localPlayer.coins,
+        level: localPlayer.level,
+        stageId: targetStageId
+      });
+      enterDeath(pen.lostXp, pen.lostCoins);
+    } else {
+      leaveDeath();
+    }
+
     const stageChanged = targetStageId !== currentStageId;
     if (stageChanged) {
       stageTransitionPending = false;
@@ -676,6 +895,32 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
           mob.inCombat = sm.inCombat;
         }
         mob.spawnProtectUntil = sm.spawnProtectUntil > 0 ? sm.spawnProtectUntil + serverTimeOffset : 0;
+        if (!mob.alive) {
+          mob.statuses = {};
+        } else if (Array.isArray(sm.statuses)) {
+          for (const stKind of sm.statuses) {
+            if (!mob.statuses[stKind] || mob.statuses[stKind]!.remaining <= 0) {
+              mob.statuses[stKind] = { kind: stKind, duration: 1.0, remaining: 1.0 };
+            }
+          }
+        }
+
+        // Apply server-stored mob position & kinematics on stage load or when not local authority
+        if (typeof sm.x === "number" && typeof sm.y === "number") {
+          mob.authX = sm.x;
+          mob.authY = sm.y;
+          mob.authVx = typeof sm.vx === "number" ? sm.vx : 0;
+          mob.authVy = typeof sm.vy === "number" ? sm.vy : 0;
+          mob.authFacing = typeof sm.facing === "number" ? (sm.facing < 0 ? -1 : 1) : mob.facing;
+          mob.lastAuthAt = nowLocal;
+          if (stageChanged) {
+            mob.x = sm.x;
+            mob.y = sm.y;
+            mob.vx = mob.authVx;
+            mob.vy = mob.authVy;
+            mob.facing = mob.authFacing;
+          }
+        }
       }
     }
 
@@ -710,6 +955,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
           existing.equippedWeaponId = rp.equippedWeaponId;
           existing.facing = rp.facing;
           existing.animState = rp.animState;
+          existing.dead = Boolean(rp.dead);
           existing.targetX = rp.x;
           existing.targetY = rp.y;
           existing.vx = rp.vx;
@@ -718,6 +964,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
         } else {
           remotePlayers.set(rp.playerId, {
             ...rp,
+            dead: Boolean(rp.dead),
             targetX: rp.x,
             targetY: rp.y,
             lastSeenAt: now
@@ -751,7 +998,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
       for (const ev of snap.events) {
         if (seenEventIds.has(ev.id)) continue;
         seenEventIds.add(ev.id);
-        if (seenEventIds.size > 240) {
+        if (seenEventIds.size > 1000) {
           const first = seenEventIds.values().next().value;
           if (first) seenEventIds.delete(first);
         }
@@ -768,6 +1015,24 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
     if (typeof p.stageId === "string" && p.stageId !== currentStageId) return;
     const nowOffset = Date.now() - serverTime;
 
+    if (ev.type === "sunny.actionIgnored") {
+      // Lost an optimistic race (e.g. another player claimed a Golden Heart or killed a mob earlier);
+      // clear optimistic locks so the fresh server snapshot reconciles immediately.
+      if (p.action === "attackMob") optimisticMobLocks.clear();
+      if (p.action === "collectItem") optimisticItemLocks.clear();
+      return;
+    }
+
+    if (ev.type === "sunny.weaponChanged") {
+      const pid = String(p.playerId ?? "");
+      const wid = typeof p.weaponId === "string" ? p.weaponId : "";
+      if (pid && pid !== ctx.playerId && wid) {
+        const rp = remotePlayers.get(pid);
+        if (rp) rp.equippedWeaponId = wid;
+      }
+      return;
+    }
+
     if (ev.type === "sunny.playerPose") {
       const pid = String(p.playerId ?? "");
       if (!pid || pid === ctx.playerId) return;
@@ -783,6 +1048,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
         existing.level = Number(p.level ?? existing.level);
         existing.displayName = String(p.displayName ?? existing.displayName);
         existing.equippedWeaponId = String(p.equippedWeaponId ?? existing.equippedWeaponId);
+        existing.dead = false;
         existing.lastSeenAt = now;
       } else {
         remotePlayers.set(pid, {
@@ -801,8 +1067,27 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
           hp: Number(p.hp ?? 100),
           maxHp: Number(p.maxHp ?? 100),
           equippedWeaponId: String(p.equippedWeaponId ?? "wooden_sword"),
+          dead: false,
           lastSeenAt: now
         });
+      }
+
+      // Apply nearest-player authoritative mob kinematics relayed by the server
+      if (Array.isArray(p.mobs)) {
+        for (const entry of p.mobs) {
+          if (!Array.isArray(entry) || entry.length < 6) continue;
+          const mob = mobsById.get(String(entry[0]));
+          if (!mob || !mob.alive || now < mob.spawnProtectUntil) continue;
+          const mx = Number(entry[1]);
+          const my = Number(entry[2]);
+          if (!Number.isFinite(mx) || !Number.isFinite(my)) continue;
+          mob.authX = mx;
+          mob.authY = my;
+          mob.authVx = Number.isFinite(Number(entry[3])) ? Number(entry[3]) : 0;
+          mob.authVy = Number.isFinite(Number(entry[4])) ? Number(entry[4]) : 0;
+          mob.authFacing = Number(entry[5]) < 0 ? -1 : 1;
+          mob.lastAuthAt = now;
+        }
       }
       return;
     }
@@ -849,25 +1134,53 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
 
       const dmg = Number(p.damage ?? 0);
       const isCrit = Boolean(p.isCrit);
-      const knockDir = Number(p.knockDir ?? 1);
+      const hitKind = p.hitKind === "splash" || p.hitKind === "dot" ? p.hitKind : "primary";
+      const dotStatus =
+        hitKind === "dot" && typeof p.dotStatus === "string" ? (p.dotStatus as StatusEffectKind) : undefined;
+      const knockDir = hitKind === "dot" ? 0 : Number(p.knockDir ?? 1);
       const kbX = Number(p.knockbackX ?? 200) * (1 - mob.tpl.knockbackResist);
       const kbY = Number(p.knockbackY ?? -160) * (1 - mob.tpl.knockbackResist);
 
+      if (typeof p.x === "number" && typeof p.y === "number" && Number.isFinite(p.x) && Number.isFinite(p.y)) {
+        mob.x = p.x;
+        mob.y = p.y;
+        mob.authX = p.x;
+        mob.authY = p.y;
+        mob.lastAuthAt = Date.now();
+      }
       mob.hp = Number(p.hp ?? mob.hp);
       mob.inCombat = true;
-      mob.hitFlashTimer = 0.14;
-      mob.hitStunTimer = isCrit ? 0.28 : 0.2;
-      mob.vx = knockDir * kbX;
-      mob.vy = kbY;
-      mob.grounded = false;
-      mob.facing = -knockDir;
-      mob.squashX = 1.24;
-      mob.squashY = 0.78;
+      mob.hitFlashTimer = hitKind === "dot" ? 0.08 : 0.14;
 
-      spawnHitBurst(mob.x + mob.w * 0.5, mob.y + mob.h * 0.45, isCrit ? "#FFD740" : "#FFE082", isCrit);
-      spawnText(mob.x + mob.w * 0.5, mob.y - 12, isCrit ? `${dmg}!` : `${dmg}`, isCrit ? "crit" : "normal");
+      if (hitKind !== "dot") {
+        mob.hitStunTimer = isCrit ? 0.28 : 0.2;
+        mob.vx = knockDir * kbX;
+        mob.vy = kbY;
+        mob.grounded = false;
+        if (knockDir !== 0) mob.facing = -knockDir;
+        mob.squashX = 1.24;
+        mob.squashY = 0.78;
+      }
 
-      if (p.attackerId === ctx.playerId) {
+      if (Array.isArray(p.appliedStatuses)) {
+        applyStatusesToMob(
+          mob,
+          p.appliedStatuses as WeaponStatusSpec[],
+          Math.max(10, dmg),
+          typeof p.attackerId === "string" ? p.attackerId : undefined
+        );
+      }
+
+      if (hitKind === "dot" && dotStatus) {
+        const meta = STATUS_METADATA[dotStatus];
+        spawnSparkles(mob.x + mob.w * 0.5, mob.y + mob.h * 0.45, meta.color, 5);
+        spawnText(mob.x + mob.w * 0.5, mob.y - 10, `${dmg}`, "info", meta.color);
+      } else {
+        spawnHitBurst(mob.x + mob.w * 0.5, mob.y + mob.h * 0.45, isCrit ? "#FFD740" : "#FFE082", isCrit);
+        spawnText(mob.x + mob.w * 0.5, mob.y - 12, isCrit ? `${dmg}!` : `${dmg}`, isCrit ? "crit" : "normal");
+      }
+
+      if (p.attackerId === ctx.playerId && hitKind !== "dot") {
         hitStopTimer = isCrit ? 0.05 : 0.032;
         triggerShake(isCrit ? 6 : 3, isCrit ? 0.15 : 0.09);
         audio.playSfx(isCrit ? "sfx_crit" : "sfx_hit", 0.06);
@@ -882,6 +1195,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
         mob.alive = false;
         mob.hp = 0;
         mob.inCombat = false;
+        mob.statuses = {};
         optimisticMobLocks.delete(mob.id);
         if (!alreadyLocallyDead) {
           spawnSparkles(mob.x + mob.w * 0.5, mob.y + mob.h * 0.5, mob.primaryColor, 16);
@@ -900,7 +1214,16 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
     }
 
     if (ev.type === "sunny.mobsRespawned") {
-      const list = (p.mobs as Array<{ id: string; hp: number; maxHp: number; spawnProtectUntil: number }>) ?? [];
+      const list =
+        (p.mobs as Array<{
+          id: string;
+          hp: number;
+          maxHp: number;
+          x?: number;
+          y?: number;
+          facing?: number;
+          spawnProtectUntil: number;
+        }>) ?? [];
       for (const rm of list) {
         const mob = mobsById.get(rm.id);
         if (!mob) continue;
@@ -910,11 +1233,22 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
         mob.maxHp = rm.maxHp;
         mob.displayHp = rm.hp;
         mob.inCombat = false;
-        mob.x = mob.homeX;
-        mob.y = mob.homeY;
+        mob.x = typeof rm.x === "number" ? rm.x : mob.homeX;
+        mob.y = typeof rm.y === "number" ? rm.y : mob.homeY;
         mob.vx = 0;
         mob.vy = 0;
+        if (typeof rm.facing === "number") mob.facing = rm.facing < 0 ? -1 : 1;
+        mob.authX = mob.x;
+        mob.authY = mob.y;
+        mob.authVx = 0;
+        mob.authVy = 0;
+        mob.authFacing = mob.facing;
+        mob.lastAuthAt = 0;
         mob.hitStunTimer = 0;
+        mob.alertTimer = 0;
+        mob.alerted = false;
+        mob.alertResetTimer = 0;
+        mob.statuses = {};
         // Measure the protection from the event's own timestamp: `serverTime` is the last
         // snapshot's, which may be minutes old when an event arrives on its own.
         mob.spawnProtectUntil = Date.now() + Math.max(0, rm.spawnProtectUntil - ev.createdAt);
@@ -971,35 +1305,73 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
 
     if (ev.type === "sunny.playerHealed" && p.playerId === ctx.playerId) {
       const clientPotionId = typeof p.clientPotionId === "string" ? p.clientPotionId : "";
-      const wasPredicted = clientPotionId !== "" && predictedPotionIds.has(clientPotionId);
-      if (wasPredicted) {
+      const clientRegenId = typeof p.clientRegenId === "string" ? p.clientRegenId : "";
+      if (clientPotionId !== "" && predictedPotionIds.has(clientPotionId)) {
         predictedPotionIds.delete(clientPotionId);
+        return;
+      }
+      if (clientRegenId !== "" && predictedRegenIds.has(clientRegenId)) {
+        predictedRegenIds.delete(clientRegenId);
         return;
       }
       const amt = Number(p.amount ?? 0);
       if (amt > 0) {
+        const isIdleRegen = p.reason === "idle_regen";
         spawnText(localPlayer.x + 14, localPlayer.y - 12, `+${amt} HP`, "heal");
-        spawnSparkles(localPlayer.x + 14, localPlayer.y + 18, "#69F0AE", 10);
-        audio.playSfx("sfx_potion", 0);
+        spawnSparkles(localPlayer.x + 14, localPlayer.y + 18, "#69F0AE", isIdleRegen ? 5 : 10);
+        if (!isIdleRegen) audio.playSfx("sfx_potion", 0);
       }
       return;
     }
 
-    if (ev.type === "sunny.playerDied" && p.playerId === ctx.playerId) {
-      enterDeath(Number(p.lostXp ?? localPlayer.xp), Number(p.lostCoins ?? localPlayer.coins));
+    if (ev.type === "sunny.playerDied") {
+      const pid = String(p.playerId ?? "");
+      if (pid === ctx.playerId) {
+        const fallback = deathPenaltyOf({
+          xp: localPlayer.xp,
+          coins: localPlayer.coins,
+          level: localPlayer.level,
+          stageId: currentStageId
+        });
+        enterDeath(
+          typeof p.lostXp === "number" ? p.lostXp : fallback.lostXp,
+          typeof p.lostCoins === "number" ? p.lostCoins : fallback.lostCoins
+        );
+      } else if (pid) {
+        const rp = remotePlayers.get(pid);
+        if (rp) rp.dead = true;
+      }
       return;
     }
 
-    if (ev.type === "sunny.playerRespawned" && p.playerId === ctx.playerId) {
-      leaveDeath();
-      if (typeof p.hp === "number") localPlayer.hp = p.hp;
-      localPlayer.x = Number(p.x ?? compiledStage.spawn.x);
-      localPlayer.y = Number(p.y ?? compiledStage.spawn.y - localPlayer.h);
-      localPlayer.vx = 0;
-      localPlayer.vy = 0;
-      localPlayer.invulnTimer = 2.0;
-      spawnText(localPlayer.x + 14, localPlayer.y - 20, "부활!", "info");
-      spawnSparkles(localPlayer.x + 14, localPlayer.y + 20, "#FFD740", 16);
+    if (ev.type === "sunny.playerRespawned") {
+      const pid = String(p.playerId ?? "");
+      if (pid === ctx.playerId) {
+        leaveDeath();
+        if (typeof p.hp === "number") localPlayer.hp = p.hp;
+        localPlayer.x = Number(p.x ?? compiledStage.spawn.x);
+        localPlayer.y = Number(p.y ?? compiledStage.spawn.y - localPlayer.h);
+        localPlayer.vx = 0;
+        localPlayer.vy = 0;
+        localPlayer.invulnTimer = 2.0;
+        localPlayer.statuses = {};
+        localPlayer.slowTimer = 0;
+        spawnText(localPlayer.x + 14, localPlayer.y - 20, "부활!", "info");
+        spawnSparkles(localPlayer.x + 14, localPlayer.y + 20, "#FFD740", 16);
+      } else if (pid) {
+        const rp = remotePlayers.get(pid);
+        if (rp) {
+          rp.dead = false;
+          if (typeof p.x === "number") {
+            rp.x = p.x;
+            rp.targetX = p.x;
+          }
+          if (typeof p.y === "number") {
+            rp.y = p.y;
+            rp.targetY = p.y;
+          }
+        }
+      }
       return;
     }
 
@@ -1092,15 +1464,21 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
     if (PREVENT_KEYS.has(e.code)) e.preventDefault();
     void audio.unlock();
     keysDown.add(e.code);
+    resetIdleRegen();
 
-    // Quick weapon selection 1..9, 0
-    if (e.code.startsWith("Digit")) {
+    // Quick weapon selection 1..9, 0 and rapid Q / E cycling (handled on keydown so fast taps never drop)
+    if (e.code.startsWith("Digit") && !e.repeat) {
       const digit = Number(e.code.slice(5));
       const idx = digit === 0 ? 9 : digit - 1;
       const wid = WEAPON_ORDER[idx];
-      if (wid && localPlayer.unlockedWeapons.includes(wid) && localPlayer.equippedWeaponId !== wid) {
-        localPlayer.equippedWeaponId = wid;
-        actions.sendAction({ type: "switchWeapon", payload: { weaponId: wid } });
+      if (wid) selectWeaponLocal(wid);
+    } else if ((e.code === "KeyQ" || e.code === "KeyE") && !e.repeat) {
+      if (localPlayer.unlockedWeapons.length > 1) {
+        const delta = e.code === "KeyE" ? 1 : -1;
+        const idx = localPlayer.unlockedWeapons.indexOf(localPlayer.equippedWeaponId);
+        const nextWid =
+          localPlayer.unlockedWeapons[(idx + delta + localPlayer.unlockedWeapons.length) % localPlayer.unlockedWeapons.length]!;
+        selectWeaponLocal(nextWid);
       }
     }
   };
@@ -1170,8 +1548,9 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
       return;
     }
 
-    updateMovingPlatforms(compiledStage.movingPlatforms, dt);
+    updateMovingPlatforms(compiledStage.movingPlatforms, dt, now + serverClockOffset);
     stepLocalPlayer(dt, now);
+    stepLocalIdleRegen(dt);
     stepMobs(dt, now);
     stepProjectiles(dt, now);
     stepRemotePlayers(dt, now);
@@ -1179,6 +1558,54 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
     updateEffects(dt);
     updateCamera(dt);
     sendPeriodicSync(dt);
+  }
+
+  function stepLocalIdleRegen(dt: number): void {
+    const p = localPlayer;
+    const hasInput =
+      keysDown.size > 0 ||
+      virtualDown.size > 0 ||
+      Object.values(curInput).some(Boolean) ||
+      p.attackAnimTimer > 0;
+    const isResting =
+      !downed() &&
+      hurtStunTimer <= 0 &&
+      (p.grounded || p.onLadder) &&
+      Math.abs(p.vx) < 8 &&
+      Math.abs(p.vy) < 8 &&
+      !Boolean(p.statuses.poison?.remaining) &&
+      !Boolean(p.statuses.burn?.remaining);
+
+    const res = stepIdleRegen(idleRegenState, {
+      hasInput,
+      isResting,
+      hp: p.hp,
+      maxHp: p.maxHp,
+      dt
+    });
+    idleRegenState = { idleTimer: res.idleTimer, tickTimer: res.tickTimer };
+    p.idleRegenActive = res.active;
+
+    if (res.shouldHeal && p.hp < p.maxHp) {
+      const healAmt = computeIdleRegenAmount(p.maxHp);
+      const before = p.hp;
+      p.hp = Math.min(p.maxHp, p.hp + healAmt);
+      const actual = p.hp - before;
+      if (actual > 0) {
+        const clientRegenId = nextPredId("reg");
+        predictedRegenIds.add(clientRegenId);
+        if (predictedRegenIds.size > 60) {
+          const first = predictedRegenIds.values().next().value;
+          if (first) predictedRegenIds.delete(first);
+        }
+        spawnText(p.x + p.w * 0.5, p.y - 12, `+${actual} HP`, "heal");
+        spawnSparkles(p.x + p.w * 0.5, p.y + p.h * 0.45, "#69F0AE", 5);
+        actions.sendAction({ type: "idleRegen", payload: { clientRegenId } });
+      }
+      if (p.hp >= p.maxHp) {
+        p.idleRegenActive = false;
+      }
+    }
   }
 
   function stepLocalPlayer(dt: number, now: number): void {
@@ -1196,18 +1623,50 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
     if (p.attackAnimTimer > 0) p.attackAnimTimer = Math.max(0, p.attackAnimTimer - dt);
     if (dropThroughTimer > 0) dropThroughTimer = Math.max(0, dropThroughTimer - dt);
     if (portalCooldown > 0) portalCooldown = Math.max(0, portalCooldown - dt);
+    if (ladderGrabCooldown > 0) ladderGrabCooldown = Math.max(0, ladderGrabCooldown - dt);
+
+    // Tick active player status effects (slow, poison, burn, stun, shock)
+    let playerStatusSpeedMult = p.slowTimer > 0 ? 0.6 : 1.0;
+    let playerStunned = false;
+    for (const [key, st] of Object.entries(p.statuses) as Array<[StatusEffectKind, ActiveStatusEffect | undefined]>) {
+      if (!st) continue;
+      st.remaining -= dt;
+      if (st.remaining <= 0) {
+        delete p.statuses[key];
+        continue;
+      }
+      if (st.kind === "stun") {
+        playerStunned = true;
+      }
+      if (typeof st.speedMult === "number") {
+        playerStatusSpeedMult = Math.min(playerStatusSpeedMult, st.speedMult);
+      }
+      if (typeof st.tickDamage === "number" && typeof st.tickInterval === "number") {
+        st.tickTimer = (st.tickTimer ?? st.tickInterval) - dt;
+        if (st.tickTimer <= 0) {
+          st.tickTimer += st.tickInterval;
+          if (!downed() && p.hp > 1) {
+            const dotDmg = Math.min(p.hp - 1, Math.max(1, st.tickDamage));
+            p.hp = Math.max(1, p.hp - dotDmg);
+            const meta = STATUS_METADATA[st.kind];
+            spawnText(p.x + p.w * 0.5, p.y - 12, `-${dotDmg}`, "info", meta.color);
+            spawnSparkles(p.x + p.w * 0.5, p.y + p.h * 0.5, meta.color, 5);
+            actions.sendAction({ type: "playerHurt", payload: { amount: dotDmg } });
+          }
+        }
+      }
+    }
 
     p.squashX += (1 - p.squashX) * Math.min(1, dt * 15);
     p.squashY += (1 - p.squashY) * Math.min(1, dt * 15);
 
-    // Weapon cycle & potion
-    if (justPressed("weaponPrev") || justPressed("weaponNext")) {
+    // Virtual touch weapon cycling (keyboard Q/E is handled directly in onKeyDown for zero missed rapid taps)
+    if ((virtualDown.has("weaponPrev") && justPressed("weaponPrev")) || (virtualDown.has("weaponNext") && justPressed("weaponNext"))) {
       if (p.unlockedWeapons.length > 1) {
         const delta = justPressed("weaponNext") ? 1 : -1;
         const idx = p.unlockedWeapons.indexOf(p.equippedWeaponId);
         const nextWid = p.unlockedWeapons[(idx + delta + p.unlockedWeapons.length) % p.unlockedWeapons.length]!;
-        p.equippedWeaponId = nextWid;
-        actions.sendAction({ type: "switchWeapon", payload: { weaponId: nextWid } });
+        selectWeaponLocal(nextWid);
       }
     }
     if (justPressed("potion") && p.potions > 0 && p.hp < p.maxHp) {
@@ -1297,10 +1756,10 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
       }
     }
 
-    // Ladder grab
+    // Ladder grab (skip while jump/dismount cooldown active or already standing cleanly on top platform)
     const overlapLad = findOverlappingLadder(p, compiledStage.ladders, 10);
-    if (!p.onLadder && overlapLad && hurtStunTimer <= 0) {
-      const wantsUp = isDown("up") && !p.nearbyPortal;
+    if (!p.onLadder && overlapLad && hurtStunTimer <= 0 && !playerStunned && ladderGrabCooldown <= 0) {
+      const wantsUp = isDown("up") && !p.nearbyPortal && p.y + p.h > overlapLad.y + 4;
       const wantsDown = isDown("down") && p.y + p.h <= overlapLad.y + overlapLad.h - 6;
       if (wantsUp || wantsDown) {
         p.onLadder = true;
@@ -1310,59 +1769,79 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
         p.vx = 0;
         p.vy = 0;
         p.x = overlapLad.centerX - p.w * 0.5;
+        // Nudge slightly down onto top rung when starting a downward climb from the top platform
+        if (wantsDown && p.y + p.h <= overlapLad.y + 2) {
+          p.y = overlapLad.y - p.h + 4;
+        }
       }
     }
 
     if (p.onLadder && currentLadder) {
       const l = currentLadder;
-      const moveY = (isDown("down") ? 1 : 0) - (isDown("up") ? 1 : 0);
-      p.vy = moveY * PLAYER_CONFIG.climbSpeed;
-      p.vx = 0;
+      const moveY = playerStunned ? 0 : (isDown("down") ? 1 : 0) - (isDown("up") ? 1 : 0);
+      const moveX = playerStunned ? 0 : (isDown("right") ? 1 : 0) - (isDown("left") ? 1 : 0);
       p.x += (l.centerX - p.w * 0.5 - p.x) * Math.min(1, dt * 18);
-      p.y += p.vy * dt;
 
-      if (moveY !== 0) {
-        ladderStepTimer += dt;
-        if (ladderStepTimer >= 0.24) {
-          ladderStepTimer = 0;
-          audio.playSfx("sfx_ladder", 0.06);
+      const res = stepOnLadder(l, compiledStage.platforms, {
+        y: p.y,
+        h: p.h,
+        moveY,
+        moveX,
+        jumpPressed: !playerStunned && justPressed("jump"),
+        climbSpeed: PLAYER_CONFIG.climbSpeed,
+        jumpVelocity: PLAYER_CONFIG.jumpVelocity,
+        dt
+      });
+
+      p.y = res.y;
+      p.vy = res.vy;
+
+      if (res.state === "climbing") {
+        p.vx = 0;
+        if (moveY !== 0 && !res.atTop) {
+          ladderStepTimer += dt;
+          if (ladderStepTimer >= 0.24) {
+            ladderStepTimer = 0;
+            audio.playSfx("sfx_ladder", 0.06);
+          }
         }
-      }
-      if (justPressed("jump")) {
+      } else if (res.state === "jumped") {
         p.onLadder = false;
         currentLadder = null;
-        if (isDown("left")) {
-          p.vx = -PLAYER_CONFIG.moveSpeed * 0.85;
-          p.facing = -1;
-        } else if (isDown("right")) {
-          p.vx = PLAYER_CONFIG.moveSpeed * 0.85;
-          p.facing = 1;
+        p.grounded = false;
+        standingPlatform = null;
+        ladderGrabCooldown = 0.22;
+        if (moveX !== 0) {
+          p.vx = moveX * PLAYER_CONFIG.moveSpeed * 0.88;
+          p.facing = moveX;
         }
-        p.vy = PLAYER_CONFIG.jumpVelocity * 0.92;
+        p.squashX = 0.82;
+        p.squashY = 1.22;
         audio.playSfx("sfx_jump", 0.05);
-      } else if (p.y + p.h <= l.y + 4 && moveY < 0) {
-        p.y = l.y - p.h;
-        p.vy = 0;
+      } else if (res.state === "dismount_top") {
         p.onLadder = false;
         currentLadder = null;
         p.grounded = true;
-      } else if (p.y + p.h >= l.y + l.h && moveY > 0) {
-        p.y = l.y + l.h - p.h;
-        p.vy = 0;
+        standingPlatform = res.platform;
+        ladderGrabCooldown = 0.16;
+        p.facing = moveX !== 0 ? moveX : p.facing;
+        p.vx = moveX * PLAYER_CONFIG.moveSpeed * 0.6;
+      } else if (res.state === "dismount_bottom") {
         p.onLadder = false;
         currentLadder = null;
+        ladderGrabCooldown = 0.12;
       }
       handleLocalAttack(now);
       return;
     }
 
-    // Horizontal run with special platform surfaces (ice, mud, conveyor) & slow debuff
+    // Horizontal run with special platform surfaces (ice, mud, conveyor) & status speed modifiers
     const standingSurface = p.grounded && standingPlatform ? standingPlatform.surface : "normal";
     const mudMult = standingSurface === "mud" ? 0.64 : 1.0;
-    const speedMult = (p.slowTimer > 0 ? 0.6 : 1.0) * mudMult;
+    const speedMult = playerStatusSpeedMult * mudMult;
     const maxSpd = PLAYER_CONFIG.moveSpeed * speedMult;
-    const moveDir = (isDown("right") ? 1 : 0) - (isDown("left") ? 1 : 0);
-    if (hurtStunTimer <= 0) {
+    const moveDir = playerStunned ? 0 : (isDown("right") ? 1 : 0) - (isDown("left") ? 1 : 0);
+    if (hurtStunTimer <= 0 && !playerStunned) {
       if (moveDir !== 0) {
         p.facing = moveDir;
         const baseAccel = p.grounded ? PLAYER_CONFIG.groundAccel : PLAYER_CONFIG.airAccel;
@@ -1391,7 +1870,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
     if (justPressed("jump")) jumpBufferTimer = PLAYER_CONFIG.jumpBufferTime;
     else jumpBufferTimer = Math.max(0, jumpBufferTimer - dt);
 
-    if (jumpBufferTimer > 0 && hurtStunTimer <= 0) {
+    if (jumpBufferTimer > 0 && hurtStunTimer <= 0 && !playerStunned) {
       if (p.grounded && isDown("down") && standingPlatform && standingPlatform.oneWay) {
         dropThroughTimer = PLAYER_CONFIG.dropThroughDuration;
         p.grounded = false;
@@ -1515,7 +1994,16 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
         spawnSparkles(cx, cy, info.color, 14);
         spawnText(cx, p.y - 26, info.label, "playerHurt");
         if (hz.kind === "poison") {
-          p.slowTimer = Math.max(p.slowTimer, 1.6);
+          applyStatusToPlayer("poison", 3.2, {
+            tickDamage: Math.max(4, Math.round(p.maxHp * 0.035)),
+            tickInterval: 1.1,
+            speedMult: 0.78
+          });
+        } else if (hz.kind === "lava") {
+          applyStatusToPlayer("burn", 2.2, {
+            tickDamage: Math.max(5, Math.round(p.maxHp * 0.04)),
+            tickInterval: 0.95
+          });
         }
       }
 
@@ -1533,12 +2021,49 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
     }
   }
 
-  function applyOptimisticMobHit(mob: ClientMobEntity, knockDir: number, now: number): void {
+  function applyOptimisticMobHit(
+    mob: ClientMobEntity,
+    knockDir: number,
+    now: number,
+    hitKind: "primary" | "splash" | "dot" = "primary",
+    dotStatus?: StatusEffectKind
+  ): void {
     const p = localPlayer;
     const w = WEAPON_CATALOG[p.equippedWeaponId] ?? WEAPON_CATALOG.wooden_sword!;
     const clientHitId = nextPredId("hit");
     const damageRoll = Math.random();
-    const { damage, isCrit } = computeDeterministicHit(p.baseAtk + w.atk, w.critChance, w.critMult, damageRoll);
+    const totalAtk = p.baseAtk + w.atk;
+
+    let damage: number;
+    let isCrit: boolean;
+    let kbMult = 1;
+    if (hitKind === "dot" && dotStatus) {
+      let dotRatio = 0.15;
+      const eqSpec = w.special?.statuses?.find((s) => s.kind === dotStatus);
+      if (eqSpec?.dotRatio) {
+        dotRatio = eqSpec.dotRatio;
+      } else {
+        for (const wid of p.unlockedWeapons) {
+          const spec = WEAPON_CATALOG[wid]?.special?.statuses?.find((s) => s.kind === dotStatus);
+          if (spec?.dotRatio) {
+            dotRatio = spec.dotRatio;
+            break;
+          }
+        }
+      }
+      damage = Math.max(1, Math.round(totalAtk * dotRatio));
+      isCrit = false;
+      kbMult = 0;
+    } else if (hitKind === "splash" && w.special?.splash) {
+      const base = computeDeterministicHit(totalAtk, w.critChance, w.critMult, damageRoll);
+      damage = Math.max(1, Math.round(base.damage * w.special.splash.damageMult));
+      isCrit = base.isCrit;
+      kbMult = 0.7;
+    } else {
+      const base = computeDeterministicHit(totalAtk, w.critChance, w.critMult, damageRoll);
+      damage = base.damage;
+      isCrit = base.isCrit;
+    }
 
     predictedHitIds.add(clientHitId);
     if (predictedHitIds.size > 120) {
@@ -1550,24 +2075,48 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
     const resist = 1 - mob.tpl.knockbackResist;
     mob.hp = Math.max(0, mob.hp - damage);
     mob.inCombat = true;
-    mob.hitFlashTimer = 0.14;
-    mob.hitStunTimer = isCrit ? 0.28 : 0.2;
-    mob.vx = knockDir * w.knockbackX * resist;
-    mob.vy = w.knockbackY * resist;
-    mob.grounded = false;
-    mob.facing = -knockDir;
-    mob.squashX = 1.24;
-    mob.squashY = 0.78;
+    mob.hitFlashTimer = hitKind === "dot" ? 0.08 : 0.14;
 
-    spawnHitBurst(mob.x + mob.w * 0.5, mob.y + mob.h * 0.45, isCrit ? "#FFD740" : w.slashColor, isCrit);
-    spawnText(mob.x + mob.w * 0.5, mob.y - 12, isCrit ? `${damage}!` : `${damage}`, isCrit ? "crit" : "normal");
-    hitStopTimer = isCrit ? 0.05 : 0.032;
-    triggerShake(isCrit ? 6 : 3, isCrit ? 0.15 : 0.09);
-    audio.playSfx(isCrit ? "sfx_crit" : "sfx_hit", 0.06);
+    if (hitKind !== "dot") {
+      mob.hitStunTimer = isCrit ? 0.28 : 0.2;
+      mob.vx = knockDir * w.knockbackX * kbMult * resist;
+      mob.vy = w.knockbackY * kbMult * resist;
+      mob.grounded = false;
+      if (knockDir !== 0) mob.facing = -knockDir;
+      mob.squashX = 1.24;
+      mob.squashY = 0.78;
+      if (w.special?.statuses && mob.hp > 0) {
+        applyStatusesToMob(mob, w.special.statuses, totalAtk, p.playerId);
+      }
+      const burstColor =
+        hitKind === "splash" && w.special?.splash
+          ? w.special.splash.waveColor
+          : isCrit
+            ? "#FFD740"
+            : w.slashColor;
+      spawnHitBurst(mob.x + mob.w * 0.5, mob.y + mob.h * 0.45, burstColor, isCrit);
+      spawnText(
+        mob.x + mob.w * 0.5,
+        mob.y - 12,
+        isCrit ? `${damage}!` : `${damage}`,
+        isCrit ? "crit" : "normal",
+        hitKind === "splash" && !isCrit && w.special?.splash ? w.special.splash.waveColor : undefined
+      );
+      if (hitKind === "primary") {
+        hitStopTimer = isCrit ? 0.05 : 0.032;
+        triggerShake(isCrit ? 6 : 3, isCrit ? 0.15 : 0.09);
+      }
+      audio.playSfx(isCrit ? "sfx_crit" : "sfx_hit", 0.06);
+    } else if (dotStatus) {
+      const meta = STATUS_METADATA[dotStatus];
+      spawnSparkles(mob.x + mob.w * 0.5, mob.y + mob.h * 0.45, meta.color, 5);
+      spawnText(mob.x + mob.w * 0.5, mob.y - 10, `${damage}`, "info", meta.color);
+    }
 
     if (mob.hp <= 0) {
       mob.alive = false;
       mob.inCombat = false;
+      mob.statuses = {};
       spawnSparkles(mob.x + mob.w * 0.5, mob.y + mob.h * 0.5, mob.primaryColor, 16);
       audio.playSfx("sfx_mob_defeat", 0.05);
     }
@@ -1581,17 +2130,27 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
     // Sync to server for authoritative XP, cooperative rewards, and multiplayer broadcast
     actions.sendAction({
       type: "attackMob",
-      payload: { mobId: mob.id, knockDir, clientHitId, damageRoll }
+      payload: {
+        mobId: mob.id,
+        knockDir: hitKind === "dot" ? 0 : knockDir,
+        clientHitId,
+        damageRoll,
+        hitKind,
+        ...(dotStatus ? { dotStatus } : {}),
+        mobX: Math.round(mob.x),
+        mobY: Math.round(mob.y)
+      }
     });
   }
 
   function handleLocalAttack(now: number): void {
     const p = localPlayer;
-    if (!justPressed("attack") || attackCooldown > 0 || hurtStunTimer > 0) return;
+    if (!justPressed("attack") || attackCooldown > 0 || hurtStunTimer > 0 || Boolean(p.statuses.stun?.remaining)) return;
     const w = WEAPON_CATALOG[p.equippedWeaponId] ?? WEAPON_CATALOG.wooden_sword!;
     attackCooldown = w.cooldown;
     p.attackAnimDuration = Math.min(0.24, w.cooldown * 0.78);
     p.attackAnimTimer = p.attackAnimDuration;
+    poseSendTimer = 0.085;
     p.squashX = 1.14;
     p.squashY = 0.9;
     audio.playSfx(w.sfx, 0.06);
@@ -1615,12 +2174,59 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
       h: w.height
     };
 
+    const primaryHitIds = new Set<string>();
     for (const mob of mobs) {
       if (!mob.alive) continue;
       // 2-second spawn protection: cannot damage blinking newly respawned mobs!
       if (now < mob.spawnProtectUntil) continue;
       if (aabbOverlap(hitbox, mob)) {
-        applyOptimisticMobHit(mob, p.facing, now);
+        primaryHitIds.add(mob.id);
+        applyOptimisticMobHit(mob, p.facing, now, "primary");
+      }
+    }
+
+    // Upgraded weapon sword-energy / shockwave splash (e.g. Maple Greatsword 2-tile wave)
+    if (w.special?.splash) {
+      const sp = w.special.splash;
+      const rangePx = Math.round(sp.rangeTiles * compiledStage.meta.tileSize) + 28;
+      hitEffects.push({
+        type: "wave",
+        x: p.x + p.w * 0.5 + p.facing * 12,
+        y: p.y + p.h * 0.46,
+        facing: p.facing,
+        rangePx,
+        heightPx: sp.heightPx,
+        color: sp.waveColor,
+        accentColor: sp.accentColor,
+        style: sp.style,
+        age: 0,
+        duration: 0.28
+      });
+      for (let i = 0; i < 8; i++) {
+        particles.push({
+          x: p.x + p.w * 0.5 + p.facing * (20 + Math.random() * rangePx * 0.75),
+          y: p.y + p.h * 0.46 + (Math.random() - 0.5) * sp.heightPx * 0.75,
+          vx: p.facing * (140 + Math.random() * 140),
+          vy: (Math.random() - 0.5) * 90 - 20,
+          gravity: 160,
+          size: 3.5 + Math.random() * 2.5,
+          color: i % 2 === 0 ? sp.waveColor : sp.accentColor,
+          age: 0,
+          duration: 0.3 + Math.random() * 0.18,
+          shape: "star"
+        });
+      }
+      const waveBox = {
+        x: p.facing > 0 ? p.x + p.w * 0.5 : p.x + p.w * 0.5 - rangePx,
+        y: p.y + p.h * 0.5 - sp.heightPx * 0.5,
+        w: rangePx,
+        h: sp.heightPx
+      };
+      for (const mob of mobs) {
+        if (!mob.alive || now < mob.spawnProtectUntil || primaryHitIds.has(mob.id)) continue;
+        if (aabbOverlap(waveBox, mob)) {
+          applyOptimisticMobHit(mob, p.facing, now, "splash");
+        }
       }
     }
 
@@ -1649,6 +2255,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
   function hurtLocalPlayer(amount: number, sourceX: number): void {
     const p = localPlayer;
     if (p.invulnTimer > 0 || downed()) return;
+    resetIdleRegen();
     p.invulnTimer = PLAYER_CONFIG.invulnDuration;
     hurtStunTimer = 0.22;
     p.onLadder = false;
@@ -1700,9 +2307,6 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
   }
 
   function stepMobs(dt: number, now: number): void {
-    const px = localPlayer.x + localPlayer.w * 0.5;
-    const py = localPlayer.y + localPlayer.h * 0.5;
-
     for (const mob of mobs) {
       if (!mob.alive) continue;
       mob.animTimer += dt;
@@ -1715,28 +2319,125 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
       mob.squashY += (1 - mob.squashY) * Math.min(1, dt * 14);
 
       const isProtected = now < mob.spawnProtectUntil;
+
+      // Tick mob status effects (stun freeze, DoT periodic ticks, slow/shock)
+      let isStunned = false;
+      let statusSpeedMult = 1.0;
+      for (const [key, st] of Object.entries(mob.statuses) as Array<[StatusEffectKind, ActiveStatusEffect | undefined]>) {
+        if (!st) continue;
+        st.remaining -= dt;
+        if (st.remaining <= 0) {
+          delete mob.statuses[key];
+          continue;
+        }
+        if (st.kind === "stun") {
+          isStunned = true;
+        }
+        if (typeof st.speedMult === "number") {
+          statusSpeedMult = Math.min(statusSpeedMult, st.speedMult);
+        }
+        if (STATUS_METADATA[st.kind]?.isDot && typeof st.tickInterval === "number") {
+          st.tickTimer = (st.tickTimer ?? st.tickInterval) - dt;
+          if (st.tickTimer <= 0) {
+            st.tickTimer += st.tickInterval;
+            if (st.sourcePlayerId === localPlayer.playerId && !isProtected && mob.alive) {
+              applyOptimisticMobHit(mob, 0, now, "dot", st.kind);
+              if (!mob.alive) break;
+            }
+          }
+        }
+      }
+      if (!mob.alive) continue;
+
       const mx = mob.x + mob.w * 0.5;
       const my = mob.y + mob.h * 0.5;
+      // Target the nearest alive player across ALL players on this stage (not only localPlayer!)
+      const auth = getMobAuthority(mob, now);
+      const px = auth.targetX;
+      const py = auth.targetY;
       const dx = px - mx;
       const dy = py - my;
       const dist = Math.hypot(dx, dy);
-      const seesPlayer = !isProtected && Math.abs(dx) <= mob.tpl.aggroRange && Math.abs(dy) <= (mob.tpl.flying ? 260 : 105);
+      // Strict vertical aggro check: grounded mobs only detect players on the same floor (~44px),
+      // while flying mobs keep vertical sight so they can dive from above.
+      const vRange = mob.tpl.aggroVerticalRange ?? (mob.tpl.flying ? 220 : 44);
+      const seesPlayer =
+        auth.hasTarget &&
+        !isProtected &&
+        !isStunned &&
+        Math.abs(dx) <= mob.tpl.aggroRange &&
+        Math.abs(dy) <= vRange;
 
-      if (seesPlayer && !mob.inCombat && dist <= mob.tpl.aggroRange * 0.82) {
+      if (seesPlayer && !mob.inCombat && dist <= mob.tpl.aggroRange * 0.9) {
         mob.inCombat = true;
+      }
+
+      // Active mob telegraph: show red '!' above head + startled hop and wait 0.5s before attacking!
+      const isActive = isActiveMobAi(mob.tpl.ai);
+      if (isActive && !isProtected && !isStunned && mob.hitStunTimer <= 0) {
+        if (seesPlayer && !mob.alerted) {
+          mob.alerted = true;
+          mob.alertTimer = MOB_ALERT_TELEGRAPH_SEC;
+          mob.alertResetTimer = 0;
+          mob.inCombat = true;
+          mob.facing = dx >= 0 ? 1 : -1;
+          mob.vx = 0;
+          mob.squashX = 0.82;
+          mob.squashY = 1.26;
+          if (!mob.tpl.flying && mob.grounded) {
+            mob.vy = -175;
+            mob.grounded = false;
+          }
+        } else if (mob.alerted) {
+          if (seesPlayer) {
+            mob.alertResetTimer = 0;
+          } else if (mob.alertTimer <= 0) {
+            mob.alertResetTimer += dt;
+            if (mob.alertResetTimer >= 1.4) {
+              mob.alerted = false;
+              mob.alertResetTimer = 0;
+            }
+          }
+        }
       }
 
       // Unique movement AI for all 16 monster patterns
       if (mob.hitStunTimer > 0) {
         mob.vx *= Math.pow(0.06, dt);
+      } else if (isStunned) {
+        // Stunned: frozen in place with golden star halo overhead!
+        mob.vx *= Math.pow(0.05, dt);
+        if (mob.tpl.flying) mob.vy *= Math.pow(0.05, dt);
+        mob.alertTimer = 0;
       } else if (isProtected) {
         // Gentle idle bob while blinking in 2-second spawn protection (never attacks!)
         mob.vx = 0;
+        mob.alertTimer = 0;
+        mob.alerted = false;
         if (mob.tpl.flying) {
           mob.y = mob.homeY + Math.sin(mob.animTimer * 4) * 6;
         }
+      } else if (mob.alertTimer > 0) {
+        // 0.5s alert windup before launching active attack/chase
+        mob.alertTimer = Math.max(0, mob.alertTimer - dt);
+        mob.vx *= Math.pow(0.04, dt);
+        if (auth.hasTarget && Math.abs(dx) > 8) {
+          mob.facing = dx >= 0 ? 1 : -1;
+        }
+        if (mob.tpl.flying) {
+          mob.vy = (mob.homeY - mob.y) * 3;
+        }
+        // Subtle tense pre-charge crouch right before lunging
+        if (mob.alertTimer < 0.18) {
+          mob.squashX = 1.14;
+          mob.squashY = 0.88;
+        }
       } else {
         updateMobAi(mob, dt, dx, dy, seesPlayer, px, py);
+        if (statusSpeedMult < 1) {
+          mob.vx *= statusSpeedMult;
+          if (mob.tpl.flying) mob.vy *= statusSpeedMult;
+        }
       }
 
       // Physics integration
@@ -1776,8 +2477,29 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
         }
       }
 
-      // Contact damage (blocked during 2-second spawn protection or hitstun!)
-      if (!isProtected && mob.hitStunTimer <= 0 && localPlayer.invulnTimer <= 0) {
+      // Smooth reconciliation to nearest-player authoritative kinematics when another player is closer
+      if (!isProtected && !auth.isLocalAuthority && mob.hitStunTimer <= 0 && now - mob.lastAuthAt < 1100) {
+        const errX = mob.authX - mob.x;
+        const errY = mob.authY - mob.y;
+        const errDist = Math.hypot(errX, errY);
+        if (errDist > 120) {
+          mob.x = mob.authX;
+          mob.y = mob.authY;
+          mob.vx = mob.authVx;
+          mob.vy = mob.authVy;
+          mob.facing = mob.authFacing;
+        } else if (errDist > 2) {
+          const blend = 1 - Math.exp(-16 * dt);
+          mob.x += errX * blend;
+          mob.y += errY * blend;
+          mob.vx += (mob.authVx - mob.vx) * blend;
+          mob.vy += (mob.authVy - mob.vy) * blend;
+          mob.facing = mob.authFacing;
+        }
+      }
+
+      // Contact damage (blocked during 2-second spawn protection, stun, or hitstun!)
+      if (!isProtected && !isStunned && mob.hitStunTimer <= 0 && localPlayer.invulnTimer <= 0) {
         const box = { x: mob.x + 5, y: mob.y + 5, w: mob.w - 10, h: mob.h - 6 };
         if (aabbOverlap(localPlayer, box)) {
           mob.inCombat = true;
@@ -1803,7 +2525,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
     if (mob.tpl.rangedAttack && seesPlayer) {
       mob.shootTimer -= dt;
       if (mob.shootTimer <= 0) {
-        mob.shootTimer = mob.tpl.rangedAttack.cooldownSec * (0.85 + Math.random() * 0.3);
+        mob.shootTimer = mob.tpl.rangedAttack.cooldownSec;
         mob.facing = dx >= 0 ? 1 : -1;
         spawnEnemyShot(mob, px, py);
       }
@@ -1827,7 +2549,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
         mob.grounded = false;
         mob.squashX = 0.8;
         mob.squashY = 1.24;
-        mob.aiTimer = (mob.tpl.hopInterval ?? 1.4) * (0.85 + Math.random() * 0.25);
+        mob.aiTimer = mob.tpl.hopInterval ?? 1.4;
         if (ai === "double_hop") mob.aiPhase = "can_double";
       } else if (ai === "double_hop" && !mob.grounded && mob.aiPhase === "can_double" && mob.vy > -40) {
         mob.vy = -340;
@@ -1929,8 +2651,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
       if (p.isEnemy) {
         if (aabbOverlap(p, localPlayer)) {
           if (p.slowEffect) {
-            localPlayer.slowTimer = 2.0;
-            spawnText(localPlayer.x + 14, localPlayer.y - 34, "감속!", "info");
+            applyStatusToPlayer("slow", 2.2, { speedMult: 0.6 });
           }
           hurtLocalPlayer(p.atk, p.x + p.w * 0.5);
           p.alive = false;
@@ -2001,6 +2722,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
             );
           }
           localPlayer.equippedWeaponId = tpl.weaponId;
+          pendingWeaponSwitch = { weaponId: tpl.weaponId, seq: 0, expiresAt: now + 2500 };
           spawnText(item.x, item.y - 24, `★ ${tpl.name} 획득!`, "crit");
           spawnSparkles(item.x, item.y, tpl.glowColor, 16);
           audio.playSfx(tpl.sfx, 0);
@@ -2070,6 +2792,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
     poseSendTimer += dt;
     if (poseSendTimer >= 0.085 && actions.sendSignal && ctx.connected !== false && !downed()) {
       poseSendTimer = 0;
+      const now = Date.now();
       const animState =
         localPlayer.attackAnimTimer > 0
           ? "attack"
@@ -2080,6 +2803,28 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
               : Math.abs(localPlayer.vx) > 15
                 ? "walk"
                 : "idle";
+
+      // Attach compact kinematics for up to 12 nearby mobs where localPlayer is the nearest alive player
+      const ownedMobs: Array<{ dist: number; tuple: [string, number, number, number, number, number] }> = [];
+      for (const mob of mobs) {
+        if (!mob.alive || now < mob.spawnProtectUntil) continue;
+        const auth = getMobAuthority(mob, now);
+        if (!auth.isLocalAuthority || auth.localDist > 1200) continue;
+        ownedMobs.push({
+          dist: auth.localDist,
+          tuple: [
+            mob.id,
+            Math.round(mob.x),
+            Math.round(mob.y),
+            Math.round(mob.vx),
+            Math.round(mob.vy),
+            mob.facing < 0 ? -1 : 1
+          ]
+        });
+      }
+      ownedMobs.sort((a, b) => a.dist - b.dist);
+      const mobSyncPayload = ownedMobs.slice(0, 12).map((m) => m.tuple);
+
       actions.sendSignal({
         type: "playerPose",
         payload: {
@@ -2088,7 +2833,8 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
           vx: Math.round(localPlayer.vx),
           vy: Math.round(localPlayer.vy),
           facing: localPlayer.facing,
-          animState
+          animState,
+          ...(mobSyncPayload.length > 0 ? { mobs: mobSyncPayload } : {})
         }
       });
     }

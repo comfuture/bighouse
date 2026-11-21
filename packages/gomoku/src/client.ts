@@ -157,7 +157,7 @@ function preventButtonFocus(event: MouseEvent): void {
 /** `performance.now()` value at which the turn deadline passes, or null when no turn is running. */
 function turnEndFor(view: GomokuView): number | null {
   const { status } = view.publicView;
-  if (!view.active || status.kind !== "playing") return null;
+  if (!view.active || status.kind !== "playing" || status.deadline === null) return null;
   return performance.now() + (status.deadline - view.serverTime);
 }
 

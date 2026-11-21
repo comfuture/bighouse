@@ -100,6 +100,6 @@ export function hasLegalPlacement(board: Board, stone: Stone): boolean {
  */
 export type GomokuStatus =
   | { kind: "idle" }
-  | { kind: "playing"; playerId: string; deadline: number }
+  | { kind: "playing"; playerId: string; deadline: number | null }
   | { kind: "won"; winnerPlayerId: string }
   | { kind: "draw" };

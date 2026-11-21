@@ -383,6 +383,28 @@ export function validateNormalizedStage(stage: NormalizedStage): {
     }
   }
 
+  // Strict ladder top & bottom platform connectivity check:
+  // Every ladder must connect cleanly to a real platform at both its top and bottom
+  // so players can never climb to the top of a ladder and drop into thin air.
+  for (const l of ladders) {
+    const lx = l.x + 0.5;
+    const topY = l.y;
+    const botY = l.y + l.h;
+    const margin = 0.35;
+    const hasTop = platforms.some(
+      (p) => Math.abs(p.y - topY) <= 0.05 && lx >= p.x + margin && lx <= p.x + p.w - margin
+    );
+    const hasBot = platforms.some(
+      (p) => Math.abs(p.y - botY) <= 0.05 && lx >= p.x + margin && lx <= p.x + p.w - margin
+    );
+    if (!hasTop) {
+      errors.push(`${stage.meta.id}: ladder ${l.id} top (x=${lx}, y=${topY}) is not connected to any platform`);
+    }
+    if (!hasBot) {
+      errors.push(`${stage.meta.id}: ladder ${l.id} bottom (x=${lx}, y=${botY}) is not connected to any platform`);
+    }
+  }
+
   // Physics reachability BFS
   const v0 = Math.abs(PLAYER_CONFIG.jumpVelocity);
   const g = PLAYER_CONFIG.gravity;
