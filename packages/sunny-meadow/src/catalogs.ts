@@ -447,6 +447,30 @@ export const MOB_CATALOG: Record<string, MobTemplate> = {
     dropChance: 0.3,
     dropItem: "red_apple"
   },
+  elder_hamster: {
+    id: "elder_hamster",
+    name: "대장 노란 햄스터",
+    spriteKey: "yellow_hamster",
+    primaryColor: "#FF8F00",
+    level: 3,
+    hp: 92,
+    atk: 13,
+    exp: 115,
+    score: 260,
+    speed: 78,
+    dashSpeed: 138,
+    width: 46,
+    height: 46,
+    drawScale: 1.28,
+    ai: "dash",
+    isElite: true,
+    aggroRange: 116,
+    aggroVerticalRange: 44,
+    knockbackResist: 0.16,
+    respawnSec: 16,
+    dropChance: 0.45,
+    dropItem: "sweet_potion"
+  },
 
   // Stage 2 (Lv 3-5): Blue Rabbit moved from Stage 1 + Emerald Frog (gentle early active range)
   blue_rabbit: {
@@ -490,6 +514,7 @@ export const MOB_CATALOG: Record<string, MobTemplate> = {
     height: 38,
     drawScale: 1.04,
     ai: "double_hop",
+    isElite: true,
     aggroRange: 124, // ~2.6 tiles, same floor only
     aggroVerticalRange: 44,
     knockbackResist: 0.08,
@@ -538,6 +563,7 @@ export const MOB_CATALOG: Record<string, MobTemplate> = {
     height: 42,
     drawScale: 1.08,
     ai: "backstep",
+    isElite: true,
     aggroRange: 170,
     aggroVerticalRange: 44,
     knockbackResist: 0.12,
@@ -587,6 +613,7 @@ export const MOB_CATALOG: Record<string, MobTemplate> = {
     drawScale: 1.52,
     hasCrown: true,
     isBoss: true,
+    isElite: true,
     ai: "hopper",
     aggroRange: 300,
     knockbackResist: 0.38,
@@ -612,6 +639,7 @@ export const MOB_CATALOG: Record<string, MobTemplate> = {
     height: 44,
     drawScale: 1.18,
     ai: "charge",
+    isElite: true,
     aggroRange: 320,
     knockbackResist: 0.32,
     respawnSec: 12,
@@ -665,6 +693,7 @@ export const MOB_CATALOG: Record<string, MobTemplate> = {
     height: 56,
     drawScale: 1.36,
     ai: "golem_stomp",
+    isElite: true,
     aggroRange: 280,
     knockbackResist: 0.62,
     respawnSec: 14,
@@ -713,6 +742,7 @@ export const MOB_CATALOG: Record<string, MobTemplate> = {
     height: 42,
     drawScale: 1.16,
     ai: "web_spider",
+    isElite: true,
     rangedAttack: {
       color: "#EA80FC",
       speed: 330,
@@ -743,6 +773,7 @@ export const MOB_CATALOG: Record<string, MobTemplate> = {
     height: 50,
     drawScale: 1.28,
     ai: "griffin_dive",
+    isElite: true,
     flying: true,
     rangedAttack: {
       color: "#FFE57F",
@@ -775,6 +806,7 @@ export const MOB_CATALOG: Record<string, MobTemplate> = {
     height: 50,
     drawScale: 1.26,
     ai: "fire_drake",
+    isElite: true,
     rangedAttack: {
       color: "#FF6E40",
       speed: 370,
@@ -804,6 +836,7 @@ export const MOB_CATALOG: Record<string, MobTemplate> = {
     height: 50,
     drawScale: 1.22,
     ai: "teleport_wisp",
+    isElite: true,
     flying: true,
     rangedAttack: {
       color: "#8C9EFF",
@@ -833,6 +866,7 @@ export const MOB_CATALOG: Record<string, MobTemplate> = {
     drawScale: 1.62,
     hasCrown: true,
     isBoss: true,
+    isElite: true,
     ai: "star_dragon",
     flying: true,
     rangedAttack: {
@@ -992,6 +1026,16 @@ export const ITEM_CATALOG: Record<string, ItemTemplate> = {
     glowColor: "#EA80FC",
     sfx: "sfx_potion",
     respawnSec: 0
+  },
+  treasure_chest: {
+    id: "treasure_chest",
+    name: "보물 상자",
+    category: "chest",
+    score: 140,
+    iconIndex: 0,
+    glowColor: "#FFD740",
+    sfx: "sfx_potion",
+    respawnSec: 65
   }
 };
 
