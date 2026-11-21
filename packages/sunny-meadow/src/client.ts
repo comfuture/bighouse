@@ -10,6 +10,7 @@ import {
   MOB_ALERT_TELEGRAPH_SEC,
   MOB_CATALOG,
   PLAYER_CONFIG,
+  STATUS_METADATA,
   VIEWPORT,
   WEAPON_CATALOG,
   WEAPON_ORDER
@@ -41,10 +42,13 @@ import { computeDeterministicHit, deathPenaltyOf } from "./server";
 import { registerBighouseUi, type BighouseGameChatElement } from "@bighouse/ui";
 import "./style.css";
 import type {
+  ActiveStatusEffect,
   MobTemplate,
   RemotePlayerView,
   ServerItemState,
   ServerMobState,
+  StatusEffectKind,
+  WeaponStatusSpec,
   WorldPlayerState
 } from "./types";
 
@@ -301,6 +305,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
     equippedWeaponId: "wooden_sword",
     invulnTimer: 0,
     slowTimer: 0,
+    statuses: {},
     attackAnimTimer: 0,
     attackAnimDuration: 0.22,
     animTimer: 0,
@@ -343,6 +348,8 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
     localPlayer.hp = 0;
     localPlayer.vx = 0;
     localPlayer.vy = 0;
+    localPlayer.statuses = {};
+    localPlayer.slowTimer = 0;
     keysDown.clear();
     virtualDown.clear();
     stageFrame.classList.add("is-dead");
@@ -480,7 +487,8 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
     x: number,
     y: number,
     text: string,
-    kind: ClientDamageText["kind"] = "normal"
+    kind: ClientDamageText["kind"] = "normal",
+    colorOverride?: string
   ): void {
     const colorMap: Record<ClientDamageText["kind"], [string, string, number]> = {
       normal: ["#FFF176", "#5D3A1A", 20],
@@ -491,7 +499,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
       levelup: ["#FFD740", "#5D3A1A", 24],
       info: ["#FFF59D", "#5D3A1A", 16]
     };
-    const [color, stroke, fontSize] = colorMap[kind];
+    const [baseColor, stroke, fontSize] = colorMap[kind];
     damageTexts.push({
       x: x + (Math.random() - 0.5) * 14,
       y,
@@ -500,10 +508,74 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
       kind,
       age: 0,
       duration: kind === "crit" || kind === "levelup" ? 1.15 : 0.9,
-      color,
+      color: colorOverride ?? baseColor,
       stroke,
       fontSize
     });
+  }
+
+  function applyStatusesToMob(
+    mob: ClientMobEntity,
+    specs: WeaponStatusSpec[] | undefined,
+    totalAtk: number,
+    sourcePlayerId?: string
+  ): void {
+    if (!specs || specs.length === 0 || !mob.alive) return;
+    for (const spec of specs) {
+      const prev = mob.statuses[spec.kind];
+      const isFresh = !prev || prev.remaining <= 0.05;
+      const tickDamage =
+        typeof spec.dotRatio === "number" ? Math.max(1, Math.round(totalAtk * spec.dotRatio)) : prev?.tickDamage;
+      const tickInterval = spec.tickIntervalSec ?? prev?.tickInterval ?? 0.8;
+      mob.statuses[spec.kind] = {
+        kind: spec.kind,
+        duration: spec.durationSec,
+        remaining: Math.max(prev?.remaining ?? 0, spec.durationSec),
+        ...(typeof tickDamage === "number" ? { tickDamage, tickInterval, tickTimer: prev?.tickTimer ?? tickInterval } : {}),
+        ...(typeof spec.speedMult === "number" ? { speedMult: spec.speedMult } : {}),
+        ...(sourcePlayerId ? { sourcePlayerId } : prev?.sourcePlayerId ? { sourcePlayerId: prev.sourcePlayerId } : {})
+      };
+      if (spec.kind === "stun") {
+        mob.alertTimer = 0;
+        mob.alerted = false;
+        if (isFresh) {
+          spawnText(mob.x + mob.w * 0.5, mob.y - 30, "★ 기절!", "info", "#FFD740");
+        }
+      } else if (isFresh) {
+        const meta = STATUS_METADATA[spec.kind];
+        spawnText(mob.x + mob.w * 0.5, mob.y - 28, `${meta.label}!`, "info", meta.color);
+      }
+    }
+  }
+
+  function applyStatusToPlayer(
+    kind: StatusEffectKind,
+    durationSec: number,
+    opts?: { tickDamage?: number; tickInterval?: number; speedMult?: number }
+  ): void {
+    const prev = localPlayer.statuses[kind];
+    const isFresh = !prev || prev.remaining <= 0.05;
+    const tickInterval = opts?.tickInterval ?? prev?.tickInterval;
+    localPlayer.statuses[kind] = {
+      kind,
+      duration: durationSec,
+      remaining: Math.max(prev?.remaining ?? 0, durationSec),
+      ...(typeof opts?.tickDamage === "number"
+        ? {
+            tickDamage: opts.tickDamage,
+            tickInterval: tickInterval ?? 1.0,
+            tickTimer: prev?.tickTimer ?? (tickInterval ?? 1.0)
+          }
+        : {}),
+      ...(typeof opts?.speedMult === "number" ? { speedMult: opts.speedMult } : {})
+    };
+    if (kind === "slow") {
+      localPlayer.slowTimer = Math.max(localPlayer.slowTimer, durationSec);
+    }
+    if (isFresh) {
+      const meta = STATUS_METADATA[kind];
+      spawnText(localPlayer.x + localPlayer.w * 0.5, localPlayer.y - 34, `${meta.label}!`, "info", meta.color);
+    }
   }
 
   function spawnHitBurst(x: number, y: number, color: string, isCrit: boolean): void {
@@ -635,6 +707,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
         hasCrown: Boolean(tpl.hasCrown),
         squashX: 1,
         squashY: 1,
+        statuses: {},
         patrolMinX: ms.patrolMinX,
         patrolMaxX: ms.patrolMaxX,
         aiTimer: 0.6 + seed * 0.9,
@@ -680,6 +753,8 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
       localPlayer.vy = 0;
       localPlayer.grounded = false;
       localPlayer.onLadder = false;
+      localPlayer.statuses = {};
+      localPlayer.slowTimer = 0;
       standingPlatform = null;
       currentLadder = null;
       lastSafeX = spawnX;
@@ -700,7 +775,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
       stagePlayerCount?: number;
       totalPlayersOnline?: number;
       stagePlayerCounts?: Record<string, number>;
-      mobs?: Record<string, ServerMobState>;
+      mobs?: Record<string, Omit<ServerMobState, "statuses"> & { statuses?: StatusEffectKind[] }>;
       items?: Record<string, ServerItemState>;
       nearbyPlayers?: RemotePlayerView[];
     };
@@ -806,6 +881,15 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
           mob.inCombat = sm.inCombat;
         }
         mob.spawnProtectUntil = sm.spawnProtectUntil > 0 ? sm.spawnProtectUntil + serverTimeOffset : 0;
+        if (!mob.alive) {
+          mob.statuses = {};
+        } else if (Array.isArray(sm.statuses)) {
+          for (const stKind of sm.statuses) {
+            if (!mob.statuses[stKind] || mob.statuses[stKind]!.remaining <= 0) {
+              mob.statuses[stKind] = { kind: stKind, duration: 1.0, remaining: 1.0 };
+            }
+          }
+        }
 
         // Apply server-stored mob position & kinematics on stage load or when not local authority
         if (typeof sm.x === "number" && typeof sm.y === "number") {
@@ -1036,7 +1120,10 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
 
       const dmg = Number(p.damage ?? 0);
       const isCrit = Boolean(p.isCrit);
-      const knockDir = Number(p.knockDir ?? 1);
+      const hitKind = p.hitKind === "splash" || p.hitKind === "dot" ? p.hitKind : "primary";
+      const dotStatus =
+        hitKind === "dot" && typeof p.dotStatus === "string" ? (p.dotStatus as StatusEffectKind) : undefined;
+      const knockDir = hitKind === "dot" ? 0 : Number(p.knockDir ?? 1);
       const kbX = Number(p.knockbackX ?? 200) * (1 - mob.tpl.knockbackResist);
       const kbY = Number(p.knockbackY ?? -160) * (1 - mob.tpl.knockbackResist);
 
@@ -1049,19 +1136,37 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
       }
       mob.hp = Number(p.hp ?? mob.hp);
       mob.inCombat = true;
-      mob.hitFlashTimer = 0.14;
-      mob.hitStunTimer = isCrit ? 0.28 : 0.2;
-      mob.vx = knockDir * kbX;
-      mob.vy = kbY;
-      mob.grounded = false;
-      mob.facing = -knockDir;
-      mob.squashX = 1.24;
-      mob.squashY = 0.78;
+      mob.hitFlashTimer = hitKind === "dot" ? 0.08 : 0.14;
 
-      spawnHitBurst(mob.x + mob.w * 0.5, mob.y + mob.h * 0.45, isCrit ? "#FFD740" : "#FFE082", isCrit);
-      spawnText(mob.x + mob.w * 0.5, mob.y - 12, isCrit ? `${dmg}!` : `${dmg}`, isCrit ? "crit" : "normal");
+      if (hitKind !== "dot") {
+        mob.hitStunTimer = isCrit ? 0.28 : 0.2;
+        mob.vx = knockDir * kbX;
+        mob.vy = kbY;
+        mob.grounded = false;
+        if (knockDir !== 0) mob.facing = -knockDir;
+        mob.squashX = 1.24;
+        mob.squashY = 0.78;
+      }
 
-      if (p.attackerId === ctx.playerId) {
+      if (Array.isArray(p.appliedStatuses)) {
+        applyStatusesToMob(
+          mob,
+          p.appliedStatuses as WeaponStatusSpec[],
+          Math.max(10, dmg),
+          typeof p.attackerId === "string" ? p.attackerId : undefined
+        );
+      }
+
+      if (hitKind === "dot" && dotStatus) {
+        const meta = STATUS_METADATA[dotStatus];
+        spawnSparkles(mob.x + mob.w * 0.5, mob.y + mob.h * 0.45, meta.color, 5);
+        spawnText(mob.x + mob.w * 0.5, mob.y - 10, `${dmg}`, "info", meta.color);
+      } else {
+        spawnHitBurst(mob.x + mob.w * 0.5, mob.y + mob.h * 0.45, isCrit ? "#FFD740" : "#FFE082", isCrit);
+        spawnText(mob.x + mob.w * 0.5, mob.y - 12, isCrit ? `${dmg}!` : `${dmg}`, isCrit ? "crit" : "normal");
+      }
+
+      if (p.attackerId === ctx.playerId && hitKind !== "dot") {
         hitStopTimer = isCrit ? 0.05 : 0.032;
         triggerShake(isCrit ? 6 : 3, isCrit ? 0.15 : 0.09);
         audio.playSfx(isCrit ? "sfx_crit" : "sfx_hit", 0.06);
@@ -1076,6 +1181,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
         mob.alive = false;
         mob.hp = 0;
         mob.inCombat = false;
+        mob.statuses = {};
         optimisticMobLocks.delete(mob.id);
         if (!alreadyLocallyDead) {
           spawnSparkles(mob.x + mob.w * 0.5, mob.y + mob.h * 0.5, mob.primaryColor, 16);
@@ -1128,6 +1234,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
         mob.alertTimer = 0;
         mob.alerted = false;
         mob.alertResetTimer = 0;
+        mob.statuses = {};
         // Measure the protection from the event's own timestamp: `serverTime` is the last
         // snapshot's, which may be minutes old when an event arrives on its own.
         mob.spawnProtectUntil = Date.now() + Math.max(0, rm.spawnProtectUntil - ev.createdAt);
@@ -1228,6 +1335,8 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
         localPlayer.vx = 0;
         localPlayer.vy = 0;
         localPlayer.invulnTimer = 2.0;
+        localPlayer.statuses = {};
+        localPlayer.slowTimer = 0;
         spawnText(localPlayer.x + 14, localPlayer.y - 20, "부활!", "info");
         spawnSparkles(localPlayer.x + 14, localPlayer.y + 20, "#FFD740", 16);
       } else if (pid) {
@@ -1446,6 +1555,38 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
     if (dropThroughTimer > 0) dropThroughTimer = Math.max(0, dropThroughTimer - dt);
     if (portalCooldown > 0) portalCooldown = Math.max(0, portalCooldown - dt);
 
+    // Tick active player status effects (slow, poison, burn, stun, shock)
+    let playerStatusSpeedMult = p.slowTimer > 0 ? 0.6 : 1.0;
+    let playerStunned = false;
+    for (const [key, st] of Object.entries(p.statuses) as Array<[StatusEffectKind, ActiveStatusEffect | undefined]>) {
+      if (!st) continue;
+      st.remaining -= dt;
+      if (st.remaining <= 0) {
+        delete p.statuses[key];
+        continue;
+      }
+      if (st.kind === "stun") {
+        playerStunned = true;
+      }
+      if (typeof st.speedMult === "number") {
+        playerStatusSpeedMult = Math.min(playerStatusSpeedMult, st.speedMult);
+      }
+      if (typeof st.tickDamage === "number" && typeof st.tickInterval === "number") {
+        st.tickTimer = (st.tickTimer ?? st.tickInterval) - dt;
+        if (st.tickTimer <= 0) {
+          st.tickTimer += st.tickInterval;
+          if (!downed() && p.hp > 1) {
+            const dotDmg = Math.min(p.hp - 1, Math.max(1, st.tickDamage));
+            p.hp = Math.max(1, p.hp - dotDmg);
+            const meta = STATUS_METADATA[st.kind];
+            spawnText(p.x + p.w * 0.5, p.y - 12, `-${dotDmg}`, "info", meta.color);
+            spawnSparkles(p.x + p.w * 0.5, p.y + p.h * 0.5, meta.color, 5);
+            actions.sendAction({ type: "playerHurt", payload: { amount: dotDmg } });
+          }
+        }
+      }
+    }
+
     p.squashX += (1 - p.squashX) * Math.min(1, dt * 15);
     p.squashY += (1 - p.squashY) * Math.min(1, dt * 15);
 
@@ -1604,13 +1745,13 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
       return;
     }
 
-    // Horizontal run with special platform surfaces (ice, mud, conveyor) & slow debuff
+    // Horizontal run with special platform surfaces (ice, mud, conveyor) & status speed modifiers
     const standingSurface = p.grounded && standingPlatform ? standingPlatform.surface : "normal";
     const mudMult = standingSurface === "mud" ? 0.64 : 1.0;
-    const speedMult = (p.slowTimer > 0 ? 0.6 : 1.0) * mudMult;
+    const speedMult = playerStatusSpeedMult * mudMult;
     const maxSpd = PLAYER_CONFIG.moveSpeed * speedMult;
-    const moveDir = (isDown("right") ? 1 : 0) - (isDown("left") ? 1 : 0);
-    if (hurtStunTimer <= 0) {
+    const moveDir = playerStunned ? 0 : (isDown("right") ? 1 : 0) - (isDown("left") ? 1 : 0);
+    if (hurtStunTimer <= 0 && !playerStunned) {
       if (moveDir !== 0) {
         p.facing = moveDir;
         const baseAccel = p.grounded ? PLAYER_CONFIG.groundAccel : PLAYER_CONFIG.airAccel;
@@ -1639,7 +1780,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
     if (justPressed("jump")) jumpBufferTimer = PLAYER_CONFIG.jumpBufferTime;
     else jumpBufferTimer = Math.max(0, jumpBufferTimer - dt);
 
-    if (jumpBufferTimer > 0 && hurtStunTimer <= 0) {
+    if (jumpBufferTimer > 0 && hurtStunTimer <= 0 && !playerStunned) {
       if (p.grounded && isDown("down") && standingPlatform && standingPlatform.oneWay) {
         dropThroughTimer = PLAYER_CONFIG.dropThroughDuration;
         p.grounded = false;
@@ -1763,7 +1904,16 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
         spawnSparkles(cx, cy, info.color, 14);
         spawnText(cx, p.y - 26, info.label, "playerHurt");
         if (hz.kind === "poison") {
-          p.slowTimer = Math.max(p.slowTimer, 1.6);
+          applyStatusToPlayer("poison", 3.2, {
+            tickDamage: Math.max(4, Math.round(p.maxHp * 0.035)),
+            tickInterval: 1.1,
+            speedMult: 0.78
+          });
+        } else if (hz.kind === "lava") {
+          applyStatusToPlayer("burn", 2.2, {
+            tickDamage: Math.max(5, Math.round(p.maxHp * 0.04)),
+            tickInterval: 0.95
+          });
         }
       }
 
@@ -1781,12 +1931,49 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
     }
   }
 
-  function applyOptimisticMobHit(mob: ClientMobEntity, knockDir: number, now: number): void {
+  function applyOptimisticMobHit(
+    mob: ClientMobEntity,
+    knockDir: number,
+    now: number,
+    hitKind: "primary" | "splash" | "dot" = "primary",
+    dotStatus?: StatusEffectKind
+  ): void {
     const p = localPlayer;
     const w = WEAPON_CATALOG[p.equippedWeaponId] ?? WEAPON_CATALOG.wooden_sword!;
     const clientHitId = nextPredId("hit");
     const damageRoll = Math.random();
-    const { damage, isCrit } = computeDeterministicHit(p.baseAtk + w.atk, w.critChance, w.critMult, damageRoll);
+    const totalAtk = p.baseAtk + w.atk;
+
+    let damage: number;
+    let isCrit: boolean;
+    let kbMult = 1;
+    if (hitKind === "dot" && dotStatus) {
+      let dotRatio = 0.15;
+      const eqSpec = w.special?.statuses?.find((s) => s.kind === dotStatus);
+      if (eqSpec?.dotRatio) {
+        dotRatio = eqSpec.dotRatio;
+      } else {
+        for (const wid of p.unlockedWeapons) {
+          const spec = WEAPON_CATALOG[wid]?.special?.statuses?.find((s) => s.kind === dotStatus);
+          if (spec?.dotRatio) {
+            dotRatio = spec.dotRatio;
+            break;
+          }
+        }
+      }
+      damage = Math.max(1, Math.round(totalAtk * dotRatio));
+      isCrit = false;
+      kbMult = 0;
+    } else if (hitKind === "splash" && w.special?.splash) {
+      const base = computeDeterministicHit(totalAtk, w.critChance, w.critMult, damageRoll);
+      damage = Math.max(1, Math.round(base.damage * w.special.splash.damageMult));
+      isCrit = base.isCrit;
+      kbMult = 0.7;
+    } else {
+      const base = computeDeterministicHit(totalAtk, w.critChance, w.critMult, damageRoll);
+      damage = base.damage;
+      isCrit = base.isCrit;
+    }
 
     predictedHitIds.add(clientHitId);
     if (predictedHitIds.size > 120) {
@@ -1798,24 +1985,48 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
     const resist = 1 - mob.tpl.knockbackResist;
     mob.hp = Math.max(0, mob.hp - damage);
     mob.inCombat = true;
-    mob.hitFlashTimer = 0.14;
-    mob.hitStunTimer = isCrit ? 0.28 : 0.2;
-    mob.vx = knockDir * w.knockbackX * resist;
-    mob.vy = w.knockbackY * resist;
-    mob.grounded = false;
-    mob.facing = -knockDir;
-    mob.squashX = 1.24;
-    mob.squashY = 0.78;
+    mob.hitFlashTimer = hitKind === "dot" ? 0.08 : 0.14;
 
-    spawnHitBurst(mob.x + mob.w * 0.5, mob.y + mob.h * 0.45, isCrit ? "#FFD740" : w.slashColor, isCrit);
-    spawnText(mob.x + mob.w * 0.5, mob.y - 12, isCrit ? `${damage}!` : `${damage}`, isCrit ? "crit" : "normal");
-    hitStopTimer = isCrit ? 0.05 : 0.032;
-    triggerShake(isCrit ? 6 : 3, isCrit ? 0.15 : 0.09);
-    audio.playSfx(isCrit ? "sfx_crit" : "sfx_hit", 0.06);
+    if (hitKind !== "dot") {
+      mob.hitStunTimer = isCrit ? 0.28 : 0.2;
+      mob.vx = knockDir * w.knockbackX * kbMult * resist;
+      mob.vy = w.knockbackY * kbMult * resist;
+      mob.grounded = false;
+      if (knockDir !== 0) mob.facing = -knockDir;
+      mob.squashX = 1.24;
+      mob.squashY = 0.78;
+      if (w.special?.statuses && mob.hp > 0) {
+        applyStatusesToMob(mob, w.special.statuses, totalAtk, p.playerId);
+      }
+      const burstColor =
+        hitKind === "splash" && w.special?.splash
+          ? w.special.splash.waveColor
+          : isCrit
+            ? "#FFD740"
+            : w.slashColor;
+      spawnHitBurst(mob.x + mob.w * 0.5, mob.y + mob.h * 0.45, burstColor, isCrit);
+      spawnText(
+        mob.x + mob.w * 0.5,
+        mob.y - 12,
+        isCrit ? `${damage}!` : `${damage}`,
+        isCrit ? "crit" : "normal",
+        hitKind === "splash" && !isCrit && w.special?.splash ? w.special.splash.waveColor : undefined
+      );
+      if (hitKind === "primary") {
+        hitStopTimer = isCrit ? 0.05 : 0.032;
+        triggerShake(isCrit ? 6 : 3, isCrit ? 0.15 : 0.09);
+      }
+      audio.playSfx(isCrit ? "sfx_crit" : "sfx_hit", 0.06);
+    } else if (dotStatus) {
+      const meta = STATUS_METADATA[dotStatus];
+      spawnSparkles(mob.x + mob.w * 0.5, mob.y + mob.h * 0.45, meta.color, 5);
+      spawnText(mob.x + mob.w * 0.5, mob.y - 10, `${damage}`, "info", meta.color);
+    }
 
     if (mob.hp <= 0) {
       mob.alive = false;
       mob.inCombat = false;
+      mob.statuses = {};
       spawnSparkles(mob.x + mob.w * 0.5, mob.y + mob.h * 0.5, mob.primaryColor, 16);
       audio.playSfx("sfx_mob_defeat", 0.05);
     }
@@ -1831,9 +2042,11 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
       type: "attackMob",
       payload: {
         mobId: mob.id,
-        knockDir,
+        knockDir: hitKind === "dot" ? 0 : knockDir,
         clientHitId,
         damageRoll,
+        hitKind,
+        ...(dotStatus ? { dotStatus } : {}),
         mobX: Math.round(mob.x),
         mobY: Math.round(mob.y)
       }
@@ -1842,7 +2055,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
 
   function handleLocalAttack(now: number): void {
     const p = localPlayer;
-    if (!justPressed("attack") || attackCooldown > 0 || hurtStunTimer > 0) return;
+    if (!justPressed("attack") || attackCooldown > 0 || hurtStunTimer > 0 || Boolean(p.statuses.stun?.remaining)) return;
     const w = WEAPON_CATALOG[p.equippedWeaponId] ?? WEAPON_CATALOG.wooden_sword!;
     attackCooldown = w.cooldown;
     p.attackAnimDuration = Math.min(0.24, w.cooldown * 0.78);
@@ -1871,12 +2084,59 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
       h: w.height
     };
 
+    const primaryHitIds = new Set<string>();
     for (const mob of mobs) {
       if (!mob.alive) continue;
       // 2-second spawn protection: cannot damage blinking newly respawned mobs!
       if (now < mob.spawnProtectUntil) continue;
       if (aabbOverlap(hitbox, mob)) {
-        applyOptimisticMobHit(mob, p.facing, now);
+        primaryHitIds.add(mob.id);
+        applyOptimisticMobHit(mob, p.facing, now, "primary");
+      }
+    }
+
+    // Upgraded weapon sword-energy / shockwave splash (e.g. Maple Greatsword 2-tile wave)
+    if (w.special?.splash) {
+      const sp = w.special.splash;
+      const rangePx = Math.round(sp.rangeTiles * compiledStage.meta.tileSize) + 28;
+      hitEffects.push({
+        type: "wave",
+        x: p.x + p.w * 0.5 + p.facing * 12,
+        y: p.y + p.h * 0.46,
+        facing: p.facing,
+        rangePx,
+        heightPx: sp.heightPx,
+        color: sp.waveColor,
+        accentColor: sp.accentColor,
+        style: sp.style,
+        age: 0,
+        duration: 0.28
+      });
+      for (let i = 0; i < 8; i++) {
+        particles.push({
+          x: p.x + p.w * 0.5 + p.facing * (20 + Math.random() * rangePx * 0.75),
+          y: p.y + p.h * 0.46 + (Math.random() - 0.5) * sp.heightPx * 0.75,
+          vx: p.facing * (140 + Math.random() * 140),
+          vy: (Math.random() - 0.5) * 90 - 20,
+          gravity: 160,
+          size: 3.5 + Math.random() * 2.5,
+          color: i % 2 === 0 ? sp.waveColor : sp.accentColor,
+          age: 0,
+          duration: 0.3 + Math.random() * 0.18,
+          shape: "star"
+        });
+      }
+      const waveBox = {
+        x: p.facing > 0 ? p.x + p.w * 0.5 : p.x + p.w * 0.5 - rangePx,
+        y: p.y + p.h * 0.5 - sp.heightPx * 0.5,
+        w: rangePx,
+        h: sp.heightPx
+      };
+      for (const mob of mobs) {
+        if (!mob.alive || now < mob.spawnProtectUntil || primaryHitIds.has(mob.id)) continue;
+        if (aabbOverlap(waveBox, mob)) {
+          applyOptimisticMobHit(mob, p.facing, now, "splash");
+        }
       }
     }
 
@@ -1968,6 +2228,36 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
       mob.squashY += (1 - mob.squashY) * Math.min(1, dt * 14);
 
       const isProtected = now < mob.spawnProtectUntil;
+
+      // Tick mob status effects (stun freeze, DoT periodic ticks, slow/shock)
+      let isStunned = false;
+      let statusSpeedMult = 1.0;
+      for (const [key, st] of Object.entries(mob.statuses) as Array<[StatusEffectKind, ActiveStatusEffect | undefined]>) {
+        if (!st) continue;
+        st.remaining -= dt;
+        if (st.remaining <= 0) {
+          delete mob.statuses[key];
+          continue;
+        }
+        if (st.kind === "stun") {
+          isStunned = true;
+        }
+        if (typeof st.speedMult === "number") {
+          statusSpeedMult = Math.min(statusSpeedMult, st.speedMult);
+        }
+        if (STATUS_METADATA[st.kind]?.isDot && typeof st.tickInterval === "number") {
+          st.tickTimer = (st.tickTimer ?? st.tickInterval) - dt;
+          if (st.tickTimer <= 0) {
+            st.tickTimer += st.tickInterval;
+            if (st.sourcePlayerId === localPlayer.playerId && !isProtected && mob.alive) {
+              applyOptimisticMobHit(mob, 0, now, "dot", st.kind);
+              if (!mob.alive) break;
+            }
+          }
+        }
+      }
+      if (!mob.alive) continue;
+
       const mx = mob.x + mob.w * 0.5;
       const my = mob.y + mob.h * 0.5;
       // Target the nearest alive player across ALL players on this stage (not only localPlayer!)
@@ -1983,6 +2273,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
       const seesPlayer =
         auth.hasTarget &&
         !isProtected &&
+        !isStunned &&
         Math.abs(dx) <= mob.tpl.aggroRange &&
         Math.abs(dy) <= vRange;
 
@@ -1992,7 +2283,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
 
       // Active mob telegraph: show red '!' above head + startled hop and wait 0.5s before attacking!
       const isActive = isActiveMobAi(mob.tpl.ai);
-      if (isActive && !isProtected && mob.hitStunTimer <= 0) {
+      if (isActive && !isProtected && !isStunned && mob.hitStunTimer <= 0) {
         if (seesPlayer && !mob.alerted) {
           mob.alerted = true;
           mob.alertTimer = MOB_ALERT_TELEGRAPH_SEC;
@@ -2022,6 +2313,11 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
       // Unique movement AI for all 16 monster patterns
       if (mob.hitStunTimer > 0) {
         mob.vx *= Math.pow(0.06, dt);
+      } else if (isStunned) {
+        // Stunned: frozen in place with golden star halo overhead!
+        mob.vx *= Math.pow(0.05, dt);
+        if (mob.tpl.flying) mob.vy *= Math.pow(0.05, dt);
+        mob.alertTimer = 0;
       } else if (isProtected) {
         // Gentle idle bob while blinking in 2-second spawn protection (never attacks!)
         mob.vx = 0;
@@ -2047,6 +2343,10 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
         }
       } else {
         updateMobAi(mob, dt, dx, dy, seesPlayer, px, py);
+        if (statusSpeedMult < 1) {
+          mob.vx *= statusSpeedMult;
+          if (mob.tpl.flying) mob.vy *= statusSpeedMult;
+        }
       }
 
       // Physics integration
@@ -2107,8 +2407,8 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
         }
       }
 
-      // Contact damage (blocked during 2-second spawn protection or hitstun!)
-      if (!isProtected && mob.hitStunTimer <= 0 && localPlayer.invulnTimer <= 0) {
+      // Contact damage (blocked during 2-second spawn protection, stun, or hitstun!)
+      if (!isProtected && !isStunned && mob.hitStunTimer <= 0 && localPlayer.invulnTimer <= 0) {
         const box = { x: mob.x + 5, y: mob.y + 5, w: mob.w - 10, h: mob.h - 6 };
         if (aabbOverlap(localPlayer, box)) {
           mob.inCombat = true;
@@ -2260,8 +2560,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
       if (p.isEnemy) {
         if (aabbOverlap(p, localPlayer)) {
           if (p.slowEffect) {
-            localPlayer.slowTimer = 2.0;
-            spawnText(localPlayer.x + 14, localPlayer.y - 34, "감속!", "info");
+            applyStatusToPlayer("slow", 2.2, { speedMult: 0.6 });
           }
           hurtLocalPlayer(p.atk, p.x + p.w * 0.5);
           p.alive = false;

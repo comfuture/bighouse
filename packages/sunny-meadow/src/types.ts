@@ -54,6 +54,45 @@ export type MobTemplate = {
   dropItem: string;
 };
 
+export type StatusEffectKind = "stun" | "crystal_dot" | "burn" | "shock" | "slow" | "poison";
+
+export type WeaponStatusSpec = {
+  kind: StatusEffectKind;
+  durationSec: number;
+  /** Periodic DoT tick damage as a fraction of total ATK (for DoT statuses) */
+  dotRatio?: number;
+  tickIntervalSec?: number;
+  /** Movement speed multiplier while afflicted (e.g. 0.6) */
+  speedMult?: number;
+};
+
+export type WeaponSplashSpec = {
+  /** Forward wave reach in tiles (e.g. 2.0 tiles = 96px) */
+  rangeTiles: number;
+  heightPx: number;
+  /** Splash wave damage multiplier relative to base hit */
+  damageMult: number;
+  waveColor: string;
+  accentColor: string;
+  style: "maple_wave" | "solar_shockwave" | "dragon_flame";
+};
+
+export type WeaponSpecialEffect = {
+  statuses?: WeaponStatusSpec[];
+  splash?: WeaponSplashSpec;
+};
+
+export type ActiveStatusEffect = {
+  kind: StatusEffectKind;
+  remaining: number;
+  duration: number;
+  tickDamage?: number;
+  tickInterval?: number;
+  tickTimer?: number;
+  speedMult?: number;
+  sourcePlayerId?: string;
+};
+
 export type WeaponTemplate = {
   id: string;
   name: string;
@@ -74,6 +113,7 @@ export type WeaponTemplate = {
   projectileRange?: number;
   pierce?: number;
   minLevel?: number;
+  special?: WeaponSpecialEffect;
   description: string;
 };
 
@@ -338,6 +378,8 @@ export type ServerMobState = {
   facing?: number;
   stateUpdatedAt?: number;
   authorityPlayerId?: string;
+  /** Active server-tracked status effects on this mob (kind -> expiresAt ms) */
+  statuses?: Partial<Record<StatusEffectKind, number>>;
   /** Cooperative hunting: tracks damage dealt per playerId in the current life cycle */
   contributors?: Record<string, number>;
   /** Timestamp when mob was defeated (enables grace-window simultaneous kill credit) */

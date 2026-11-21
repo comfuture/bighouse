@@ -15,6 +15,7 @@ import {
   ITEM_CATALOG,
   MOB_CATALOG,
   PLAYER_CONFIG,
+  STATUS_METADATA,
   WEAPON_CATALOG,
   WEAPON_ORDER
 } from "./catalogs";
@@ -38,6 +39,7 @@ import type {
   ServerItemState,
   ServerMobState,
   ServerStageRuntime,
+  StatusEffectKind,
   SunnyMeadowWorldState,
   WorldPlayerState
 } from "./types";
@@ -299,6 +301,7 @@ function processDueRespawns(world: SunnyMeadowWorldState, now: number): GameEven
         mob.facing = home.facing;
         mob.stateUpdatedAt = now;
         delete mob.authorityPlayerId;
+        delete mob.statuses;
         // 2-second blinking spawn protection: cannot attack or be damaged!
         mob.spawnProtectUntil = now + SPAWN_PROTECTION_MS;
         respawnedMobs.push({
@@ -632,6 +635,25 @@ function checkAction(context: GameContext, action: ClientGameAction): ActionChec
           return { ok: false, code: "mob_defeated", message: "Target mob is already defeated", stale: true };
         }
       }
+      const hitKind = action.payload.hitKind === "splash" || action.payload.hitKind === "dot" ? action.payload.hitKind : "primary";
+      if (hitKind === "splash") {
+        const weapon = WEAPON_CATALOG[ps.equippedWeaponId] ?? WEAPON_CATALOG.wooden_sword!;
+        if (!weapon.special?.splash) {
+          return { ok: false, code: "no_weapon_splash", message: "Equipped weapon has no splash wave", stale: true };
+        }
+      } else if (hitKind === "dot") {
+        const dotStatus = typeof action.payload.dotStatus === "string" ? (action.payload.dotStatus as StatusEffectKind) : undefined;
+        if (!dotStatus || !STATUS_METADATA[dotStatus]?.isDot) {
+          return { ok: false, code: "invalid_dot_status", message: "Invalid DoT status", stale: true };
+        }
+        const expiresAt = mob.statuses?.[dotStatus] ?? 0;
+        const hasDoTWeapon = ps.unlockedWeapons.some((wid) =>
+          WEAPON_CATALOG[wid]?.special?.statuses?.some((s) => s.kind === dotStatus)
+        );
+        if (expiresAt < context.now - 1000 && !hasDoTWeapon) {
+          return { ok: false, code: "status_expired", message: "DoT status not active on target", stale: true };
+        }
+      }
       return { ok: true };
     }
     case "collectItem": {
@@ -715,6 +737,12 @@ function applyCheckedAction(context: GameContext, action: ClientGameAction): Act
     const mobTpl = MOB_CATALOG[mob.templateId]!;
     const weapon = WEAPON_CATALOG[ps.equippedWeaponId] ?? WEAPON_CATALOG.wooden_sword!;
     const clientHitId = typeof action.payload.clientHitId === "string" ? action.payload.clientHitId : undefined;
+    const hitKind: "primary" | "splash" | "dot" =
+      action.payload.hitKind === "splash" || action.payload.hitKind === "dot" ? action.payload.hitKind : "primary";
+    const dotStatus =
+      hitKind === "dot" && typeof action.payload.dotStatus === "string"
+        ? (action.payload.dotStatus as StatusEffectKind)
+        : undefined;
 
     // Deterministic hit roll shared with client prediction
     const roll =
@@ -722,8 +750,44 @@ function applyCheckedAction(context: GameContext, action: ClientGameAction): Act
         ? action.payload.damageRoll
         : ((now + ps.score + mob.hp * 17) % 100) / 100;
     const totalAtk = ps.baseAtk + weapon.atk;
-    const { damage, isCrit } = computeDeterministicHit(totalAtk, weapon.critChance, weapon.critMult, roll);
-    const knockDir = Number(action.payload.knockDir) < 0 ? -1 : 1;
+    let damage: number;
+    let isCrit: boolean;
+    let knockbackX = weapon.knockbackX;
+    let knockbackY = weapon.knockbackY;
+    let appliedStatuses: NonNullable<NonNullable<typeof weapon.special>["statuses"]> = [];
+
+    if (hitKind === "dot" && dotStatus) {
+      let dotRatio = 0.15;
+      const equippedSpec = weapon.special?.statuses?.find((s) => s.kind === dotStatus);
+      if (equippedSpec?.dotRatio) {
+        dotRatio = equippedSpec.dotRatio;
+      } else {
+        for (const wid of ps.unlockedWeapons) {
+          const spec = WEAPON_CATALOG[wid]?.special?.statuses?.find((s) => s.kind === dotStatus);
+          if (spec?.dotRatio) {
+            dotRatio = spec.dotRatio;
+            break;
+          }
+        }
+      }
+      damage = Math.max(1, Math.round(totalAtk * dotRatio));
+      isCrit = false;
+      knockbackX = 0;
+      knockbackY = 0;
+    } else if (hitKind === "splash" && weapon.special?.splash) {
+      const base = computeDeterministicHit(totalAtk, weapon.critChance, weapon.critMult, roll);
+      damage = Math.max(1, Math.round(base.damage * weapon.special.splash.damageMult));
+      isCrit = base.isCrit;
+      knockbackX = Math.round(weapon.knockbackX * 0.7);
+      knockbackY = Math.round(weapon.knockbackY * 0.7);
+      appliedStatuses = weapon.special?.statuses ?? [];
+    } else {
+      const base = computeDeterministicHit(totalAtk, weapon.critChance, weapon.critMult, roll);
+      damage = base.damage;
+      isCrit = base.isCrit;
+      appliedStatuses = weapon.special?.statuses ?? [];
+    }
+    const knockDir = hitKind === "dot" ? 0 : Number(action.payload.knockDir) < 0 ? -1 : 1;
 
     mob.contributors = mob.contributors ?? {};
     mob.rewardedPlayers = mob.rewardedPlayers ?? [];
@@ -807,12 +871,23 @@ function applyCheckedAction(context: GameContext, action: ClientGameAction): Act
       mob.hp = Math.max(0, mob.hp - damage);
       mob.contributors[ps.playerId] = (mob.contributors[ps.playerId] ?? 0) + damage;
 
+      // Apply weapon status effects (stun, crystal DoT, burn, shock, etc.)
+      if (appliedStatuses.length > 0) {
+        mob.statuses = mob.statuses ?? {};
+        for (const st of appliedStatuses) {
+          const expiresAt = now + Math.round(st.durationSec * 1000);
+          mob.statuses[st.kind] = Math.max(mob.statuses[st.kind] ?? 0, expiresAt);
+        }
+      }
+
       // Sync mob position from attacker so all players see knockback & hit VFX at the same spot
       const hitPos = clampMobPosition(ps.stageId, mobId, Number(action.payload.mobX), Number(action.payload.mobY));
       if (hitPos) {
         mob.x = hitPos.x;
         mob.y = hitPos.y;
-        mob.facing = -knockDir;
+        if (knockDir !== 0) {
+          mob.facing = -knockDir;
+        }
         mob.stateUpdatedAt = now;
         mob.authorityPlayerId = ps.playerId;
       }
@@ -826,11 +901,24 @@ function applyCheckedAction(context: GameContext, action: ClientGameAction): Act
             attackerId: ps.playerId,
             damage,
             isCrit,
+            hitKind,
+            ...(dotStatus ? { dotStatus } : {}),
             knockDir,
-            knockbackX: weapon.knockbackX,
-            knockbackY: weapon.knockbackY,
+            knockbackX,
+            knockbackY,
             hp: mob.hp,
             maxHp: mob.maxHp,
+            ...(appliedStatuses.length > 0
+              ? {
+                  appliedStatuses: appliedStatuses.map((s) => ({
+                    kind: s.kind,
+                    durationSec: s.durationSec,
+                    ...(typeof s.dotRatio === "number" ? { dotRatio: s.dotRatio } : {}),
+                    ...(typeof s.tickIntervalSec === "number" ? { tickIntervalSec: s.tickIntervalSec } : {}),
+                    ...(typeof s.speedMult === "number" ? { speedMult: s.speedMult } : {})
+                  }))
+                }
+              : {}),
             ...(typeof mob.x === "number" && typeof mob.y === "number" ? { x: mob.x, y: mob.y } : {}),
             ...(clientHitId ? { clientHitId } : {})
           },
@@ -842,6 +930,7 @@ function applyCheckedAction(context: GameContext, action: ClientGameAction): Act
         mob.alive = false;
         mob.inCombat = false;
         mob.defeatedAt = now;
+        delete mob.statuses;
 
         // Calculate dynamic player-count-scaled respawn delay
         const activeCount = countPlayersInStage(world, ps.stageId);
@@ -1399,25 +1488,33 @@ export const sunnyMeadowDefinition = defineGameDefinition(gameMetadata, {
       stagePlayerCounts,
       // Only what a client draws (including synced mob kinematics). Who damaged or was paid stays on the server.
       mobs: Object.fromEntries(
-        Object.entries(stageRt.mobs).map(([id, mob]) => [
-          id,
-          {
-            alive: mob.alive,
-            hp: mob.hp,
-            maxHp: mob.maxHp,
-            inCombat: mob.inCombat,
-            spawnProtectUntil: mob.spawnProtectUntil,
-            ...(typeof mob.x === "number" && typeof mob.y === "number"
-              ? {
-                  x: mob.x,
-                  y: mob.y,
-                  vx: mob.vx ?? 0,
-                  vy: mob.vy ?? 0,
-                  facing: mob.facing ?? -1
-                }
-              : {})
-          }
-        ])
+        Object.entries(stageRt.mobs).map(([id, mob]) => {
+          const activeStatuses = mob.statuses
+            ? Object.entries(mob.statuses)
+                .filter(([, exp]) => typeof exp === "number" && exp > context.now)
+                .map(([k]) => k)
+            : [];
+          return [
+            id,
+            {
+              alive: mob.alive,
+              hp: mob.hp,
+              maxHp: mob.maxHp,
+              inCombat: mob.inCombat,
+              spawnProtectUntil: mob.spawnProtectUntil,
+              ...(typeof mob.x === "number" && typeof mob.y === "number"
+                ? {
+                    x: mob.x,
+                    y: mob.y,
+                    vx: mob.vx ?? 0,
+                    vy: mob.vy ?? 0,
+                    facing: mob.facing ?? -1
+                  }
+                : {}),
+              ...(activeStatuses.length > 0 ? { statuses: activeStatuses } : {})
+            }
+          ];
+        })
       ),
       items: Object.fromEntries(Object.entries(stageRt.items).map(([id, item]) => [id, { available: item.available }])),
       nearbyPlayers

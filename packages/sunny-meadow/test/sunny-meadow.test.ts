@@ -5,8 +5,11 @@ import {
   LEGGED_SPRITE_CONFIG,
   MOB_ALERT_TELEGRAPH_SEC,
   MOB_CATALOG,
+  STATUS_METADATA,
   VIEWPORT,
-  WALK_CYCLE_FRAMES
+  WALK_CYCLE_FRAMES,
+  WEAPON_CATALOG,
+  WEAPON_ORDER
 } from "../src/catalogs";
 import { compileStageForRuntime, validateNormalizedStage } from "../src/map-schema";
 import { updateMovingPlatforms } from "../src/physics";
@@ -877,5 +880,160 @@ describe("@bighouse/sunny-meadow multiplayer synchronization", () => {
       expect(a.movingPlatforms[i]!.x).toBeCloseTo(b.movingPlatforms[i]!.x, 5);
       expect(a.movingPlatforms[i]!.y).toBeCloseTo(b.movingPlatforms[i]!.y, 5);
     }
+  });
+});
+
+describe("@bighouse/sunny-meadow unique weapon visuals, upgraded traits & status system", () => {
+  it("gives every weapon a distinct non-reused iconIndex matching its pickup item", () => {
+    const iconIndices = WEAPON_ORDER.map((id) => WEAPON_CATALOG[id]!.iconIndex);
+    expect(new Set(iconIndices).size).toBe(WEAPON_ORDER.length);
+    expect(WEAPON_CATALOG.maple_greatsword!.iconIndex).not.toBe(WEAPON_CATALOG.leaf_blade!.iconIndex);
+    expect(WEAPON_CATALOG.crystal_rod!.iconIndex).not.toBe(WEAPON_CATALOG.star_wand!.iconIndex);
+    for (const wid of WEAPON_ORDER) {
+      const pickup = Object.values(ITEM_CATALOG).find((it) => it.weaponId === wid);
+      if (pickup) {
+        expect(pickup.iconIndex).toBe(WEAPON_CATALOG[wid]!.iconIndex);
+      }
+    }
+  });
+
+  it("equips upgraded weapons with distinct special abilities (stun halo, 2-tile splash wave, DoTs)", () => {
+    expect(WEAPON_CATALOG.golden_hammer!.special?.statuses).toEqual([
+      expect.objectContaining({ kind: "stun", durationSec: 1.0 })
+    ]);
+    expect(WEAPON_CATALOG.maple_greatsword!.special?.splash).toEqual(
+      expect.objectContaining({ rangeTiles: 2.0, style: "maple_wave" })
+    );
+    expect(WEAPON_CATALOG.crystal_rod!.special?.statuses).toEqual([
+      expect.objectContaining({ kind: "crystal_dot", durationSec: 4.0 })
+    ]);
+    expect(WEAPON_CATALOG.thunder_dagger!.special?.statuses?.[0]?.kind).toBe("shock");
+    expect(WEAPON_CATALOG.solar_hammer!.special?.statuses?.[0]?.kind).toBe("stun");
+    expect(WEAPON_CATALOG.solar_hammer!.special?.splash?.style).toBe("solar_shockwave");
+    expect(WEAPON_CATALOG.dragon_blade!.special?.statuses?.[0]?.kind).toBe("burn");
+    expect(WEAPON_CATALOG.dragon_blade!.special?.splash?.style).toBe("dragon_flame");
+    expect(WEAPON_CATALOG.nebula_staff!.special?.statuses?.map((s) => s.kind)).toEqual(["stun", "burn"]);
+    expect(STATUS_METADATA.stun.isDot).toBeFalsy();
+    expect(STATUS_METADATA.crystal_dot.isDot).toBe(true);
+    expect(STATUS_METADATA.burn.isDot).toBe(true);
+  });
+
+  it("applies weapon statuses on server hits, broadcasts them, and resolves splash & DoT kills with XP", () => {
+    const now = 1_700_000_500_000;
+    const room = {
+      roomId: "room-status",
+      gameId: "sunny-meadow",
+      mode: "default",
+      minPlayers: 1,
+      maxPlayers: 500,
+      config: {},
+      createdAt: now
+    };
+    const p1 = { playerId: "p1", displayName: "테스터", seat: 0, connected: true, ready: true, joinedAt: now };
+    let state: RoomState = {
+      room,
+      phase: "active",
+      version: 1,
+      players: [p1],
+      stageState: sunnyMeadowDefinition.initialStageState({ room, players: [], now }),
+      playerStates: {},
+      updatedAt: now
+    };
+    state = sunnyMeadowDefinition.onPlayerJoin!({ state, now }, p1, null).state;
+    // Give player golden_hammer, maple_greatsword, crystal_rod on stage-3 where mobs have enough HP to test statuses
+    Object.assign(state.playerStates.p1!, {
+      level: 10,
+      baseAtk: 24,
+      stageId: "stage-3",
+      unlockedWeapons: ["wooden_sword", "golden_hammer", "maple_greatsword", "crystal_rod"],
+      equippedWeaponId: "golden_hammer"
+    });
+    (state.stageState as { playerStageMap: Record<string, string> }).playerStageMap.p1 = "stage-3";
+
+    const stage3Mobs = (state.stageState as { stages: Record<string, { mobs: Record<string, { id: string; hp: number }> }> }).stages["stage-3"]!.mobs;
+    const mobIds = Object.keys(stage3Mobs);
+    const stunTargetId = mobIds[0]!;
+    const dotTargetId = mobIds[1]!;
+    stage3Mobs[stunTargetId]!.hp = 400;
+    stage3Mobs[dotTargetId]!.hp = 350;
+
+    // 1. Golden Hammer applies 1s stun status and exposes it in sunny.mobHit & publicView
+    const stunRes = sunnyMeadowDefinition.applyAction(
+      { state, now: now + 10 },
+      {
+        playerId: "p1",
+        clientActionId: "hit_stun",
+        expectedVersion: 0,
+        type: "attackMob",
+        payload: { mobId: stunTargetId, knockDir: 1, damageRoll: 0.5, hitKind: "primary" }
+      }
+    );
+    state = stunRes.state;
+    const stunEv = stunRes.events.find((e) => e.type === "sunny.mobHit");
+    expect(stunEv?.payload.appliedStatuses).toEqual([expect.objectContaining({ kind: "stun", durationSec: 1.0 })]);
+    const pubDuringStun = sunnyMeadowDefinition.getPublicView({ state, now: now + 500 }, "p1") as {
+      mobs: Record<string, { statuses?: string[] }>;
+    };
+    expect(pubDuringStun.mobs[stunTargetId]?.statuses).toContain("stun");
+    const pubAfterStun = sunnyMeadowDefinition.getPublicView({ state, now: now + 1200 }, "p1") as {
+      mobs: Record<string, { statuses?: string[] }>;
+    };
+    expect(pubAfterStun.mobs[stunTargetId]?.statuses).toBeUndefined();
+
+    // 2. Maple Greatsword deals scaled 2-tile splash damage
+    Object.assign(state.playerStates.p1!, { equippedWeaponId: "maple_greatsword" });
+    const hpBeforeSplash = stage3Mobs[stunTargetId]!.hp;
+    const splashRes = sunnyMeadowDefinition.applyAction(
+      { state, now: now + 1300 },
+      {
+        playerId: "p1",
+        clientActionId: "hit_splash",
+        expectedVersion: 0,
+        type: "attackMob",
+        payload: { mobId: stunTargetId, knockDir: 1, damageRoll: 0.5, hitKind: "splash" }
+      }
+    );
+    state = splashRes.state;
+    const splashEv = splashRes.events.find((e) => e.type === "sunny.mobHit");
+    expect(splashEv?.payload.hitKind).toBe("splash");
+    expect(Number(splashEv?.payload.damage)).toBeGreaterThan(0);
+    expect(stage3Mobs[stunTargetId]!.hp).toBeLessThan(hpBeforeSplash);
+
+    // 3. Crystal Rod applies crystal_dot, then DoT tick finishes mob and awards XP
+    Object.assign(state.playerStates.p1!, { equippedWeaponId: "crystal_rod" });
+    const rodHit = sunnyMeadowDefinition.applyAction(
+      { state, now: now + 1400 },
+      {
+        playerId: "p1",
+        clientActionId: "hit_rod",
+        expectedVersion: 0,
+        type: "attackMob",
+        payload: { mobId: dotTargetId, knockDir: 1, damageRoll: 0.5, hitKind: "primary" }
+      }
+    );
+    state = rodHit.state;
+    expect(rodHit.events.find((e) => e.type === "sunny.mobHit")?.payload.appliedStatuses).toEqual([
+      expect.objectContaining({ kind: "crystal_dot", durationSec: 4.0 })
+    ]);
+
+    // Drop target to 5 HP so a Crystal DoT tick finishes it with zero knockback and awards XP!
+    (state.stageState as { stages: Record<string, { mobs: Record<string, { hp: number }> }> }).stages["stage-3"]!.mobs[dotTargetId]!.hp = 5;
+    const xpBefore = (state.playerStates.p1 as { xp: number }).xp;
+    const dotFinish = sunnyMeadowDefinition.applyAction(
+      { state, now: now + 2200 },
+      {
+        playerId: "p1",
+        clientActionId: "hit_dot_kill",
+        expectedVersion: 0,
+        type: "attackMob",
+        payload: { mobId: dotTargetId, knockDir: 0, hitKind: "dot", dotStatus: "crystal_dot" }
+      }
+    );
+    const dotEv = dotFinish.events.find((e) => e.type === "sunny.mobHit");
+    expect(dotEv?.payload.hitKind).toBe("dot");
+    expect(dotEv?.payload.dotStatus).toBe("crystal_dot");
+    expect(dotEv?.payload.knockbackX).toBe(0);
+    expect(dotFinish.events.some((e) => e.type === "sunny.mobDefeated" && e.payload.mobId === dotTargetId)).toBe(true);
+    expect((dotFinish.state.playerStates.p1 as { xp: number }).xp).toBeGreaterThan(xpBefore);
   });
 });

@@ -24,6 +24,7 @@ import mobStarlightDragonUrl from "./assets/images/mob_starlight_dragon.png?url"
 import {
   ITEM_CATALOG,
   LEGGED_SPRITE_CONFIG,
+  STATUS_METADATA,
   THEME_CATALOG,
   VIEWPORT,
   WALK_CYCLE_FRAMES,
@@ -32,7 +33,7 @@ import {
 } from "./catalogs";
 import type { CompiledStage, RuntimeDecoration, RuntimePlatform, RuntimePortal } from "./map-schema";
 import { computeXpEfficiency } from "./progression";
-import type { RemotePlayerView, StageTheme } from "./types";
+import type { ActiveStatusEffect, RemotePlayerView, StageTheme, StatusEffectKind } from "./types";
 
 const IMAGE_URLS: Record<string, string> = {
   bg_sky: bgSkyUrl,
@@ -87,6 +88,7 @@ export type ClientMobRender = {
   hasCrown: boolean;
   squashX: number;
   squashY: number;
+  statuses: Partial<Record<StatusEffectKind, ActiveStatusEffect>>;
 };
 
 export type ClientItemRender = {
@@ -145,6 +147,19 @@ export type ClientHitEffect =
       duration: number;
     }
   | {
+      type: "wave";
+      x: number;
+      y: number;
+      facing: number;
+      rangePx: number;
+      heightPx: number;
+      color: string;
+      accentColor: string;
+      style: "maple_wave" | "solar_shockwave" | "dragon_flame";
+      age: number;
+      duration: number;
+    }
+  | {
       type: "levelup_pillar";
       x: number;
       y: number;
@@ -192,6 +207,7 @@ export type LocalPlayerRender = {
   equippedWeaponId: string;
   invulnTimer: number;
   slowTimer: number;
+  statuses: Partial<Record<StatusEffectKind, ActiveStatusEffect>>;
   attackAnimTimer: number;
   attackAnimDuration: number;
   animTimer: number;
@@ -1397,6 +1413,133 @@ export class SunnyRenderer {
         const alertY = mob.y - (mob.inCombat ? (mob.hasCrown ? 62 : 46) : mob.hasCrown ? 40 : 24);
         this.drawMobAlertMark(ctx, footX, alertY, mob.alertTimer);
       }
+
+      // Active status visuals (spinning star halo for stun, elemental auras for DoTs/slow)
+      if (!isSpawnProtected && mob.statuses) {
+        this.drawActorStatuses(ctx, footX, mob.y, mob.w, mob.h, mob.statuses, mob.hasCrown ? 16 : 6);
+      }
+    }
+  }
+
+  private drawStunHalo(ctx: CanvasRenderingContext2D, cx: number, cy: number, width: number): void {
+    const rx = Math.max(18, width * 0.45);
+    const ry = Math.max(6, rx * 0.34);
+    ctx.save();
+    // Dashed golden dizzy ring
+    ctx.strokeStyle = "rgba(255, 224, 130, 0.82)";
+    ctx.lineWidth = 2;
+    ctx.setLineDash([4, 4]);
+    ctx.beginPath();
+    ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // 3 orbiting golden 5-point stars with depth scaling
+    for (let i = 0; i < 3; i++) {
+      const ang = this.time * 5.6 + (i * Math.PI * 2) / 3;
+      const sx = cx + Math.cos(ang) * rx;
+      const sy = cy + Math.sin(ang) * ry;
+      const depthScale = 0.8 + (Math.sin(ang) + 1) * 0.2;
+      ctx.save();
+      ctx.translate(sx, sy);
+      ctx.rotate(this.time * 4 + i);
+      this.drawStar(ctx, 0, 0, 7.5 * depthScale, 5, "#FFD740", "#6D4C00");
+      ctx.restore();
+    }
+    ctx.restore();
+  }
+
+  private drawActorStatuses(
+    ctx: CanvasRenderingContext2D,
+    cx: number,
+    topY: number,
+    w: number,
+    h: number,
+    statuses: Partial<Record<StatusEffectKind, ActiveStatusEffect>>,
+    haloOffsetY = 6
+  ): void {
+    const midY = topY + h * 0.5;
+    if (statuses.stun && statuses.stun.remaining > 0) {
+      this.drawStunHalo(ctx, cx, topY - haloOffsetY, w);
+    }
+    if (statuses.crystal_dot && statuses.crystal_dot.remaining > 0) {
+      ctx.save();
+      for (let i = 0; i < 3; i++) {
+        const ang = this.time * 3.8 + (i * Math.PI * 2) / 3;
+        const sx = cx + Math.cos(ang) * (w * 0.58);
+        const sy = midY + Math.sin(ang) * (h * 0.36);
+        ctx.save();
+        ctx.translate(sx, sy);
+        ctx.rotate(ang + Math.PI * 0.25);
+        ctx.fillStyle = "#40C4FF";
+        ctx.strokeStyle = "#E1F5FE";
+        ctx.lineWidth = 1.4;
+        ctx.beginPath();
+        ctx.moveTo(0, -6.5);
+        ctx.lineTo(4.2, 0);
+        ctx.lineTo(0, 6.5);
+        ctx.lineTo(-4.2, 0);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        ctx.restore();
+      }
+      ctx.restore();
+    }
+    if (statuses.burn && statuses.burn.remaining > 0) {
+      ctx.save();
+      for (let i = 0; i < 4; i++) {
+        const phase = (this.time * 2.4 + i * 0.27) % 1;
+        const fx = cx + Math.sin(this.time * 6 + i * 1.7) * (w * 0.38);
+        const fy = topY + h - phase * (h * 0.95);
+        ctx.globalAlpha = Math.max(0, 1 - phase);
+        ctx.fillStyle = i % 2 === 0 ? "#FF5722" : "#FFD54F";
+        ctx.beginPath();
+        ctx.arc(fx, fy, 4.5 * (1 - phase * 0.45), 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.restore();
+    }
+    if (statuses.shock && statuses.shock.remaining > 0) {
+      ctx.save();
+      ctx.strokeStyle = "#FFFF00";
+      ctx.lineWidth = 2.2;
+      ctx.lineJoin = "round";
+      for (let i = 0; i < 2; i++) {
+        const side = i === 0 ? -1 : 1;
+        const jitter = Math.sin(this.time * 38 + i * 3) * 4;
+        ctx.beginPath();
+        ctx.moveTo(cx + side * (w * 0.42), topY + 6 + jitter);
+        ctx.lineTo(cx + side * (w * 0.58), midY - 3);
+        ctx.lineTo(cx + side * (w * 0.36), midY + 5);
+        ctx.lineTo(cx + side * (w * 0.54), topY + h - 8 - jitter);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+    if (statuses.poison && statuses.poison.remaining > 0) {
+      ctx.save();
+      for (let i = 0; i < 3; i++) {
+        const phase = (this.time * 1.8 + i * 0.33) % 1;
+        const bx = cx + Math.cos(i * 2.2 + this.time * 3) * (w * 0.35);
+        const by = topY + h * 0.7 - phase * (h * 0.75);
+        ctx.globalAlpha = 0.85 * (1 - phase);
+        ctx.fillStyle = i % 2 === 0 ? "#B2FF59" : "#9C27B0";
+        ctx.beginPath();
+        ctx.arc(bx, by, 3.6 + phase * 2, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.restore();
+    }
+    if (statuses.slow && statuses.slow.remaining > 0) {
+      ctx.save();
+      ctx.strokeStyle = "rgba(179, 136, 255, 0.85)";
+      ctx.lineWidth = 2.2;
+      ctx.setLineDash([4, 3]);
+      ctx.beginPath();
+      ctx.ellipse(cx, topY + h - 3, w * 0.55, 7, 0, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
     }
   }
 
@@ -1610,6 +1753,11 @@ export class SunnyRenderer {
 
     // Local Player Overhead Name + Level Tag
     this.drawPlayerNameTag(ctx, footX, p.y - 24, p.displayName, p.level, true);
+
+    // Local player active status visuals
+    if (p.statuses) {
+      this.drawActorStatuses(ctx, footX, p.y - 12, p.w + 8, p.h + 8, p.statuses, 22);
+    }
   }
 
   private drawPlayerNameTag(
@@ -1711,6 +1859,86 @@ export class SunnyRenderer {
         ctx.translate(fx.x, fx.y);
         ctx.rotate(fx.rotation + t * 0.8);
         this.drawStar(ctx, 0, 0, fx.radius * scale, fx.isCrit ? 8 : 6, fx.color, "#FFFFFF");
+      } else if (fx.type === "wave") {
+        // Upgraded weapon forward splash wave (maple_wave, solar_shockwave, dragon_flame)
+        const travel = fx.rangePx * (0.25 + 0.78 * Math.min(1, t * 1.15));
+        const halfH = fx.heightPx * 0.5;
+        ctx.translate(fx.x, fx.y);
+        ctx.scale(fx.facing, 1);
+
+        if (fx.style === "solar_shockwave") {
+          // Expanding golden solar shockwave rings + radiant spikes
+          const r = Math.max(18, travel * 0.85);
+          const grad = ctx.createRadialGradient(travel * 0.35, 0, 6, travel * 0.35, 0, r);
+          grad.addColorStop(0, "rgba(255, 253, 231, 0.78)");
+          grad.addColorStop(0.55, "rgba(255, 215, 64, 0.42)");
+          grad.addColorStop(1, "rgba(255, 111, 0, 0)");
+          ctx.fillStyle = grad;
+          ctx.beginPath();
+          ctx.ellipse(travel * 0.35, 0, r, halfH * (0.8 + t * 0.4), 0, 0, Math.PI * 2);
+          ctx.fill();
+
+          ctx.strokeStyle = fx.color;
+          ctx.lineWidth = Math.max(2, (1 - t) * 7);
+          ctx.beginPath();
+          ctx.ellipse(travel * 0.35, 0, r * 0.92, halfH * (0.65 + t * 0.35), 0, 0, Math.PI * 2);
+          ctx.stroke();
+
+          ctx.strokeStyle = fx.accentColor;
+          ctx.lineWidth = Math.max(1.5, (1 - t) * 4);
+          for (let i = 0; i < 6; i++) {
+            const ang = (i * Math.PI) / 3 + t * 1.4;
+            ctx.beginPath();
+            ctx.moveTo(travel * 0.35 + Math.cos(ang) * r * 0.45, Math.sin(ang) * halfH * 0.35);
+            ctx.lineTo(travel * 0.35 + Math.cos(ang) * r * 1.05, Math.sin(ang) * halfH * 0.85);
+            ctx.stroke();
+          }
+        } else {
+          // Sweeping crescent sword-energy wave (maple_wave / dragon_flame)
+          const grad = ctx.createLinearGradient(0, 0, travel + 16, 0);
+          grad.addColorStop(0, "rgba(255, 255, 255, 0)");
+          grad.addColorStop(0.5, fx.color);
+          grad.addColorStop(1, fx.accentColor);
+          ctx.fillStyle = grad;
+          ctx.beginPath();
+          ctx.moveTo(travel * 0.35, -halfH);
+          ctx.quadraticCurveTo(travel + 26, 0, travel * 0.35, halfH);
+          ctx.quadraticCurveTo(travel * 0.72, 0, travel * 0.35, -halfH);
+          ctx.closePath();
+          ctx.fill();
+
+          // Bright leading blade arc
+          ctx.strokeStyle = "#FFF8E1";
+          ctx.lineWidth = Math.max(2.5, (1 - t) * 7.5);
+          ctx.lineCap = "round";
+          ctx.beginPath();
+          ctx.moveTo(travel * 0.48, -halfH * 0.92);
+          ctx.quadraticCurveTo(travel + 22, 0, travel * 0.48, halfH * 0.92);
+          ctx.stroke();
+
+          // Secondary inner arc for dragon_flame or drifting maple petals for maple_wave
+          if (fx.style === "dragon_flame") {
+            ctx.strokeStyle = "#FFD740";
+            ctx.lineWidth = Math.max(2, (1 - t) * 5);
+            ctx.beginPath();
+            ctx.moveTo(travel * 0.22, -halfH * 0.7);
+            ctx.quadraticCurveTo(travel * 0.88, 0, travel * 0.22, halfH * 0.7);
+            ctx.stroke();
+          } else {
+            ctx.fillStyle = "#FF5722";
+            for (let i = 0; i < 4; i++) {
+              const lx = travel * (0.3 + i * 0.22);
+              const ly = Math.sin(t * 9 + i * 2.1) * (halfH * 0.65);
+              ctx.save();
+              ctx.translate(lx, ly);
+              ctx.rotate(t * 7 + i * 1.3);
+              ctx.beginPath();
+              ctx.ellipse(0, 0, 6.5, 3.2, 0, 0, Math.PI * 2);
+              ctx.fill();
+              ctx.restore();
+            }
+          }
+        }
       } else if (fx.type === "levelup_pillar") {
         // Golden ascending Level-Up Light Pillar!
         const beamW = 54 * (1 - t * 0.45);
@@ -1865,6 +2093,35 @@ export class SunnyRenderer {
     ctx.fillStyle = p.potions > 0 ? "#FFCDD2" : "#9E9E9E";
     ctx.fillText(`포션 ×${p.potions} [F]`, barX + 102, 71);
 
+    // Active Player Status Pills directly beneath top-left HUD card
+    if (p.statuses) {
+      const activeList = (Object.values(p.statuses) as Array<ActiveStatusEffect | undefined>).filter(
+        (s): s is ActiveStatusEffect => Boolean(s && s.remaining > 0)
+      );
+      if (activeList.length > 0) {
+        let px = 14;
+        const py = 98;
+        ctx.font = 'bold 11px "Pretendard", sans-serif';
+        ctx.textAlign = "left";
+        ctx.textBaseline = "middle";
+        for (const st of activeList) {
+          const meta = STATUS_METADATA[st.kind];
+          const label = `${meta.label} ${st.remaining.toFixed(1)}s`;
+          const pillW = ctx.measureText(label).width + 16;
+          ctx.fillStyle = "rgba(32, 20, 12, 0.86)";
+          ctx.strokeStyle = meta.color;
+          ctx.lineWidth = 1.8;
+          ctx.beginPath();
+          ctx.roundRect(px, py, pillW, 20, 9);
+          ctx.fill();
+          ctx.stroke();
+          ctx.fillStyle = meta.color;
+          ctx.fillText(label, px + 8, py + 10);
+          px += pillW + 6;
+        }
+      }
+    }
+
     // --- Top-Center: Stage Progress & Online Population ---
     const progW = 290;
     const progX = W * 0.5 - progW * 0.5;
@@ -1984,7 +2241,18 @@ export class SunnyRenderer {
     ctx.textAlign = "center";
     ctx.strokeStyle = "rgba(42, 26, 14, 0.85)";
     ctx.lineWidth = 3;
-    const wInfo = `${wObj.name} (무기 +${wObj.atk} / 총 ATK ${p.baseAtk + wObj.atk}) · Q/E 교체`;
+    const traits: string[] = [];
+    if (wObj.special?.splash) {
+      traits.push(`${wObj.special.splash.rangeTiles}칸 스플래시`);
+    }
+    if (wObj.special?.statuses) {
+      for (const st of wObj.special.statuses) {
+        const meta = STATUS_METADATA[st.kind];
+        traits.push(`${meta.label} ${st.durationSec}초`);
+      }
+    }
+    const traitText = traits.length > 0 ? ` · ★ ${traits.join(" + ")}` : "";
+    const wInfo = `${wObj.name} (ATK +${wObj.atk} / 총 ${p.baseAtk + wObj.atk})${traitText} · Q/E 교체`;
     ctx.strokeText(wInfo, W * 0.5, barTop - 10);
     ctx.fillStyle = "#FFF8E1";
     ctx.fillText(wInfo, W * 0.5, barTop - 10);

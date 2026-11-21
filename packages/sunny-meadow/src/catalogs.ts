@@ -3,10 +3,23 @@ import type {
   MobAiKind,
   MobTemplate,
   StageTheme,
+  StatusEffectKind,
   WeaponTemplate
 } from "./types";
 
 export const SCHEMA_VERSION = "2.0.0";
+
+export const STATUS_METADATA: Record<
+  StatusEffectKind,
+  { label: string; color: string; bg: string; isDot?: boolean }
+> = {
+  stun: { label: "기절", color: "#FFD740", bg: "rgba(93, 58, 26, 0.88)" },
+  crystal_dot: { label: "수정 파편", color: "#80DEEA", bg: "rgba(13, 71, 161, 0.88)", isDot: true },
+  burn: { label: "화상", color: "#FFAB40", bg: "rgba(183, 28, 28, 0.88)", isDot: true },
+  shock: { label: "감전", color: "#FFFF00", bg: "rgba(69, 39, 160, 0.88)", isDot: true },
+  slow: { label: "감속", color: "#E1BEE7", bg: "rgba(74, 20, 140, 0.88)" },
+  poison: { label: "중독", color: "#CCFF90", bg: "rgba(51, 105, 30, 0.88)", isDot: true }
+};
 
 /** Delay (seconds) an active mob telegraphs a red '!' before launching its attack. */
 export const MOB_ALERT_TELEGRAPH_SEC = 0.5;
@@ -153,14 +166,17 @@ export const WEAPON_CATALOG: Record<string, WeaponTemplate> = {
     accentColor: "#F57F17",
     iconIndex: 7,
     sfx: "sfx_attack_sword",
-    description: "강력한 일격과 큰 밀림 효과의 황금 망치"
+    special: {
+      statuses: [{ kind: "stun", durationSec: 1.0 }]
+    },
+    description: "적중 시 대상을 1초간 기절(별 헤일로)시키는 황금 망치"
   },
   maple_greatsword: {
     id: "maple_greatsword",
     name: "단풍 대검",
     type: "melee",
     atk: 58,
-    cooldown: 0.32,
+    cooldown: 0.34,
     reach: 80,
     height: 54,
     knockbackX: 270,
@@ -171,14 +187,24 @@ export const WEAPON_CATALOG: Record<string, WeaponTemplate> = {
     accentColor: "#D84315",
     iconIndex: 8,
     sfx: "sfx_attack_sword",
-    description: "단풍 협곡의 열기를 품은 장검"
+    special: {
+      splash: {
+        rangeTiles: 2.0,
+        heightPx: 62,
+        damageMult: 0.68,
+        waveColor: "#FF7043",
+        accentColor: "#FFD54F",
+        style: "maple_wave"
+      }
+    },
+    description: "전방 2칸 범위의 단풍 검기 스플래시 파동을 날리는 대검"
   },
   crystal_rod: {
     id: "crystal_rod",
     name: "수정 지팡이",
     type: "ranged",
     atk: 72,
-    cooldown: 0.32,
+    cooldown: 0.33,
     reach: 52,
     height: 46,
     projectileSpeed: 640,
@@ -192,7 +218,10 @@ export const WEAPON_CATALOG: Record<string, WeaponTemplate> = {
     accentColor: "#0277BD",
     iconIndex: 9,
     sfx: "sfx_attack_staff",
-    description: "적을 꿰뚫는 수정 광선을 발사"
+    special: {
+      statuses: [{ kind: "crystal_dot", durationSec: 4.0, dotRatio: 0.16, tickIntervalSec: 0.8 }]
+    },
+    description: "적을 꿰뚫고 4초간 수정 파편 지속 피해를 입히는 지팡이"
   },
   thunder_dagger: {
     id: "thunder_dagger",
@@ -210,14 +239,17 @@ export const WEAPON_CATALOG: Record<string, WeaponTemplate> = {
     accentColor: "#F9A825",
     iconIndex: 10,
     sfx: "sfx_attack_sword",
-    description: "초고속 연타와 높은 치명타의 번개 검"
+    special: {
+      statuses: [{ kind: "shock", durationSec: 2.4, dotRatio: 0.14, tickIntervalSec: 0.8, speedMult: 0.6 }]
+    },
+    description: "초고속 연타로 감전(감속 + 전기 지속 피해)을 거는 단검"
   },
   solar_hammer: {
     id: "solar_hammer",
     name: "태양 해머",
     type: "melee",
     atk: 118,
-    cooldown: 0.4,
+    cooldown: 0.42,
     reach: 84,
     height: 60,
     knockbackX: 370,
@@ -228,14 +260,25 @@ export const WEAPON_CATALOG: Record<string, WeaponTemplate> = {
     accentColor: "#FF6F00",
     iconIndex: 11,
     sfx: "sfx_attack_sword",
-    description: "구름 신전의 태양빛을 응축한 대망치"
+    special: {
+      statuses: [{ kind: "stun", durationSec: 1.4 }],
+      splash: {
+        rangeTiles: 1.6,
+        heightPx: 66,
+        damageMult: 0.6,
+        waveColor: "#FFD740",
+        accentColor: "#FF6F00",
+        style: "solar_shockwave"
+      }
+    },
+    description: "1.4초 기절과 태양 충격파 스플래시를 터뜨리는 대망치"
   },
   dragon_blade: {
     id: "dragon_blade",
     name: "용린 블레이드",
     type: "melee",
     atk: 148,
-    cooldown: 0.28,
+    cooldown: 0.29,
     reach: 86,
     height: 58,
     knockbackX: 300,
@@ -246,14 +289,25 @@ export const WEAPON_CATALOG: Record<string, WeaponTemplate> = {
     accentColor: "#B71C1C",
     iconIndex: 12,
     sfx: "sfx_attack_sword",
-    description: "화산 용의 비늘로 벼려낸 붉은 검"
+    special: {
+      statuses: [{ kind: "burn", durationSec: 3.5, dotRatio: 0.18, tickIntervalSec: 0.7 }],
+      splash: {
+        rangeTiles: 2.2,
+        heightPx: 66,
+        damageMult: 0.7,
+        waveColor: "#FF3D00",
+        accentColor: "#FFD54F",
+        style: "dragon_flame"
+      }
+    },
+    description: "2.2칸 화염 검기 스플래시와 3.5초 화상 지속 피해를 입히는 대검"
   },
   nebula_staff: {
     id: "nebula_staff",
     name: "성운 지팡이",
     type: "ranged",
     atk: 175,
-    cooldown: 0.29,
+    cooldown: 0.3,
     reach: 56,
     height: 50,
     projectileSpeed: 720,
@@ -267,7 +321,13 @@ export const WEAPON_CATALOG: Record<string, WeaponTemplate> = {
     accentColor: "#6A1B9A",
     iconIndex: 13,
     sfx: "sfx_attack_staff",
-    description: "별빛 정상의 성운 탄환을 날리는 궁극 지팡이"
+    special: {
+      statuses: [
+        { kind: "stun", durationSec: 0.8 },
+        { kind: "burn", durationSec: 4.0, dotRatio: 0.18, tickIntervalSec: 0.8 }
+      ]
+    },
+    description: "3관통 성운탄으로 중력 기절과 4초 성운 화상을 동시에 부여"
   }
 };
 
