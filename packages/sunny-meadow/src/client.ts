@@ -331,6 +331,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
   let hurtStunTimer = 0;
   let ladderStepTimer = 0;
   let ladderGrabCooldown = 0;
+  let runDustTimer = 0;
   let idleRegenState: IdleRegenState = { idleTimer: 0, tickTimer: 0 };
   const resetIdleRegen = () => {
     idleRegenState = { idleTimer: 0, tickTimer: 0 };
@@ -1862,6 +1863,28 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
     if (p.grounded && (standingSurface === "conveyor_right" || standingSurface === "conveyor_left")) {
       const beltDir = standingSurface === "conveyor_right" ? 1 : -1;
       p.x += beltDir * 118 * dt;
+    }
+
+    // Subtle footstep dust puffs when sprinting across solid ground
+    if (p.grounded && Math.abs(p.vx) > 95) {
+      runDustTimer += dt;
+      if (runDustTimer >= 0.22) {
+        runDustTimer = 0;
+        particles.push({
+          x: p.x + p.w * 0.5 - p.facing * 8,
+          y: p.y + p.h - 2,
+          vx: -p.facing * (24 + Math.random() * 24),
+          vy: -(16 + Math.random() * 18),
+          gravity: 40,
+          size: 3.2 + Math.random() * 2,
+          color: standingSurface === "ice" ? "#E0F7FA" : standingSurface === "mud" ? "#8D6E63" : "#FFF8E1",
+          age: 0,
+          duration: 0.28 + Math.random() * 0.1,
+          shape: "circle"
+        });
+      }
+    } else {
+      runDustTimer = 0.14;
     }
 
     if (p.grounded) coyoteTimer = PLAYER_CONFIG.coyoteTime;

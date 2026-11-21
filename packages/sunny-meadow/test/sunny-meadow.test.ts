@@ -1,16 +1,21 @@
 import { describe, expect, it } from "vitest";
 import {
+  CHARACTER_ANIMATIONS,
+  evaluateActorPose,
+  FOUR_FRAME_WALK_SHEET_SPEC,
+  HERO_SHEET_SPEC,
+  resolveActorAnimState
+} from "../src/animation";
+import {
   computeIdleRegenAmount,
   isActiveMobAi,
   ITEM_CATALOG,
-  LEGGED_SPRITE_CONFIG,
   MOB_ALERT_TELEGRAPH_SEC,
   MOB_CATALOG,
   PLAYER_CONFIG,
   STATUS_METADATA,
   stepIdleRegen,
   VIEWPORT,
-  WALK_CYCLE_FRAMES,
   WEAPON_CATALOG,
   WEAPON_ORDER
 } from "../src/catalogs";
@@ -679,32 +684,67 @@ describe("@bighouse/sunny-meadow difficulty curve, alert telegraph & walk animat
     expect(isActiveMobAi("fire_drake")).toBe(true);
   });
 
-  it("defines valid 4-frame leg-stride walk animations for hero and all legged mobs", () => {
-    expect(WALK_CYCLE_FRAMES).toBe(4);
-    const expectedLegged = [
-      "hero",
-      "red_mushroom",
-      "yellow_hamster",
-      "blue_rabbit",
-      "emerald_frog",
-      "orange_fox",
-      "crimson_boar",
-      "cobalt_golem",
-      "violet_spider",
-      "scarlet_drake"
-    ];
-    for (const key of expectedLegged) {
-      const spec = LEGGED_SPRITE_CONFIG[key];
-      expect(spec, `legged spec for ${key}`).toBeDefined();
-      expect(spec!.splitY).toBeGreaterThanOrEqual(80);
-      expect(spec!.splitY).toBeLessThan(120);
-      expect(spec!.midX).toBeGreaterThan(32);
-      expect(spec!.midX).toBeLessThan(96);
+  it("drives seamless multi-frame sprite sheets and continuous gait animations for hero and all 16 monsters", () => {
+    // 1. Hero uses an 8-frame hand-drawn sprite sheet (idle, 6-frame walk cycle, jump)
+    expect(HERO_SHEET_SPEC.frameCount).toBe(8);
+    expect(HERO_SHEET_SPEC.clips.walk?.frames).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(HERO_SHEET_SPEC.clips.jump?.frames).toEqual([7]);
+
+    const heroIdle = evaluateActorPose(
+      { spriteKey: "hero", state: "idle", time: 0, speedPx: 0, vy: 0, grounded: true, facing: 1 },
+      true
+    );
+    expect(heroIdle.frameIndex).toBe(0);
+
+    const walkFramesSeen = new Set<number>();
+    for (let i = 0; i < 12; i++) {
+      const p = evaluateActorPose(
+        { spriteKey: "hero", state: "walk", time: i * 0.08, speedPx: 220, vy: 0, grounded: true, facing: 1 },
+        true
+      );
+      walkFramesSeen.add(p.frameIndex);
     }
-    // Legless / flying sprites stay unsplit
-    expect(LEGGED_SPRITE_CONFIG.purple_snake).toBeUndefined();
-    expect(LEGGED_SPRITE_CONFIG.lime_slime).toBeUndefined();
-    expect(LEGGED_SPRITE_CONFIG.indigo_wisp).toBeUndefined();
+    expect(walkFramesSeen.size).toBe(6);
+
+    const heroJump = evaluateActorPose(
+      { spriteKey: "hero", state: "jump", time: 0.2, speedPx: 180, vy: -320, grounded: false, facing: 1 },
+      true
+    );
+    expect(heroJump.frameIndex).toBe(7);
+
+    // 2. Stage 1 starter mobs use genuine 4-frame drawn sprite sheets
+    expect(FOUR_FRAME_WALK_SHEET_SPEC.frameCount).toBe(4);
+    for (const key of ["red_mushroom", "yellow_hamster"]) {
+      const spec = CHARACTER_ANIMATIONS[key]!;
+      expect(spec.sheet?.frameCount).toBe(4);
+      const pose = evaluateActorPose(
+        { spriteKey: key, state: "walk", time: 0.25, speedPx: 100, vy: 0, grounded: true, facing: 1 },
+        true
+      );
+      expect(pose.frameIndex).toBeGreaterThanOrEqual(0);
+      expect(pose.frameIndex).toBeLessThan(4);
+    }
+
+    // 3. Every monster in MOB_CATALOG has an explicit seamless animation profile (zero slicing!)
+    for (const tpl of Object.values(MOB_CATALOG)) {
+      expect(CHARACTER_ANIMATIONS[tpl.spriteKey], `animation spec for ${tpl.spriteKey}`).toBeDefined();
+    }
+
+    // 4. Purple snake uses smooth continuous scanline wave, and state resolver prioritizes hurt/stun/climb/jump
+    const snakeWalk = evaluateActorPose(
+      { spriteKey: "purple_snake", state: "walk", time: 0.3, speedPx: 110, vy: 0, grounded: true, facing: 1 },
+      false
+    );
+    expect(snakeWalk.frameIndex).toBe(-1);
+    expect(snakeWalk.wave?.amplitudePx).toBeGreaterThan(0);
+
+    expect(resolveActorAnimState({ grounded: true, speedPx: 0, vy: 0 })).toBe("idle");
+    expect(resolveActorAnimState({ grounded: true, speedPx: 120, vy: 0 })).toBe("walk");
+    expect(resolveActorAnimState({ grounded: false, speedPx: 120, vy: -200 })).toBe("jump");
+    expect(resolveActorAnimState({ grounded: false, speedPx: 120, vy: 200 })).toBe("fall");
+    expect(resolveActorAnimState({ grounded: false, onLadder: true, speedPx: 0, vy: -80 })).toBe("climb");
+    expect(resolveActorAnimState({ grounded: true, speedPx: 100, vy: 0, stunned: true })).toBe("stun");
+    expect(resolveActorAnimState({ grounded: true, speedPx: 100, vy: 0, hurt: true })).toBe("hurt");
   });
 });
 

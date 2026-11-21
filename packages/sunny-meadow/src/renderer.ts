@@ -3,9 +3,12 @@ import bgMountainsUrl from "./assets/images/bg_mountains.png?url";
 import bgTreesUrl from "./assets/images/bg_trees.png?url";
 import tilesetMeadowUrl from "./assets/images/tileset_meadow.png?url";
 import heroUrl from "./assets/images/hero.png?url";
+import heroSheetUrl from "./assets/images/hero_sheet.png?url";
 import itemsSheetUrl from "./assets/images/items_sheet.png?url";
 import mobRedMushroomUrl from "./assets/images/mob_red_mushroom.png?url";
+import mobRedMushroomSheetUrl from "./assets/images/mob_red_mushroom_sheet.png?url";
 import mobYellowHamsterUrl from "./assets/images/mob_yellow_hamster.png?url";
+import mobYellowHamsterSheetUrl from "./assets/images/mob_yellow_hamster_sheet.png?url";
 import mobBlueRabbitUrl from "./assets/images/mob_blue_rabbit.png?url";
 import mobPurpleSnakeUrl from "./assets/images/mob_purple_snake.png?url";
 import mobEmeraldFrogUrl from "./assets/images/mob_emerald_frog.png?url";
@@ -22,12 +25,16 @@ import mobIndigoWispUrl from "./assets/images/mob_indigo_wisp.png?url";
 import mobStarlightDragonUrl from "./assets/images/mob_starlight_dragon.png?url";
 
 import {
+  evaluateActorPose,
+  getCharacterAnimationSpec,
+  resolveActorAnimState,
+  type ActorRenderPose
+} from "./animation";
+import {
   ITEM_CATALOG,
-  LEGGED_SPRITE_CONFIG,
   STATUS_METADATA,
   THEME_CATALOG,
   VIEWPORT,
-  WALK_CYCLE_FRAMES,
   WEAPON_CATALOG,
   WEAPON_ORDER
 } from "./catalogs";
@@ -41,9 +48,12 @@ const IMAGE_URLS: Record<string, string> = {
   bg_trees: bgTreesUrl,
   tileset_meadow: tilesetMeadowUrl,
   hero: heroUrl,
+  hero_sheet: heroSheetUrl,
   items_sheet: itemsSheetUrl,
   red_mushroom: mobRedMushroomUrl,
+  red_mushroom_sheet: mobRedMushroomSheetUrl,
   yellow_hamster: mobYellowHamsterUrl,
+  yellow_hamster_sheet: mobYellowHamsterSheetUrl,
   blue_rabbit: mobBlueRabbitUrl,
   purple_snake: mobPurpleSnakeUrl,
   emerald_frog: mobEmeraldFrogUrl,
@@ -259,7 +269,6 @@ export class SunnyRenderer {
   private tintCanvas: HTMLCanvasElement;
   private tintCtx: CanvasRenderingContext2D;
   private biomeTilesets = new Map<string, HTMLCanvasElement>();
-  private walkSheets = new Map<string, HTMLCanvasElement>();
   private time = 0;
 
   constructor(
@@ -1333,6 +1342,27 @@ export class SunnyRenderer {
       const footX = mob.x + mob.w * 0.5;
       const footY = mob.y + mob.h;
       const isSpawnProtected = now < mob.spawnProtectUntil;
+      const isStunned = Boolean(mob.statuses?.stun && mob.statuses.stun.remaining > 0);
+      const animState = resolveActorAnimState({
+        grounded: mob.grounded,
+        speedPx: Math.abs(mob.vx),
+        vy: mob.vy,
+        hurt: mob.hitStunTimer > 0,
+        stunned: isStunned
+      });
+      const sheetImg = this.images[`${mob.spriteKey}_sheet`];
+      const pose = evaluateActorPose(
+        {
+          spriteKey: mob.spriteKey,
+          state: animState,
+          time: mob.animTimer,
+          speedPx: Math.abs(mob.vx),
+          vy: mob.vy,
+          grounded: mob.grounded,
+          facing: mob.facing
+        },
+        Boolean(sheetImg)
+      );
 
       ctx.save();
       // 2-second spawn protection blink (cannot attack or be attacked!)
@@ -1348,25 +1378,26 @@ export class SunnyRenderer {
 
       ctx.fillStyle = "rgba(45, 32, 18, 0.25)";
       ctx.beginPath();
-      ctx.ellipse(footX, footY + 1, mob.w * 0.48, 5, 0, 0, Math.PI * 2);
+      ctx.ellipse(footX, footY + 1, mob.w * 0.48 * pose.shadowScale, 5 * pose.shadowScale, 0, 0, Math.PI * 2);
       ctx.fill();
 
-      const moving = Math.abs(mob.vx) > 8 && mob.grounded;
-      const walkBob = moving ? Math.abs(Math.sin(mob.animTimer * 10)) * 3.2 : Math.sin(mob.animTimer * 3.5) * 1.4;
-      const tilt = mob.hitStunTimer > 0 ? -mob.facing * 0.2 : moving ? Math.sin(mob.animTimer * 10) * 0.05 : 0;
       const drawSize = 62 * mob.drawScale;
 
-      ctx.translate(footX, footY - walkBob);
-      ctx.rotate(tilt);
-      ctx.scale(mob.facing * mob.squashX, mob.squashY);
+      ctx.translate(footX + pose.offsetX, footY + pose.offsetY);
+      ctx.scale(mob.facing, 1);
+      ctx.rotate(pose.rotation);
+      if (pose.skewX !== 0) {
+        ctx.transform(1, 0, -pose.skewX, 1, 0, 0);
+      }
+      ctx.scale(mob.squashX * pose.scaleX, mob.squashY * pose.scaleY);
 
       if (spr) {
-        const frameIdx = this.pickSpriteFrame(mob.spriteKey, moving, mob.grounded, mob.animTimer, Math.abs(mob.vx));
-        this.drawAnimatedSprite(
+        this.drawActorSprite(
           ctx,
           mob.spriteKey,
           spr,
-          frameIdx,
+          sheetImg,
+          pose,
           -drawSize * 0.5,
           -drawSize + 4,
           drawSize,
@@ -1656,27 +1687,49 @@ export class SunnyRenderer {
     viewW: number
   ): void {
     const spr = this.images.hero;
+    const heroSheet = this.images.hero_sheet;
     const sheet = this.images.items_sheet;
     for (const rp of remotes) {
       if (rp.x < camX - 80 || rp.x > camX + viewW + 80) continue;
       const footX = rp.x + 14;
       const footY = rp.y + 42;
-      const moving = rp.animState === "walk" || Math.abs(rp.vx) > 15;
-      const grounded = rp.animState !== "jump";
-      const walkBob = moving ? Math.abs(Math.sin(this.time * 12 + rp.x * 0.05)) * 3 : Math.sin(this.time * 3 + rp.x) * 1;
+      const speedPx = Math.max(Math.abs(rp.vx), rp.animState === "walk" ? 190 : 0);
+      const animState = resolveActorAnimState({
+        grounded: rp.animState !== "jump",
+        onLadder: rp.animState === "climb",
+        speedPx,
+        vy: rp.vy,
+        attacking: rp.animState === "attack"
+      });
+      const pose = evaluateActorPose(
+        {
+          spriteKey: "hero",
+          state: animState,
+          time: this.time + rp.x * 0.01,
+          speedPx,
+          vy: rp.vy,
+          grounded: rp.animState !== "jump",
+          facing: rp.facing >= 0 ? 1 : -1
+        },
+        Boolean(heroSheet)
+      );
 
       ctx.save();
       ctx.globalAlpha = rp.dead ? 0.38 : 0.92;
       ctx.fillStyle = "rgba(45, 32, 18, 0.22)";
       ctx.beginPath();
-      ctx.ellipse(footX, footY + 1, 15, 4, 0, 0, Math.PI * 2);
+      ctx.ellipse(footX, footY + 1, 15 * pose.shadowScale, 4 * pose.shadowScale, 0, 0, Math.PI * 2);
       ctx.fill();
 
-      ctx.translate(footX, footY - walkBob);
+      ctx.translate(footX + pose.offsetX, footY + pose.offsetY);
       ctx.scale(rp.facing >= 0 ? 1 : -1, 1);
+      ctx.rotate(pose.rotation);
+      if (pose.skewX !== 0) {
+        ctx.transform(1, 0, -pose.skewX, 1, 0, 0);
+      }
+      ctx.scale(pose.scaleX, pose.scaleY);
       if (spr) {
-        const frameIdx = this.pickSpriteFrame("hero", moving, grounded, this.time + rp.x * 0.01, Math.max(Math.abs(rp.vx), moving ? 180 : 0));
-        this.drawAnimatedSprite(ctx, "hero", spr, frameIdx, -32, -60, 64, 64, null);
+        this.drawActorSprite(ctx, "hero", spr, heroSheet, pose, -32, -60, 64, 64, null);
       }
       if (sheet) {
         const w = WEAPON_CATALOG[rp.equippedWeaponId] ?? WEAPON_CATALOG.wooden_sword!;
@@ -1700,52 +1753,64 @@ export class SunnyRenderer {
 
   private drawLocalPlayer(ctx: CanvasRenderingContext2D, p: LocalPlayerRender): void {
     const spr = this.images.hero;
+    const heroSheet = this.images.hero_sheet;
     const sheet = this.images.items_sheet;
     const footX = p.x + p.w * 0.5;
     const footY = p.y + p.h;
     const flicker = p.invulnTimer > 0 && Math.floor(p.invulnTimer * 18) % 2 === 0;
+    const isStunned = Boolean(p.statuses?.stun && p.statuses.stun.remaining > 0);
+    const animState = resolveActorAnimState({
+      grounded: p.grounded,
+      onLadder: p.onLadder,
+      speedPx: Math.abs(p.vx),
+      vy: p.vy,
+      attacking: p.attackAnimTimer > 0,
+      stunned: isStunned
+    });
+    const pose = evaluateActorPose(
+      {
+        spriteKey: "hero",
+        state: animState,
+        time: p.animTimer,
+        speedPx: Math.abs(p.vx),
+        vy: p.vy,
+        grounded: p.grounded,
+        facing: p.facing
+      },
+      Boolean(heroSheet)
+    );
 
     ctx.save();
     if (flicker) ctx.globalAlpha = 0.45;
     if (p.grounded) {
       ctx.fillStyle = "rgba(45, 32, 18, 0.28)";
       ctx.beginPath();
-      ctx.ellipse(footX, footY + 1, 16, 4.5, 0, 0, Math.PI * 2);
+      ctx.ellipse(footX, footY + 1, 16 * pose.shadowScale, 4.5 * pose.shadowScale, 0, 0, Math.PI * 2);
       ctx.fill();
     }
 
-    const moving = Math.abs(p.vx) > 15 && p.grounded;
-    const walkBob = moving
-      ? Math.abs(Math.sin(p.animTimer * 13)) * 3.2
-      : p.onLadder
-        ? Math.sin(p.animTimer * 10) * 2
-        : Math.sin(p.animTimer * 3.2) * 1.2;
-    const tilt = p.onLadder
-      ? Math.sin(p.animTimer * 10) * 0.08
-      : !p.grounded
-        ? Math.max(-0.14, Math.min(0.14, p.vy * 0.00022)) * p.facing
-        : moving
-          ? Math.sin(p.animTimer * 13) * 0.045
-          : 0;
-
-    ctx.translate(footX, footY - walkBob);
-    ctx.rotate(tilt);
-    ctx.scale(p.facing * p.squashX, p.squashY);
+    ctx.translate(footX + pose.offsetX, footY + pose.offsetY);
+    ctx.scale(p.facing, 1);
+    ctx.rotate(pose.rotation);
+    if (pose.skewX !== 0) {
+      ctx.transform(1, 0, -pose.skewX, 1, 0, 0);
+    }
+    ctx.scale(p.squashX * pose.scaleX, p.squashY * pose.scaleY);
 
     if (spr) {
-      const frameIdx = this.pickSpriteFrame("hero", moving || p.onLadder, p.grounded || p.onLadder, p.animTimer, Math.abs(p.vx));
-      this.drawAnimatedSprite(ctx, "hero", spr, frameIdx, -33, -62, 66, 66, null);
+      this.drawActorSprite(ctx, "hero", spr, heroSheet, pose, -33, -62, 66, 66, null);
     }
     if (sheet) {
       const w = WEAPON_CATALOG[p.equippedWeaponId] ?? WEAPON_CATALOG.wooden_sword!;
+      const handBob = animState === "walk" ? Math.sin(p.animTimer * 12) * 1.6 : 0;
       ctx.save();
-      ctx.translate(11, -22);
+      ctx.translate(11, -22 + handBob);
       if (p.attackAnimTimer > 0) {
         const prog = 1 - p.attackAnimTimer / Math.max(0.01, p.attackAnimDuration);
         ctx.rotate(-1.35 + prog * 2.45);
         ctx.scale(1.18, 1.18);
       } else {
-        ctx.rotate(-0.22 + Math.sin(p.animTimer * 4) * 0.06);
+        ctx.rotate(-0.22 + (animState === "walk" ? Math.sin(p.animTimer * 12) * 0.14 : Math.sin(p.animTimer * 4) * 0.06));
       }
       ctx.drawImage(sheet, w.iconIndex * 96, 0, 96, 96, -6, -28, 36, 36);
       ctx.restore();
@@ -2304,140 +2369,58 @@ export class SunnyRenderer {
   }
 
   /**
-   * Picks the sprite-sheet frame index:
-   * -1 = neutral idle pose (original sprite)
-   * 0..3 = 4-frame leg-stride walk cycle sequence
-   * 4 = airborne jump stride pose
+   * Draws an actor using either its genuine drawn multi-frame sprite sheet
+   * (zero slicing!) or its intact single-frame sprite with optional continuous
+   * serpentine wave deformation (zero cut lines).
    */
-  private pickSpriteFrame(
-    spriteKey: string,
-    moving: boolean,
-    grounded: boolean,
-    animTimer: number,
-    speedPx: number
-  ): number {
-    if (!LEGGED_SPRITE_CONFIG[spriteKey]) return -1;
-    if (!grounded) return WALK_CYCLE_FRAMES;
-    if (!moving) return -1;
-    const rate = Math.max(6.5, Math.min(14, 5.5 + speedPx * 0.032));
-    return Math.floor(animTimer * rate) % WALK_CYCLE_FRAMES;
-  }
-
-  /**
-   * Builds and caches a 5-frame (640x128) walk & jump leg-stride sprite sheet
-   * for any legged character or monster using its base 128x128 SD sprite.
-   */
-  private getWalkSpriteSheet(spriteKey: string, img: HTMLImageElement): HTMLCanvasElement | null {
-    const spec = LEGGED_SPRITE_CONFIG[spriteKey];
-    if (!spec) return null;
-    const cached = this.walkSheets.get(spriteKey);
-    if (cached) return cached;
-
-    const frameSize = 128;
-    const totalFrames = WALK_CYCLE_FRAMES + 1;
-    const canvas = document.createElement("canvas");
-    canvas.width = frameSize * totalFrames;
-    canvas.height = frameSize;
-    const c = canvas.getContext("2d")!;
-
-    const { splitY, midX, strideX, liftY, rot, gait } = spec;
-    const legH = frameSize - splitY;
-    const bodyOverlap = 3;
-
-    // 4-frame walk sequence + 1 airborne jump stride frame
-    const poses: Array<{
-      leftDx: number;
-      leftDy: number;
-      leftRot: number;
-      rightDx: number;
-      rightDy: number;
-      rightRot: number;
-      midDx?: number;
-      midDy?: number;
-      bodyDy: number;
-    }> = [
-      // Frame 0: Left leg swings forward & up, right leg pushes back
-      { leftDx: strideX, leftDy: -liftY, leftRot: -rot, rightDx: -strideX, rightDy: 1, rightRot: rot, midDx: -2, midDy: -2, bodyDy: -1.5 },
-      // Frame 1: Passing step A (right leg tucked mid-swing, body rises)
-      { leftDx: 1, leftDy: 0, leftRot: 0.04, rightDx: 1.5, rightDy: -liftY * 0.72, rightRot: -rot * 0.45, midDx: 3, midDy: -liftY * 0.6, bodyDy: -3.5 },
-      // Frame 2: Right leg swings forward & up, left leg pushes back
-      { leftDx: -strideX, leftDy: 1, leftRot: rot, rightDx: strideX, rightDy: -liftY, rightRot: -rot, midDx: 2, midDy: -2, bodyDy: -1.5 },
-      // Frame 3: Passing step B (left leg tucked mid-swing, body rises)
-      { leftDx: -1.5, leftDy: -liftY * 0.72, leftRot: rot * 0.45, rightDx: -1, rightDy: 0, rightRot: -0.04, midDx: -3, midDy: -liftY * 0.6, bodyDy: -3.5 },
-      // Frame 4: Jump / mid-air stride
-      { leftDx: -strideX * 0.85, leftDy: -liftY * 0.45, leftRot: rot * 1.15, rightDx: strideX * 0.75, rightDy: -liftY * 1.05, rightRot: -rot * 1.15, midDx: 0, midDy: -liftY * 0.7, bodyDy: -2 }
-    ];
-
-    const drawSlice = (
-      ox: number,
-      sx: number,
-      sw: number,
-      dx: number,
-      dy: number,
-      angle: number
-    ) => {
-      if (sw <= 0) return;
-      const pivotX = sx + sw * 0.5;
-      const pivotY = splitY;
-      c.save();
-      c.translate(ox + pivotX + dx, pivotY + dy);
-      c.rotate(angle);
-      c.drawImage(img, sx, splitY, sw, legH, -sw * 0.5, 0, sw, legH);
-      c.restore();
-    };
-
-    poses.forEach((pose, idx) => {
-      const ox = idx * frameSize;
-      // 1. Draw animated legs first
-      if (gait === "spider") {
-        // 3 alternating scuttling leg clusters (rear, mid, front)
-        drawSlice(ox, 0, 44, pose.leftDx, pose.leftDy, pose.leftRot);
-        drawSlice(ox, 44, 38, pose.midDx ?? 0, pose.midDy ?? 0, -pose.leftRot * 0.6);
-        drawSlice(ox, 82, frameSize - 82, pose.rightDx, pose.rightDy, pose.rightRot);
-      } else {
-        drawSlice(ox, 0, midX, pose.leftDx, pose.leftDy, pose.leftRot);
-        drawSlice(ox, midX, frameSize - midX, pose.rightDx, pose.rightDy, pose.rightRot);
-      }
-      // 2. Draw crisp upper torso on top with 3px seamless overlap so joints never tear
-      c.drawImage(
-        img,
-        0,
-        0,
-        frameSize,
-        Math.min(frameSize, splitY + bodyOverlap),
-        ox,
-        Math.round(pose.bodyDy),
-        frameSize,
-        Math.min(frameSize, splitY + bodyOverlap)
-      );
-    });
-
-    this.walkSheets.set(spriteKey, canvas);
-    return canvas;
-  }
-
-  private drawAnimatedSprite(
+  private drawActorSprite(
     ctx: CanvasRenderingContext2D,
     spriteKey: string,
     baseImg: HTMLImageElement,
-    frameIdx: number,
+    sheetImg: HTMLImageElement | undefined,
+    pose: ActorRenderPose,
     dx: number,
     dy: number,
     dw: number,
     dh: number,
     tintColor: string | null
   ): void {
-    const sheet = frameIdx >= 0 ? this.getWalkSpriteSheet(spriteKey, baseImg) : null;
-    const src: HTMLImageElement | HTMLCanvasElement = sheet ?? baseImg;
-    const sx = sheet ? frameIdx * 128 : 0;
-    const sw = sheet ? 128 : baseImg.width || 128;
-    const sh = sheet ? 128 : baseImg.height || 128;
+    const spec = getCharacterAnimationSpec(spriteKey);
+    const useSheet = Boolean(sheetImg && spec.sheet && pose.frameIndex >= 0);
+    const src: HTMLImageElement = useSheet ? sheetImg! : baseImg;
+    const fw = useSheet ? spec.sheet!.frameWidth : baseImg.width || 128;
+    const fh = useSheet ? spec.sheet!.frameHeight : baseImg.height || 128;
+    const sx = useSheet ? pose.frameIndex * fw : 0;
 
     if (tintColor) {
-      this.drawTintedSprite(ctx, src, sx, 0, sw, sh, dx, dy, dw, dh, tintColor);
-    } else {
-      ctx.drawImage(src, sx, 0, sw, sh, dx, dy, dw, dh);
+      this.drawTintedSprite(ctx, src, sx, 0, fw, fh, dx, dy, dw, dh, tintColor);
+      return;
     }
+
+    if (pose.wave && !useSheet) {
+      // Smooth continuous horizontal wave (e.g. serpentine slither) with 1px overlap so rows never tear
+      const strips = 16;
+      const srcStripH = fh / strips;
+      const dstStripH = dh / strips;
+      for (let i = 0; i < strips; i++) {
+        const t = i / strips;
+        const shift = Math.sin(pose.wave.phase + t * Math.PI * 2.2) * pose.wave.amplitudePx * (1 - t * 0.65);
+        ctx.drawImage(
+          src,
+          sx,
+          i * srcStripH,
+          fw,
+          srcStripH + 1,
+          dx + shift,
+          dy + i * dstStripH,
+          dw,
+          dstStripH + 0.8
+        );
+      }
+      return;
+    }
+
+    ctx.drawImage(src, sx, 0, fw, fh, dx, dy, dw, dh);
   }
 
   private drawTintedSprite(

@@ -28,35 +28,6 @@ export function isActiveMobAi(ai: MobAiKind): boolean {
   return ai !== "patrol";
 }
 
-export type LeggedSpriteSpec = {
-  splitY: number;
-  midX: number;
-  strideX: number;
-  liftY: number;
-  rot: number;
-  gait: "biped" | "quad" | "spider";
-};
-
-/**
- * Anatomy metadata (in 128x128 sprite pixel space) for every legged character
- * and monster so SunnyRenderer generates a crisp 4-frame walk-cycle + jump
- * leg-stride sprite sheet sequence automatically.
- */
-export const LEGGED_SPRITE_CONFIG: Record<string, LeggedSpriteSpec> = {
-  hero: { splitY: 96, midX: 64, strideX: 7.5, liftY: 6.5, rot: 0.24, gait: "biped" },
-  red_mushroom: { splitY: 105, midX: 64, strideX: 5.5, liftY: 5, rot: 0.18, gait: "biped" },
-  yellow_hamster: { splitY: 106, midX: 68, strideX: 6, liftY: 5, rot: 0.18, gait: "biped" },
-  blue_rabbit: { splitY: 104, midX: 64, strideX: 6.5, liftY: 6, rot: 0.2, gait: "biped" },
-  emerald_frog: { splitY: 95, midX: 66, strideX: 6, liftY: 5, rot: 0.16, gait: "quad" },
-  orange_fox: { splitY: 94, midX: 66, strideX: 7.5, liftY: 6.5, rot: 0.22, gait: "quad" },
-  crimson_boar: { splitY: 92, midX: 58, strideX: 7.5, liftY: 6, rot: 0.22, gait: "quad" },
-  cobalt_golem: { splitY: 95, midX: 65, strideX: 7, liftY: 6, rot: 0.18, gait: "biped" },
-  violet_spider: { splitY: 86, midX: 62, strideX: 6, liftY: 5.5, rot: 0.2, gait: "spider" },
-  scarlet_drake: { splitY: 98, midX: 72, strideX: 6.5, liftY: 6, rot: 0.2, gait: "biped" }
-};
-
-export const WALK_CYCLE_FRAMES = 4;
-
 export const VIEWPORT = {
   width: 960,
   height: 576,
