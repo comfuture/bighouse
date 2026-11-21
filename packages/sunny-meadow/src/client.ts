@@ -34,6 +34,7 @@ import {
   SHOP_OFFERS_BY_ID
 } from "./economy";
 import { gameMetadata } from "./client-metadata";
+import { createMenuModeSync } from "./menu-mode-sync";
 import { createWeaponSwitchSequence } from "./weapon-switch-sequence";
 import { compileStageForRuntime, type CompiledStage, type RuntimeLadder } from "./map-schema";
 import {
@@ -537,20 +538,44 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
   let selectedUpgradeWeaponId = "wooden_sword";
   let coinHover = false;
 
-  function syncMenuMode(): void {
-    const nextInMenu = !downed() && (inventoryDialog.open || shopDialog.open);
-    if (nextInMenu === localPlayer.inMenu) return;
-    localPlayer.inMenu = nextInMenu;
-    if (nextInMenu) {
-      localPlayer.vx = 0;
-      localPlayer.vy = 0;
-      keysDown.clear();
-      virtualDown.clear();
-      resetIdleRegen();
-    } else {
-      localPlayer.invulnTimer = Math.max(localPlayer.invulnTimer, 0.85);
+  const menuModeSync = createMenuModeSync();
+
+  const desiredMenuMode = (): boolean => !downed() && (inventoryDialog.open || shopDialog.open);
+
+  function syncMenuMode(forceSend = false): void {
+    const nextInMenu = desiredMenuMode();
+    const changed = nextInMenu !== localPlayer.inMenu;
+    if (!changed && !forceSend) return;
+    if (changed) {
+      localPlayer.inMenu = nextInMenu;
+      if (nextInMenu) {
+        localPlayer.vx = 0;
+        localPlayer.vy = 0;
+        keysDown.clear();
+        virtualDown.clear();
+        resetIdleRegen();
+      } else {
+        localPlayer.invulnTimer = Math.max(localPlayer.invulnTimer, 0.85);
+      }
     }
-    actions.sendAction({ type: "setMenuMode", payload: { inMenu: nextInMenu } });
+    if (ctx.connected !== false) {
+      menuModeSync.markSent(Date.now());
+      actions.sendAction({ type: "setMenuMode", payload: { inMenu: nextInMenu } });
+    }
+  }
+
+  function reconcileMenuModeWithServer(force = false, minIntervalMs = 250): void {
+    if (
+      menuModeSync.shouldResync({
+        connected: ctx.connected !== false,
+        desired: desiredMenuMode(),
+        now: Date.now(),
+        force,
+        minIntervalMs
+      })
+    ) {
+      syncMenuMode(true);
+    }
   }
 
   function setFeedback(el: HTMLElement, text: string, tone: "neutral" | "success" | "error" = "neutral"): void {
@@ -1066,6 +1091,8 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
     } else {
       leaveDeath();
     }
+    menuModeSync.observeServer(Boolean(priv.inMenu));
+    reconcileMenuModeWithServer(false);
 
     const stageChanged = targetStageId !== currentStageId;
     if (stageChanged) {
@@ -1241,6 +1268,11 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
       // clear optimistic locks so the fresh server snapshot reconciles immediately.
       if (p.action === "attackMob") optimisticMobLocks.clear();
       if (p.action === "collectItem") optimisticItemLocks.clear();
+      if (p.reason === "in_menu") {
+        menuModeSync.observeServer(true);
+        reconcileMenuModeWithServer(true);
+        return;
+      }
       if (p.action === "shopBuy" || p.action === "shopSell") {
         const msgMap: Record<string, string> = {
           insufficient_coins: "코인이 부족합니다.",
@@ -1262,7 +1294,9 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
 
     if (ev.type === "sunny.playerMenuMode") {
       const pid = String(p.playerId ?? "");
-      if (pid && pid !== ctx.playerId) {
+      if (pid === ctx.playerId) {
+        menuModeSync.observeServer(Boolean(p.inMenu));
+      } else if (pid) {
         const rp = remotePlayers.get(pid);
         if (rp) rp.inMenu = Boolean(p.inMenu);
       }
@@ -3581,6 +3615,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
   }
 
   function sendPeriodicSync(dt: number): void {
+    reconcileMenuModeWithServer(false, 1000);
     poseSendTimer += dt;
     if (poseSendTimer >= 0.085 && actions.sendSignal && ctx.connected !== false && !downed() && !localPlayer.inMenu) {
       poseSendTimer = 0;
@@ -3726,8 +3761,13 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
 
   return {
     update(nextContext: GameClientSnapshot) {
+      const wasConnected = ctx.connected !== false;
       ctx = { ...ctx, ...nextContext };
+      const nowConnected = ctx.connected !== false;
       applySnapshot(nextContext);
+      if (!wasConnected && nowConnected) {
+        reconcileMenuModeWithServer(true);
+      }
     },
     destroy() {
       destroyed = true;
