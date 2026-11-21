@@ -24,6 +24,7 @@ import {
   findOverlappingLadder,
   findOverlappingPortal,
   resolvePlatformLanding,
+  stepOnLadder,
   updateMovingPlatforms
 } from "./physics";
 import {
@@ -324,6 +325,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
   let attackCooldown = 0;
   let hurtStunTimer = 0;
   let ladderStepTimer = 0;
+  let ladderGrabCooldown = 0;
   let lastSafeX = 160;
   let lastSafeY = 660;
   let poseSendTimer = 0;
@@ -1554,6 +1556,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
     if (p.attackAnimTimer > 0) p.attackAnimTimer = Math.max(0, p.attackAnimTimer - dt);
     if (dropThroughTimer > 0) dropThroughTimer = Math.max(0, dropThroughTimer - dt);
     if (portalCooldown > 0) portalCooldown = Math.max(0, portalCooldown - dt);
+    if (ladderGrabCooldown > 0) ladderGrabCooldown = Math.max(0, ladderGrabCooldown - dt);
 
     // Tick active player status effects (slow, poison, burn, stun, shock)
     let playerStatusSpeedMult = p.slowTimer > 0 ? 0.6 : 1.0;
@@ -1686,10 +1689,10 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
       }
     }
 
-    // Ladder grab
+    // Ladder grab (skip while jump/dismount cooldown active or already standing cleanly on top platform)
     const overlapLad = findOverlappingLadder(p, compiledStage.ladders, 10);
-    if (!p.onLadder && overlapLad && hurtStunTimer <= 0) {
-      const wantsUp = isDown("up") && !p.nearbyPortal;
+    if (!p.onLadder && overlapLad && hurtStunTimer <= 0 && !playerStunned && ladderGrabCooldown <= 0) {
+      const wantsUp = isDown("up") && !p.nearbyPortal && p.y + p.h > overlapLad.y + 4;
       const wantsDown = isDown("down") && p.y + p.h <= overlapLad.y + overlapLad.h - 6;
       if (wantsUp || wantsDown) {
         p.onLadder = true;
@@ -1699,47 +1702,67 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
         p.vx = 0;
         p.vy = 0;
         p.x = overlapLad.centerX - p.w * 0.5;
+        // Nudge slightly down onto top rung when starting a downward climb from the top platform
+        if (wantsDown && p.y + p.h <= overlapLad.y + 2) {
+          p.y = overlapLad.y - p.h + 4;
+        }
       }
     }
 
     if (p.onLadder && currentLadder) {
       const l = currentLadder;
-      const moveY = (isDown("down") ? 1 : 0) - (isDown("up") ? 1 : 0);
-      p.vy = moveY * PLAYER_CONFIG.climbSpeed;
-      p.vx = 0;
+      const moveY = playerStunned ? 0 : (isDown("down") ? 1 : 0) - (isDown("up") ? 1 : 0);
+      const moveX = playerStunned ? 0 : (isDown("right") ? 1 : 0) - (isDown("left") ? 1 : 0);
       p.x += (l.centerX - p.w * 0.5 - p.x) * Math.min(1, dt * 18);
-      p.y += p.vy * dt;
 
-      if (moveY !== 0) {
-        ladderStepTimer += dt;
-        if (ladderStepTimer >= 0.24) {
-          ladderStepTimer = 0;
-          audio.playSfx("sfx_ladder", 0.06);
+      const res = stepOnLadder(l, compiledStage.platforms, {
+        y: p.y,
+        h: p.h,
+        moveY,
+        moveX,
+        jumpPressed: !playerStunned && justPressed("jump"),
+        climbSpeed: PLAYER_CONFIG.climbSpeed,
+        jumpVelocity: PLAYER_CONFIG.jumpVelocity,
+        dt
+      });
+
+      p.y = res.y;
+      p.vy = res.vy;
+
+      if (res.state === "climbing") {
+        p.vx = 0;
+        if (moveY !== 0 && !res.atTop) {
+          ladderStepTimer += dt;
+          if (ladderStepTimer >= 0.24) {
+            ladderStepTimer = 0;
+            audio.playSfx("sfx_ladder", 0.06);
+          }
         }
-      }
-      if (justPressed("jump")) {
+      } else if (res.state === "jumped") {
         p.onLadder = false;
         currentLadder = null;
-        if (isDown("left")) {
-          p.vx = -PLAYER_CONFIG.moveSpeed * 0.85;
-          p.facing = -1;
-        } else if (isDown("right")) {
-          p.vx = PLAYER_CONFIG.moveSpeed * 0.85;
-          p.facing = 1;
+        p.grounded = false;
+        standingPlatform = null;
+        ladderGrabCooldown = 0.22;
+        if (moveX !== 0) {
+          p.vx = moveX * PLAYER_CONFIG.moveSpeed * 0.88;
+          p.facing = moveX;
         }
-        p.vy = PLAYER_CONFIG.jumpVelocity * 0.92;
+        p.squashX = 0.82;
+        p.squashY = 1.22;
         audio.playSfx("sfx_jump", 0.05);
-      } else if (p.y + p.h <= l.y + 4 && moveY < 0) {
-        p.y = l.y - p.h;
-        p.vy = 0;
+      } else if (res.state === "dismount_top") {
         p.onLadder = false;
         currentLadder = null;
         p.grounded = true;
-      } else if (p.y + p.h >= l.y + l.h && moveY > 0) {
-        p.y = l.y + l.h - p.h;
-        p.vy = 0;
+        standingPlatform = res.platform;
+        ladderGrabCooldown = 0.16;
+        p.facing = moveX !== 0 ? moveX : p.facing;
+        p.vx = moveX * PLAYER_CONFIG.moveSpeed * 0.6;
+      } else if (res.state === "dismount_bottom") {
         p.onLadder = false;
         currentLadder = null;
+        ladderGrabCooldown = 0.12;
       }
       handleLocalAttack(now);
       return;

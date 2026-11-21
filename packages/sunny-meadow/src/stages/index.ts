@@ -13,6 +13,7 @@
  *   bidirectional warp portals, packed with bonus monsters and rewards.
  */
 
+import { MOB_CATALOG } from "../catalogs";
 import { createEmptyStage, upsertEntity } from "../map-schema";
 import type {
   DecorationEntity,
@@ -139,7 +140,7 @@ const BLUEPRINTS: StageBlueprint[] = [
       "portal_hub",
       "ladder_canopy",
       "bouncy_valley",
-      "conveyor_gauntlet",
+      "hunting_arena",
       "boss_arena",
       "summit_exit"
     ]
@@ -203,11 +204,11 @@ const BLUEPRINTS: StageBlueprint[] = [
     zones: [
       "spawn",
       "cliff_tower",
-      "conveyor_gauntlet",
+      "water_brook",
       "bouncy_valley",
       "hunting_arena",
       "portal_hub",
-      "cliff_tower",
+      "ladder_canopy",
       "conveyor_gauntlet",
       "hunting_arena",
       "bouncy_valley",
@@ -601,6 +602,9 @@ function buildStageFromBlueprint(bp: StageBlueprint): NormalizedStage {
   const m2 = bp.mobs.secondary;
   const m3 = bp.mobs.elite ?? bp.mobs.secondary;
   const mBoss = bp.mobs.boss ?? m3;
+  // On early/mid stages, avoid placing flying mobs (e.g. sky_owl) right over moving platforms
+  const mGrounded = n <= 5 && MOB_CATALOG[m2]?.flying ? m1 : m2;
+  const mGroundedElite = n <= 5 && MOB_CATALOG[m3]?.flying ? m1 : m3;
   let weaponPlaced = false;
 
   // Build each 20-tile zone along the main course (screens 0 .. screenCount - 2)
@@ -723,19 +727,29 @@ function buildStageFromBlueprint(bp: StageBlueprint): NormalizedStage {
           f === climbFloors ? "normal" : bp.primarySurface === "bouncy" ? "bouncy" : bp.primarySurface === "ice" ? "ice" : "normal";
         addPlat(`${z}_f${f}`, px, fy, pw, 1, true, surf);
         // Ladder strictly inside the overlap of floor f-1 and floor f
-        const ladX = f === 1 ? x0 + 4 : leftSide ? x0 + 9 : x0 + 11;
+        const ladX = f === 1 ? x0 + 4 : leftSide ? x0 + 9 : x0 + 10;
         addLadder(`${z}_lad${f}`, ladX, fy, 4);
-        addMob(uid(`${z}_m`), f === climbFloors ? m3 : f % 2 === 0 ? m2 : m1, px + 5, fy, px + 0.5, px + pw - 0.5);
+        addMob(
+          uid(`${z}_m`),
+          f === climbFloors ? mGroundedElite : f % 2 === 0 ? mGrounded : m1,
+          px + 5,
+          fy,
+          px + 0.5,
+          px + pw - 0.5
+        );
         addItem(uid(`${z}_i`), f === climbFloors ? "sweet_potion" : "star_coin", px + 3, fy);
       }
 
-      // Express elevator on the right side descending from top to ground
+      // Express elevator on the right side descending from top to ground,
+      // plus a stationary normal anchor platform at its midpoint as a safe combat perch!
       const topY = groundY - climbFloors * 4;
+      const elevMidY = Math.round((groundY - 1 + topY) / 2);
       addMoving(`${z}_elev`, 3, [
         { x: x0 + 14, y: groundY - 1 },
         { x: x0 + 14, y: topY }
       ]);
-      addMob(uid(`${z}_m`), m2, x0 + 3, groundY, x0 + 0.5, x0 + 7);
+      addPlat(`${z}_elev_anchor`, x0 + 17, elevMidY, 3, 1, true, "normal");
+      addMob(uid(`${z}_m`), mGrounded, x0 + 3, groundY, x0 + 0.5, x0 + 7);
       addItem(uid(`${z}_i`), "star_coin", x0 + 15, topY);
       return;
     }
@@ -764,22 +778,24 @@ function buildStageFromBlueprint(bp: StageBlueprint): NormalizedStage {
     }
 
     if (zone === "conveyor_gauntlet") {
-      // Alternating conveyor_right & conveyor_left ledges over hazards + moving bridge
+      // Alternating conveyor ledges + stationary central normal combat anchor + moving bridge
       const hz = bp.primaryHazard === "water" ? "spikes" : bp.primaryHazard;
       addPlat(`${z}_gl`, x0, groundY, 3, 3, false);
       addHazard(`${z}_hz`, hz, x0 + 3, groundY + 1, 14, 2);
-      addPlat(`${z}_c1`, x0 + 3, groundY - 1, 5, 1, true, "conveyor_right");
-      addPlat(`${z}_c2`, x0 + 10, groundY - 2, 5, 1, true, "conveyor_left");
+      addPlat(`${z}_c1`, x0 + 3, groundY - 1, 4, 1, true, "conveyor_right");
+      // Stationary normal combat foothold right in the middle of the gauntlet
+      addPlat(`${z}_anchor`, x0 + 7, groundY - 2, 4, 1, true, "normal");
+      addPlat(`${z}_c2`, x0 + 11, groundY - 2, 3, 1, true, "conveyor_left");
       addPlat(`${z}_c3`, x0 + 5, groundY - 5, 8, 1, true, "conveyor_right");
       addMoving(`${z}_mp`, 3, [
         { x: x0 + 14, y: groundY - 3 },
         { x: x0 + 14, y: groundY - 1 }
       ]);
       addPlat(`${z}_gr`, x0 + 17, groundY, 3, 3, false);
-      addLadder(`${z}_lad`, x0 + 11, groundY - 5, 3);
+      addLadder(`${z}_lad`, x0 + 9, groundY - 5, 3);
 
-      addMob(uid(`${z}_m`), m2, x0 + 12, groundY - 2, x0 + 10.3, x0 + 14.6);
-      addMob(uid(`${z}_m`), m3, x0 + 9, groundY - 5, x0 + 5.4, x0 + 12.6);
+      addMob(uid(`${z}_m`), mGrounded, x0 + 12, groundY - 2, x0 + 7.4, x0 + 13.6);
+      addMob(uid(`${z}_m`), mGroundedElite, x0 + 9, groundY - 5, x0 + 5.4, x0 + 12.6);
       addMob(uid(`${z}_m`), m1, x0 + 18, groundY, x0 + 17.2, x0 + 19.6);
 
       addItem(uid(`${z}_i`), "star_coin", x0 + 5, groundY - 1);
@@ -812,22 +828,24 @@ function buildStageFromBlueprint(bp: StageBlueprint): NormalizedStage {
     }
 
     if (zone === "lava_canyon") {
-      // Blazing lava river across the canyon floor crossed via rock pillars & moving bridges
+      // Blazing lava river across the canyon floor crossed via rock pillars, moving bridge,
+      // and a stationary central normal combat anchor platform right over the midpoint!
       addPlat(`${z}_gl`, x0, groundY, 3, 3, false);
       addHazard(`${z}_hz`, "lava", x0 + 3, groundY + 1, 14, 2);
       addPlat(`${z}_isl1`, x0 + 4, groundY - 1, 4, 1, true);
       addMoving(`${z}_mp1`, 3, [
-        { x: x0 + 8, y: groundY - 2 },
-        { x: x0 + 11, y: groundY - 2 }
+        { x: x0 + 7, y: groundY - 1 },
+        { x: x0 + 11, y: groundY - 1 }
       ]);
+      addPlat(`${z}_anchor`, x0 + 9, groundY - 3, 3, 1, true, "normal");
       addPlat(`${z}_isl2`, x0 + 13, groundY - 1, 3, 1, true, "conveyor_right");
       addPlat(`${z}_hi`, x0 + 5, groundY - 5, 10, 1, true);
       addLadder(`${z}_lad`, x0 + 6, groundY - 5, 4);
       addPlat(`${z}_gr`, x0 + 17, groundY, 3, 3, false);
 
-      addMob(uid(`${z}_m`), m2, x0 + 6, groundY - 1, x0 + 4.3, x0 + 7.7);
-      addMob(uid(`${z}_m`), m3, x0 + 10, groundY - 5, x0 + 5.5, x0 + 14.5);
-      addMob(uid(`${z}_m`), m2, x0 + 18, groundY, x0 + 17.2, x0 + 19.6);
+      addMob(uid(`${z}_m`), mGrounded, x0 + 6, groundY - 1, x0 + 4.3, x0 + 7.7);
+      addMob(uid(`${z}_m`), mGroundedElite, x0 + 10, groundY - 5, x0 + 5.5, x0 + 14.5);
+      addMob(uid(`${z}_m`), mGrounded, x0 + 18, groundY, x0 + 17.2, x0 + 19.6);
 
       addItem(uid(`${z}_i`), "star_coin", x0 + 10, groundY - 3);
       addItem(uid(`${z}_i`), "star_coin", x0 + 8, groundY - 5);
@@ -888,14 +906,15 @@ function buildStageFromBlueprint(bp: StageBlueprint): NormalizedStage {
 
     if (zone === "boss_arena") {
       // Climax / Boss encounter with hazard edges & tactical high ground
+      // Overlap z_l (x0+2..x0+9) and z_top (x0+6..x0+14) so z_lad (x0+7) connects both cleanly!
       addPlat(`${z}_g`, x0, groundY, 20, 3, false);
-      addPlat(`${z}_l`, x0 + 2, groundY - 2, 5, 1, true);
-      addPlat(`${z}_top`, x0 + 7, groundY - 5, 7, 1, true, bp.primarySurface === "bouncy" ? "bouncy" : "normal");
+      addPlat(`${z}_l`, x0 + 2, groundY - 2, 7, 1, true);
+      addPlat(`${z}_top`, x0 + 6, groundY - 5, 8, 1, true, bp.primarySurface === "bouncy" ? "bouncy" : "normal");
       addPlat(`${z}_r`, x0 + 14, groundY - 3, 5, 1, true);
-      addLadder(`${z}_lad`, x0 + 6, groundY - 5, 3);
+      addLadder(`${z}_lad`, x0 + 7, groundY - 5, 3);
 
       addMob("mob_boss", mBoss, x0 + 11, groundY, x0 + 3, x0 + 18);
-      addMob(uid(`${z}_m`), m2, x0 + 10, groundY - 5, x0 + 7.4, x0 + 13.6);
+      addMob(uid(`${z}_m`), m2, x0 + 10, groundY - 5, x0 + 6.4, x0 + 13.6);
       addMob(uid(`${z}_m`), m3, x0 + 16, groundY - 3, x0 + 14.3, x0 + 18.6);
 
       addItem(uid(`${z}_i`), "red_apple", x0 + 4, groundY - 2);
@@ -908,7 +927,7 @@ function buildStageFromBlueprint(bp: StageBlueprint): NormalizedStage {
     if (zone === "summit_exit") {
       // Ends cleanly at x0 + 14 so there is a wide 8-tile impassable void before the isolated chamber!
       addPlat(`${z}_g`, x0, groundY, 14, 3, false);
-      addPlat(`${z}_a`, x0 + 2, groundY - 2, 5, 1, true);
+      addPlat(`${z}_a`, x0 + 2, groundY - 2, 6, 1, true);
       addPlat(`${z}_top`, x0 + 5, groundY - 5, 9, 1, true);
       addLadder(`${z}_lad`, x0 + 6, groundY - 5, 3);
 

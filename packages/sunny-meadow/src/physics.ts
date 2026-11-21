@@ -187,6 +187,91 @@ export function findOverlappingLadder(
   return null;
 }
 
+/**
+ * Finds the platform connected to the top of a ladder so a climbing player can
+ * step onto it cleanly (left/right) without falling off when holding Up.
+ */
+export function findPlatformAtLadderTop(
+  ladder: RuntimeLadder,
+  platforms: RuntimePlatform[]
+): RuntimePlatform | null {
+  for (const p of platforms) {
+    if (Math.abs(p.y - ladder.y) <= 6 && ladder.centerX >= p.x + 2 && ladder.centerX <= p.x + p.w - 2) {
+      return p;
+    }
+  }
+  return null;
+}
+
+export type LadderStepInput = {
+  y: number;
+  h: number;
+  moveY: number;
+  moveX: number;
+  jumpPressed: boolean;
+  climbSpeed: number;
+  jumpVelocity: number;
+  dt: number;
+};
+
+export type LadderStepResult =
+  | { state: "climbing"; y: number; vy: number; atTop: boolean }
+  | { state: "jumped"; y: number; vy: number }
+  | { state: "dismount_top"; y: number; vy: number; platform: RuntimePlatform }
+  | { state: "dismount_bottom"; y: number; vy: number };
+
+/**
+ * Pure ladder movement step:
+ * - Holding Up at the top clamps cleanly on the top rung without falling off.
+ * - Pressing Jump from anywhere on the ladder (including holding Up at the top) jumps cleanly.
+ * - Pressing Left/Right at the top steps off onto the connected top platform.
+ */
+export function stepOnLadder(
+  ladder: RuntimeLadder,
+  platforms: RuntimePlatform[],
+  input: LadderStepInput
+): LadderStepResult {
+  const topY = ladder.y - input.h;
+  const bottomY = ladder.y + ladder.h - input.h;
+  const atTopBefore = input.y <= topY + 3;
+
+  if (input.jumpPressed) {
+    return {
+      state: "jumped",
+      y: Math.max(topY, Math.min(bottomY, input.y)),
+      vy: atTopBefore ? input.jumpVelocity : input.jumpVelocity * 0.92
+    };
+  }
+
+  let nextY = input.y + input.moveY * input.climbSpeed * input.dt;
+
+  // Clamp cleanly at the top rung — never overshoot or drop off when holding Up!
+  if (nextY <= topY) {
+    nextY = topY;
+    if (input.moveX !== 0) {
+      const topPlat = findPlatformAtLadderTop(ladder, platforms);
+      if (topPlat) {
+        return { state: "dismount_top", y: topY, vy: 0, platform: topPlat };
+      }
+    }
+    return { state: "climbing", y: topY, vy: 0, atTop: true };
+  }
+
+  // Allow stepping onto the connected top platform when perched right at the top and pressing Left/Right
+  if (atTopBefore && input.moveY <= 0 && input.moveX !== 0) {
+    const topPlat = findPlatformAtLadderTop(ladder, platforms);
+    if (topPlat) {
+      return { state: "dismount_top", y: topY, vy: 0, platform: topPlat };
+    }
+  }
+
+  if (nextY >= bottomY && input.moveY > 0) {
+    return { state: "dismount_bottom", y: bottomY, vy: 0 };
+  }
+
+  return { state: "climbing", y: nextY, vy: input.moveY * input.climbSpeed, atTop: false };
+}
+
 export function findOverlappingPortal(entity: Rect, portals: RuntimePortal[]): RuntimePortal | null {
   const cx = entity.x + entity.w * 0.5;
   const cy = entity.y + entity.h * 0.55;

@@ -12,7 +12,7 @@ import {
   WEAPON_ORDER
 } from "../src/catalogs";
 import { compileStageForRuntime, validateNormalizedStage } from "../src/map-schema";
-import { updateMovingPlatforms } from "../src/physics";
+import { findPlatformAtLadderTop, stepOnLadder, updateMovingPlatforms } from "../src/physics";
 import {
   applyExperienceGain,
   computeEffectiveXp,
@@ -1035,5 +1035,123 @@ describe("@bighouse/sunny-meadow unique weapon visuals, upgraded traits & status
     expect(dotEv?.payload.knockbackX).toBe(0);
     expect(dotFinish.events.some((e) => e.type === "sunny.mobDefeated" && e.payload.mobId === dotTargetId)).toBe(true);
     expect((dotFinish.state.playerStates.p1 as { xp: number }).xp).toBeGreaterThan(xpBefore);
+  });
+});
+
+describe("@bighouse/sunny-meadow ladder connectivity, ladder-top controls & moving-platform pacing", () => {
+  it("validates that every ladder across all 10 stages connects cleanly to both top and bottom platforms", () => {
+    for (const stage of ALL_STAGES) {
+      const report = validateNormalizedStage(stage);
+      expect(report.errors, `${stage.meta.id} validation errors`).toEqual([]);
+      expect(report.warnings, `${stage.meta.id} validation warnings`).toEqual([]);
+
+      const compiled = compileStageForRuntime(stage);
+      for (const ladder of compiled.ladders) {
+        const topPlat = findPlatformAtLadderTop(ladder, compiled.platforms);
+        expect(topPlat, `${stage.meta.id} ladder ${ladder.id} must have a connected top platform`).not.toBeNull();
+      }
+    }
+
+    // Confirm validator catches a broken / disconnected ladder
+    const broken = structuredClone(getStageById("stage-1"));
+    broken.layers.ladders.byId["s1_broken_lad"] = { id: "s1_broken_lad", x: 1, y: 2, h: 4 };
+    broken.layers.ladders.allIds.push("s1_broken_lad");
+    const brokenReport = validateNormalizedStage(broken);
+    expect(brokenReport.valid).toBe(false);
+    expect(brokenReport.errors.some((e) => e.includes("s1_broken_lad"))).toBe(true);
+  });
+
+  it("holds stably at the top of a ladder when holding Up, dismounts onto top platform on Left/Right, and jumps cleanly", () => {
+    const stage1 = compileStageForRuntime(getStageById("stage-1"));
+    const ladder = stage1.ladders[0]!;
+    const playerH = 42;
+    const topY = ladder.y - playerH;
+
+    // 1. Holding Up past the top rung clamps cleanly and stays on the ladder without falling
+    const holdTop = stepOnLadder(ladder, stage1.platforms, {
+      y: topY + 2,
+      h: playerH,
+      moveY: -1,
+      moveX: 0,
+      jumpPressed: false,
+      climbSpeed: 215,
+      jumpVelocity: -640,
+      dt: 1 / 60
+    });
+    expect(holdTop).toEqual({ state: "climbing", y: topY, vy: 0, atTop: true });
+
+    // 2. Holding Up + pressing Jump at the top jumps off at full jumpVelocity
+    const jumpTop = stepOnLadder(ladder, stage1.platforms, {
+      y: topY,
+      h: playerH,
+      moveY: -1,
+      moveX: 1,
+      jumpPressed: true,
+      climbSpeed: 215,
+      jumpVelocity: -640,
+      dt: 1 / 60
+    });
+    expect(jumpTop).toEqual({ state: "jumped", y: topY, vy: -640 });
+
+    // 3. Pressing Right while perched at the top dismounts cleanly onto the connected top platform
+    const stepOff = stepOnLadder(ladder, stage1.platforms, {
+      y: topY,
+      h: playerH,
+      moveY: -1,
+      moveX: 1,
+      jumpPressed: false,
+      climbSpeed: 215,
+      jumpVelocity: -640,
+      dt: 1 / 60
+    });
+    expect(stepOff.state).toBe("dismount_top");
+    if (stepOff.state === "dismount_top") {
+      expect(stepOff.y).toBe(topY);
+      expect(stepOff.platform.y).toBe(ladder.y);
+    }
+  });
+
+  it("reduces early moving platforms, avoids flying mobs over early moving zones, and provides stationary center anchors", () => {
+    // Stages 1-3 have zero moving platforms; Stage 4 has at most 2
+    for (const sid of ["stage-1", "stage-2", "stage-3"]) {
+      expect(getStageById(sid).layers.movingPlatforms.allIds.length, `${sid} moving platforms`).toBe(0);
+    }
+    expect(getStageById("stage-4").layers.movingPlatforms.allIds.length).toBeLessThanOrEqual(2);
+
+    // Every moving platform across all 10 stages has a nearby stationary normal anchor platform
+    for (const stage of ALL_STAGES) {
+      const mps = stage.layers.movingPlatforms.allIds.map((id) => stage.layers.movingPlatforms.byId[id]!);
+      const normalPlats = stage.layers.platforms.allIds
+        .map((id) => stage.layers.platforms.byId[id]!)
+        .filter((p) => (p.surface ?? "normal") === "normal");
+
+      for (const mp of mps) {
+        const xs = mp.waypoints.map((w) => w.x);
+        const ys = mp.waypoints.map((w) => w.y);
+        const midX = (Math.min(...xs) + Math.max(...xs) + mp.w) * 0.5;
+        const midY = (Math.min(...ys) + Math.max(...ys)) * 0.5;
+        const hasAnchor = normalPlats.some(
+          (p) =>
+            (p.id.includes("anchor") || p.id.includes("isl")) &&
+            Math.abs(p.x + p.w * 0.5 - midX) <= 7 &&
+            Math.abs(p.y - midY) <= 4
+        );
+        expect(hasAnchor, `${stage.meta.id} moving platform ${mp.id} needs a nearby stationary normal anchor`).toBe(
+          true
+        );
+      }
+
+      // On Stages 1-5, no flying mob spawns inside a moving-platform screen
+      if (stage.meta.stageNumber <= 5 && mps.length > 0) {
+        const mpScreens = new Set(mps.map((mp) => Math.floor(mp.waypoints[0]!.x / 20)));
+        for (const mid of stage.layers.mobSpawns.allIds) {
+          const mob = stage.layers.mobSpawns.byId[mid]!;
+          const mobScreen = Math.floor(mob.x / 20);
+          if (mpScreens.has(mobScreen)) {
+            expect(MOB_CATALOG[mob.templateId]?.flying, `${stage.meta.id} ${mob.id} (${mob.templateId})`).toBeFalsy();
+          }
+        }
+      }
+    }
   });
 });
