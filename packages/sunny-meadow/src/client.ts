@@ -5,7 +5,9 @@ import type {
   MountedGameClient
 } from "@bighouse/game-sdk/client";
 import {
+  isActiveMobAi,
   ITEM_CATALOG,
+  MOB_ALERT_TELEGRAPH_SEC,
   MOB_CATALOG,
   PLAYER_CONFIG,
   VIEWPORT,
@@ -35,7 +37,7 @@ import {
   type LocalPlayerRender
 } from "./renderer";
 import { ALL_STAGES, getStageById } from "./stages/index";
-import { computeDeterministicHit } from "./server";
+import { computeDeterministicHit, deathPenaltyOf } from "./server";
 import { registerBighouseUi, type BighouseGameChatElement } from "@bighouse/ui";
 import "./style.css";
 import type {
@@ -58,6 +60,8 @@ type ClientMobEntity = ClientMobRender & {
   aiPhase: string;
   shootTimer: number;
   teleportTimer: number;
+  alerted: boolean;
+  alertResetTimer: number;
   authX: number;
   authY: number;
   authVx: number;
@@ -329,12 +333,11 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
   const downed = (): boolean => dead || localPlayer.hp <= 0;
 
   function enterDeath(lostXp: number, lostCoins: number): void {
-    const loss = (amount: number): string => {
-      const value = Math.max(0, Math.round(amount));
-      return value === 0 ? "잃을 것 없음" : `-${value.toLocaleString()}`;
-    };
-    deathXp.textContent = loss(lostXp);
-    deathCoins.textContent = loss(lostCoins);
+    const xpVal = Math.max(0, Math.round(lostXp));
+    const coinVal = Math.max(0, Math.round(lostCoins));
+    deathXp.textContent =
+      xpVal === 0 ? (localPlayer.level <= 3 ? "초반 보호 (0)" : "잃을 것 없음") : `-${xpVal.toLocaleString()}`;
+    deathCoins.textContent = coinVal === 0 ? "잃을 것 없음" : `-${coinVal.toLocaleString()}`;
     if (dead) return;
     dead = true;
     localPlayer.hp = 0;
@@ -622,6 +625,9 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
         displayHp: tpl.hp,
         inCombat: false,
         spawnProtectUntil: 0,
+        alertTimer: 0,
+        alerted: false,
+        alertResetTimer: 0,
         hitFlashTimer: 0,
         hitStunTimer: 0,
         animTimer: seed * 10,
@@ -742,10 +748,19 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
       }
     }
     if (typeof priv.highestStageNumber === "number") highestStageNumber = priv.highestStageNumber;
-    if (priv.dead === true) enterDeath(localPlayer.xp, localPlayer.coins);
-    else leaveDeath();
-
     const targetStageId = priv.stageId || pub.stageId || "stage-1";
+    if (priv.dead === true) {
+      const pen = deathPenaltyOf({
+        xp: localPlayer.xp,
+        coins: localPlayer.coins,
+        level: localPlayer.level,
+        stageId: targetStageId
+      });
+      enterDeath(pen.lostXp, pen.lostCoins);
+    } else {
+      leaveDeath();
+    }
+
     const stageChanged = targetStageId !== currentStageId;
     if (stageChanged) {
       stageTransitionPending = false;
@@ -1110,6 +1125,9 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
         mob.authFacing = mob.facing;
         mob.lastAuthAt = 0;
         mob.hitStunTimer = 0;
+        mob.alertTimer = 0;
+        mob.alerted = false;
+        mob.alertResetTimer = 0;
         // Measure the protection from the event's own timestamp: `serverTime` is the last
         // snapshot's, which may be minutes old when an event arrives on its own.
         mob.spawnProtectUntil = Date.now() + Math.max(0, rm.spawnProtectUntil - ev.createdAt);
@@ -1183,7 +1201,16 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
     if (ev.type === "sunny.playerDied") {
       const pid = String(p.playerId ?? "");
       if (pid === ctx.playerId) {
-        enterDeath(Number(p.lostXp ?? localPlayer.xp), Number(p.lostCoins ?? localPlayer.coins));
+        const fallback = deathPenaltyOf({
+          xp: localPlayer.xp,
+          coins: localPlayer.coins,
+          level: localPlayer.level,
+          stageId: currentStageId
+        });
+        enterDeath(
+          typeof p.lostXp === "number" ? p.lostXp : fallback.lostXp,
+          typeof p.lostCoins === "number" ? p.lostCoins : fallback.lostCoins
+        );
       } else if (pid) {
         const rp = remotePlayers.get(pid);
         if (rp) rp.dead = true;
@@ -1950,14 +1977,46 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
       const dx = px - mx;
       const dy = py - my;
       const dist = Math.hypot(dx, dy);
+      // Strict vertical aggro check: grounded mobs only detect players on the same floor (~44px),
+      // while flying mobs keep vertical sight so they can dive from above.
+      const vRange = mob.tpl.aggroVerticalRange ?? (mob.tpl.flying ? 220 : 44);
       const seesPlayer =
         auth.hasTarget &&
         !isProtected &&
         Math.abs(dx) <= mob.tpl.aggroRange &&
-        Math.abs(dy) <= (mob.tpl.flying ? 260 : 105);
+        Math.abs(dy) <= vRange;
 
-      if (seesPlayer && !mob.inCombat && dist <= mob.tpl.aggroRange * 0.82) {
+      if (seesPlayer && !mob.inCombat && dist <= mob.tpl.aggroRange * 0.9) {
         mob.inCombat = true;
+      }
+
+      // Active mob telegraph: show red '!' above head + startled hop and wait 0.5s before attacking!
+      const isActive = isActiveMobAi(mob.tpl.ai);
+      if (isActive && !isProtected && mob.hitStunTimer <= 0) {
+        if (seesPlayer && !mob.alerted) {
+          mob.alerted = true;
+          mob.alertTimer = MOB_ALERT_TELEGRAPH_SEC;
+          mob.alertResetTimer = 0;
+          mob.inCombat = true;
+          mob.facing = dx >= 0 ? 1 : -1;
+          mob.vx = 0;
+          mob.squashX = 0.82;
+          mob.squashY = 1.26;
+          if (!mob.tpl.flying && mob.grounded) {
+            mob.vy = -175;
+            mob.grounded = false;
+          }
+        } else if (mob.alerted) {
+          if (seesPlayer) {
+            mob.alertResetTimer = 0;
+          } else if (mob.alertTimer <= 0) {
+            mob.alertResetTimer += dt;
+            if (mob.alertResetTimer >= 1.4) {
+              mob.alerted = false;
+              mob.alertResetTimer = 0;
+            }
+          }
+        }
       }
 
       // Unique movement AI for all 16 monster patterns
@@ -1966,8 +2025,25 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
       } else if (isProtected) {
         // Gentle idle bob while blinking in 2-second spawn protection (never attacks!)
         mob.vx = 0;
+        mob.alertTimer = 0;
+        mob.alerted = false;
         if (mob.tpl.flying) {
           mob.y = mob.homeY + Math.sin(mob.animTimer * 4) * 6;
+        }
+      } else if (mob.alertTimer > 0) {
+        // 0.5s alert windup before launching active attack/chase
+        mob.alertTimer = Math.max(0, mob.alertTimer - dt);
+        mob.vx *= Math.pow(0.04, dt);
+        if (auth.hasTarget && Math.abs(dx) > 8) {
+          mob.facing = dx >= 0 ? 1 : -1;
+        }
+        if (mob.tpl.flying) {
+          mob.vy = (mob.homeY - mob.y) * 3;
+        }
+        // Subtle tense pre-charge crouch right before lunging
+        if (mob.alertTimer < 0.18) {
+          mob.squashX = 1.14;
+          mob.squashY = 0.88;
         }
       } else {
         updateMobAi(mob, dt, dx, dy, seesPlayer, px, py);

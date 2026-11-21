@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { ITEM_CATALOG, MOB_CATALOG, VIEWPORT } from "../src/catalogs";
+import {
+  isActiveMobAi,
+  ITEM_CATALOG,
+  LEGGED_SPRITE_CONFIG,
+  MOB_ALERT_TELEGRAPH_SEC,
+  MOB_CATALOG,
+  VIEWPORT,
+  WALK_CYCLE_FRAMES
+} from "../src/catalogs";
 import { compileStageForRuntime, validateNormalizedStage } from "../src/map-schema";
 import { updateMovingPlatforms } from "../src/physics";
 import {
@@ -14,7 +22,7 @@ import {
   SPAWN_SPREAD_TILES,
   xpRequiredForLevel
 } from "../src/progression";
-import { sunnyMeadowDefinition } from "../src/server";
+import { sunnyMeadowDefinition, deathPenaltyOf } from "../src/server";
 import { ALL_STAGES, getStageById } from "../src/stages/index";
 import type { RoomState } from "@bighouse/game-sdk/server";
 
@@ -517,7 +525,7 @@ describe("@bighouse/sunny-meadow server hardening", () => {
 describe("@bighouse/sunny-meadow death and revival", () => {
   const now = 1_700_000_000_000;
 
-  function downedPlayer(): RoomState {
+  function downedPlayer(overrides: Partial<{ xp: number; coins: number; level: number; stageId: string }> = {}): RoomState {
     const room = { roomId: "room_death", gameId: "sunny-meadow", mode: "default", minPlayers: 1, maxPlayers: 500, config: {}, createdAt: now };
     let state: RoomState = {
       room,
@@ -531,7 +539,9 @@ describe("@bighouse/sunny-meadow death and revival", () => {
     const seat = { playerId: "p1", displayName: "p1", seat: 0, connected: true, ready: true, joinedAt: now };
     state.players.push(seat);
     state = sunnyMeadowDefinition.onPlayerJoin!({ state, now }, seat, null).state;
-    Object.assign(state.playerStates.p1!, { xp: 37, coins: 5, level: 3 });
+    const stageId = overrides.stageId ?? "stage-3";
+    Object.assign(state.playerStates.p1!, { xp: 37, coins: 5, level: 7, stageId, ...overrides });
+    (state.stageState as { playerStageMap: Record<string, string> }).playerStageMap.p1 = stageId;
     return act(state, "playerHurt", { amount: 99_999 }).state;
   }
 
@@ -555,7 +565,8 @@ describe("@bighouse/sunny-meadow death and revival", () => {
       { playerId: "p2", displayName: "p2", seat: 1, connected: true, ready: true, joinedAt: now },
       null
     ).state;
-    Object.assign(fresh.playerStates.p2!, { xp: 11, coins: 2 });
+    Object.assign(fresh.playerStates.p2!, { xp: 11, coins: 2, level: 7, stageId: "stage-3" });
+    (fresh.stageState as { playerStageMap: Record<string, string> }).playerStageMap.p2 = "stage-3";
     const died = sunnyMeadowDefinition.applyAction(
       { state: fresh, now: now + 5 },
       { playerId: "p2", clientActionId: "die", expectedVersion: 0, type: "playerHurt", payload: { amount: 99_999 } }
@@ -581,11 +592,11 @@ describe("@bighouse/sunny-meadow death and revival", () => {
     expect(sunnyMeadowDefinition.handleSignal!({ state, now }, "p1", { type: "playerPose", payload: { x: 50, y: 50 } })).toBeUndefined();
   });
 
-  it("revives at 60% health and takes the experience toward the next level and all coins", () => {
+  it("revives at 60% health and takes the full penalty on mid/high stages", () => {
     const revived = act(downedPlayer(), "revive");
     const p = player(revived.state);
     expect(p.dead).toBeUndefined();
-    expect(p).toMatchObject({ xp: 0, coins: 0, level: 3 });
+    expect(p).toMatchObject({ xp: 0, coins: 0, level: 7 });
     expect(p.hp).toBe(Math.max(20, Math.round(p.maxHp * 0.6)));
     expect(revived.events).toContainEqual(
       expect.objectContaining({ type: "sunny.playerRespawned", payload: expect.objectContaining({ playerId: "p1", lostXp: 37, lostCoins: 5 }) })
@@ -595,6 +606,22 @@ describe("@bighouse/sunny-meadow death and revival", () => {
     expect(again.state).toEqual(revived.state);
   });
 
+  it("protects XP for tutorial levels (Lv. 1-3) and reduces XP loss on early stages", () => {
+    // Lv. 2 tutorial player loses 0 XP and only 20% coins on death
+    const tutDown = downedPlayer({ level: 2, stageId: "stage-1", xp: 80, coins: 10 });
+    const tutRevived = act(tutDown, "revive");
+    expect(player(tutRevived.state)).toMatchObject({ xp: 80, coins: 8, level: 2 });
+
+    // Lv. 4 on Stage 1 loses only 20% XP and 30% coins
+    expect(deathPenaltyOf({ level: 4, stageId: "stage-1", xp: 100, coins: 10 })).toEqual({ lostXp: 20, lostCoins: 3 });
+
+    // Lv. 5 on Stage 2 loses 35% XP and 50% coins
+    expect(deathPenaltyOf({ level: 5, stageId: "stage-2", xp: 100, coins: 10 })).toEqual({ lostXp: 35, lostCoins: 5 });
+
+    // Lv. 6 on Stage 3 takes full penalty
+    expect(deathPenaltyOf({ level: 6, stageId: "stage-3", xp: 100, coins: 10 })).toEqual({ lostXp: 100, lostCoins: 10 });
+  });
+
   it("saves the revived, penalised profile when a player leaves while down", () => {
     const state = downedPlayer();
     // They fell far from the stage start.
@@ -602,15 +629,76 @@ describe("@bighouse/sunny-meadow death and revival", () => {
     const profile = sunnyMeadowDefinition.extractPlayerProfile!({ state, now }, "p1") as {
       xp: number; coins: number; hp: number; level: number; lastX: number; lastY: number;
     };
-    expect(profile).toMatchObject({ xp: 0, coins: 0, level: 3 });
+    expect(profile).toMatchObject({ xp: 0, coins: 0, level: 7 });
     expect(profile.hp).toBeGreaterThan(0);
     // Rejoining must not revive them where they died: the saved position is the stage start.
-    const stage = getStageById("stage-1");
+    const stage = getStageById("stage-3");
     const spawnX = (stage.spawn.x + 0.5) * stage.meta.tileSize;
     expect(Math.abs(profile.lastX - spawnX)).toBeLessThanOrEqual((SPAWN_SPREAD_TILES + 1) * stage.meta.tileSize);
     expect(profile.lastX).not.toBe(3_000);
     // The room state itself is untouched: they are still down until they leave or revive.
     expect(player(state)).toMatchObject({ dead: true, hp: 0 });
+  });
+});
+
+describe("@bighouse/sunny-meadow difficulty curve, alert telegraph & walk animation", () => {
+  it("keeps Stage 1 mobs welcoming with narrow ~2-tile same-floor aggro and generous early XP", () => {
+    const tile = VIEWPORT.tileSize;
+    const mushroom = MOB_CATALOG.red_mushroom!;
+    const hamster = MOB_CATALOG.yellow_hamster!;
+    const rabbit = MOB_CATALOG.blue_rabbit!;
+
+    // Stage 1 mobs notice players only within ~2 tiles horizontally and strictly on the same floor
+    expect(hamster.aggroRange).toBeLessThanOrEqual(tile * 2.2);
+    expect(hamster.aggroVerticalRange).toBeLessThanOrEqual(44);
+    expect(mushroom.aggroVerticalRange).toBeLessThanOrEqual(44);
+    expect(rabbit.aggroVerticalRange).toBeLessThanOrEqual(44);
+
+    // Yellow hamster is toned down so beginners aren't rushed aggressively
+    expect(hamster.dashSpeed).toBeLessThanOrEqual(135);
+    expect(hamster.atk).toBeLessThanOrEqual(10);
+    expect(mushroom.atk).toBeLessThanOrEqual(8);
+
+    // 2-3 Stage 1 mob kills cleanly reach Lv. 2 (100 XP)
+    expect(mushroom.exp + hamster.exp).toBeGreaterThanOrEqual(100);
+  });
+
+  it("configures a 0.5s alert telegraph for active mobs and excludes passive patrol mobs", () => {
+    expect(MOB_ALERT_TELEGRAPH_SEC).toBe(0.5);
+    expect(isActiveMobAi("patrol")).toBe(false);
+    expect(isActiveMobAi("dash")).toBe(true);
+    expect(isActiveMobAi("hopper")).toBe(true);
+    expect(isActiveMobAi("lunge")).toBe(true);
+    expect(isActiveMobAi("swoop")).toBe(true);
+    expect(isActiveMobAi("fire_drake")).toBe(true);
+  });
+
+  it("defines valid 4-frame leg-stride walk animations for hero and all legged mobs", () => {
+    expect(WALK_CYCLE_FRAMES).toBe(4);
+    const expectedLegged = [
+      "hero",
+      "red_mushroom",
+      "yellow_hamster",
+      "blue_rabbit",
+      "emerald_frog",
+      "orange_fox",
+      "crimson_boar",
+      "cobalt_golem",
+      "violet_spider",
+      "scarlet_drake"
+    ];
+    for (const key of expectedLegged) {
+      const spec = LEGGED_SPRITE_CONFIG[key];
+      expect(spec, `legged spec for ${key}`).toBeDefined();
+      expect(spec!.splitY).toBeGreaterThanOrEqual(80);
+      expect(spec!.splitY).toBeLessThan(120);
+      expect(spec!.midX).toBeGreaterThan(32);
+      expect(spec!.midX).toBeLessThan(96);
+    }
+    // Legless / flying sprites stay unsplit
+    expect(LEGGED_SPRITE_CONFIG.purple_snake).toBeUndefined();
+    expect(LEGGED_SPRITE_CONFIG.lime_slime).toBeUndefined();
+    expect(LEGGED_SPRITE_CONFIG.indigo_wisp).toBeUndefined();
   });
 });
 

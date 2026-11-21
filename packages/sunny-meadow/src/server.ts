@@ -542,15 +542,45 @@ function clampToStage(stageId: string, rawX: number, rawY: number): { x: number;
   };
 }
 
-/** Reviving costs the experience earned toward the next level and every coin held. */
-export function deathPenaltyOf(ps: Pick<WorldPlayerState, "xp" | "coins">): DeathPenalty {
-  return { lostXp: Math.max(0, ps.xp), lostCoins: Math.max(0, ps.coins) };
+/**
+ * Reviving penalty scales gently for tutorial levels and early stages:
+ * - Lv. 1~3 (tutorial protection): 0% XP lost, 20% coins lost.
+ * - Stage 1 (Lv. 4+): 20% XP lost, 30% coins lost.
+ * - Lv. 4~5 or Stage 2: 35% XP lost, 50% coins lost.
+ * - Stage 3+ & Lv. 6+: full current-level XP and coins lost.
+ */
+export function deathPenaltyOf(
+  ps: Pick<WorldPlayerState, "xp" | "coins"> & Partial<Pick<WorldPlayerState, "level" | "stageId">>
+): DeathPenalty {
+  const safeXp = Math.max(0, Math.floor(ps.xp));
+  const safeCoins = Math.max(0, Math.floor(ps.coins));
+  const level = typeof ps.level === "number" && ps.level >= 1 ? Math.floor(ps.level) : 6;
+  const stageNum = ps.stageId ? getStageById(ps.stageId).meta.stageNumber : 3;
+
+  let xpRatio = 1.0;
+  let coinRatio = 1.0;
+  if (level <= 3) {
+    xpRatio = 0.0;
+    coinRatio = 0.2;
+  } else if (stageNum === 1) {
+    xpRatio = 0.2;
+    coinRatio = 0.3;
+  } else if (level <= 5 || stageNum === 2) {
+    xpRatio = 0.35;
+    coinRatio = 0.5;
+  }
+
+  return {
+    lostXp: Math.floor(safeXp * xpRatio),
+    lostCoins: Math.floor(safeCoins * coinRatio)
+  };
 }
 
 /** Pays the death penalty and stands the player back up at 60% health. */
 function applyRevival(ps: WorldPlayerState): void {
-  ps.xp = 0;
-  ps.coins = 0;
+  const penalty = deathPenaltyOf(ps);
+  ps.xp = Math.max(0, ps.xp - penalty.lostXp);
+  ps.coins = Math.max(0, ps.coins - penalty.lostCoins);
   ps.hp = Math.max(20, Math.round(ps.maxHp * 0.6));
   ps.vx = 0;
   ps.vy = 0;

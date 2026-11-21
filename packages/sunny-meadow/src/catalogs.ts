@@ -1,11 +1,48 @@
 import type {
   ItemTemplate,
+  MobAiKind,
   MobTemplate,
   StageTheme,
   WeaponTemplate
 } from "./types";
 
 export const SCHEMA_VERSION = "2.0.0";
+
+/** Delay (seconds) an active mob telegraphs a red '!' before launching its attack. */
+export const MOB_ALERT_TELEGRAPH_SEC = 0.5;
+
+export function isActiveMobAi(ai: MobAiKind): boolean {
+  return ai !== "patrol";
+}
+
+export type LeggedSpriteSpec = {
+  splitY: number;
+  midX: number;
+  strideX: number;
+  liftY: number;
+  rot: number;
+  gait: "biped" | "quad" | "spider";
+};
+
+/**
+ * Anatomy metadata (in 128x128 sprite pixel space) for every legged character
+ * and monster so SunnyRenderer generates a crisp 4-frame walk-cycle + jump
+ * leg-stride sprite sheet sequence automatically.
+ */
+export const LEGGED_SPRITE_CONFIG: Record<string, LeggedSpriteSpec> = {
+  hero: { splitY: 96, midX: 64, strideX: 7.5, liftY: 6.5, rot: 0.24, gait: "biped" },
+  red_mushroom: { splitY: 105, midX: 64, strideX: 5.5, liftY: 5, rot: 0.18, gait: "biped" },
+  yellow_hamster: { splitY: 106, midX: 68, strideX: 6, liftY: 5, rot: 0.18, gait: "biped" },
+  blue_rabbit: { splitY: 104, midX: 64, strideX: 6.5, liftY: 6, rot: 0.2, gait: "biped" },
+  emerald_frog: { splitY: 95, midX: 66, strideX: 6, liftY: 5, rot: 0.16, gait: "quad" },
+  orange_fox: { splitY: 94, midX: 66, strideX: 7.5, liftY: 6.5, rot: 0.22, gait: "quad" },
+  crimson_boar: { splitY: 92, midX: 58, strideX: 7.5, liftY: 6, rot: 0.22, gait: "quad" },
+  cobalt_golem: { splitY: 95, midX: 65, strideX: 7, liftY: 6, rot: 0.18, gait: "biped" },
+  violet_spider: { splitY: 86, midX: 62, strideX: 6, liftY: 5.5, rot: 0.2, gait: "spider" },
+  scarlet_drake: { splitY: 98, midX: 72, strideX: 6.5, liftY: 6, rot: 0.2, gait: "biped" }
+};
+
+export const WALK_CYCLE_FRAMES = 4;
 
 export const VIEWPORT = {
   width: 960,
@@ -254,26 +291,27 @@ export const WEAPON_ORDER = [
  * stronger monsters with increasingly distinct movement & attack patterns.
  */
 export const MOB_CATALOG: Record<string, MobTemplate> = {
-  // Stage 1 (Lv 1-3)
+  // Stage 1 (Lv 1-3): welcoming tutorial curve — generous XP, gentle damage, narrow ~2-tile aggro, same-floor only
   red_mushroom: {
     id: "red_mushroom",
     name: "빨간 버섯",
     spriteKey: "red_mushroom",
     primaryColor: "#E53935",
     level: 1,
-    hp: 38,
-    atk: 10,
-    exp: 36,
+    hp: 32,
+    atk: 7,
+    exp: 46,
     score: 100,
-    speed: 68,
+    speed: 58,
     width: 36,
     height: 38,
     drawScale: 1.0,
     ai: "patrol",
-    aggroRange: 170,
+    aggroRange: 96,
+    aggroVerticalRange: 40,
     knockbackResist: 0.0,
     respawnSec: 9,
-    dropChance: 0.25,
+    dropChance: 0.28,
     dropItem: "red_apple"
   },
   yellow_hamster: {
@@ -282,43 +320,45 @@ export const MOB_CATALOG: Record<string, MobTemplate> = {
     spriteKey: "yellow_hamster",
     primaryColor: "#FFB300",
     level: 2,
-    hp: 56,
-    atk: 13,
-    exp: 52,
+    hp: 44,
+    atk: 9,
+    exp: 64,
     score: 140,
-    speed: 108,
-    dashSpeed: 190,
+    speed: 74,
+    dashSpeed: 126,
     width: 38,
     height: 38,
     drawScale: 1.0,
     ai: "dash",
-    aggroRange: 210,
-    knockbackResist: 0.05,
+    aggroRange: 100, // ~2 tiles (96px): only approaches nearby players on the same floor
+    aggroVerticalRange: 40,
+    knockbackResist: 0.0,
     respawnSec: 10,
-    dropChance: 0.28,
+    dropChance: 0.3,
     dropItem: "red_apple"
   },
 
-  // Stage 2 (Lv 3-5): Blue Rabbit moved from Stage 1 + Emerald Frog
+  // Stage 2 (Lv 3-5): Blue Rabbit moved from Stage 1 + Emerald Frog (gentle early active range)
   blue_rabbit: {
     id: "blue_rabbit",
     name: "파란 토끼",
     spriteKey: "blue_rabbit",
     primaryColor: "#2266EE",
     level: 4,
-    hp: 96,
-    atk: 18,
-    exp: 88,
+    hp: 78,
+    atk: 14,
+    exp: 108,
     score: 200,
-    speed: 96,
-    hopVelocity: -390,
-    hopInterval: 1.3,
+    speed: 86,
+    hopVelocity: -375,
+    hopInterval: 1.45,
     width: 36,
     height: 46,
     drawScale: 1.08,
     ai: "hopper",
-    aggroRange: 230,
-    knockbackResist: 0.08,
+    aggroRange: 112, // ~2.3 tiles, same floor only
+    aggroVerticalRange: 44,
+    knockbackResist: 0.06,
     respawnSec: 10,
     dropChance: 0.3,
     dropItem: "red_apple"
@@ -329,19 +369,20 @@ export const MOB_CATALOG: Record<string, MobTemplate> = {
     spriteKey: "emerald_frog",
     primaryColor: "#00C853",
     level: 5,
-    hp: 124,
-    atk: 21,
-    exp: 118,
+    hp: 104,
+    atk: 16,
+    exp: 138,
     score: 240,
-    speed: 88,
-    hopVelocity: -490,
-    hopInterval: 1.55,
+    speed: 82,
+    hopVelocity: -465,
+    hopInterval: 1.65,
     width: 38,
     height: 38,
     drawScale: 1.04,
     ai: "double_hop",
-    aggroRange: 245,
-    knockbackResist: 0.1,
+    aggroRange: 124, // ~2.6 tiles, same floor only
+    aggroVerticalRange: 44,
+    knockbackResist: 0.08,
     respawnSec: 11,
     dropChance: 0.3,
     dropItem: "sweet_potion"
@@ -354,18 +395,19 @@ export const MOB_CATALOG: Record<string, MobTemplate> = {
     spriteKey: "purple_snake",
     primaryColor: "#9B27D8",
     level: 7,
-    hp: 175,
-    atk: 27,
-    exp: 185,
+    hp: 155,
+    atk: 22,
+    exp: 208,
     score: 300,
-    speed: 106,
-    lungeSpeed: 265,
+    speed: 98,
+    lungeSpeed: 235,
     width: 40,
     height: 40,
     drawScale: 1.06,
     ai: "lunge",
-    aggroRange: 240,
-    knockbackResist: 0.14,
+    aggroRange: 152,
+    aggroVerticalRange: 44,
+    knockbackResist: 0.12,
     respawnSec: 11,
     dropChance: 0.32,
     dropItem: "sweet_potion"
@@ -376,17 +418,18 @@ export const MOB_CATALOG: Record<string, MobTemplate> = {
     spriteKey: "orange_fox",
     primaryColor: "#FF6D00",
     level: 8,
-    hp: 215,
-    atk: 31,
-    exp: 240,
+    hp: 192,
+    atk: 26,
+    exp: 265,
     score: 360,
-    speed: 126,
-    dashSpeed: 260,
+    speed: 116,
+    dashSpeed: 235,
     width: 42,
     height: 42,
     drawScale: 1.08,
     ai: "backstep",
-    aggroRange: 260,
+    aggroRange: 170,
+    aggroVerticalRange: 44,
     knockbackResist: 0.12,
     respawnSec: 11,
     dropChance: 0.32,

@@ -32,6 +32,8 @@ export type MobTemplate = {
   drawScale: number;
   ai: MobAiKind;
   aggroRange: number;
+  /** Maximum vertical distance (px) at which this mob notices players (keeps grounded mobs on their own floor) */
+  aggroVerticalRange?: number;
   knockbackResist: number;
   respawnSec: number;
   flying?: boolean;
