@@ -1,11 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
+  computeIdleRegenAmount,
   isActiveMobAi,
   ITEM_CATALOG,
   LEGGED_SPRITE_CONFIG,
   MOB_ALERT_TELEGRAPH_SEC,
   MOB_CATALOG,
+  PLAYER_CONFIG,
   STATUS_METADATA,
+  stepIdleRegen,
   VIEWPORT,
   WALK_CYCLE_FRAMES,
   WEAPON_CATALOG,
@@ -1153,5 +1156,139 @@ describe("@bighouse/sunny-meadow ladder connectivity, ladder-top controls & movi
         }
       }
     }
+  });
+});
+
+describe("@bighouse/sunny-meadow idle HP regeneration", () => {
+  it("activates gentle HP regen only after 10s of zero input, stops at maxHp, and cancels on input", () => {
+    const maxHp = 100;
+    const regenPerTick = computeIdleRegenAmount(maxHp);
+    // Much smaller than an apple (30) or potion (55)
+    expect(regenPerTick).toBeGreaterThanOrEqual(2);
+    expect(regenPerTick).toBeLessThan(ITEM_CATALOG.red_apple!.healAmount!);
+    expect(regenPerTick).toBeLessThan(PLAYER_CONFIG.minPotionHeal);
+
+    let st = { idleTimer: 0, tickTimer: 0 };
+    // 9.5 seconds idle -> not active yet
+    let res = stepIdleRegen(st, { hasInput: false, isResting: true, hp: 70, maxHp, dt: 9.5 });
+    expect(res.active).toBe(false);
+    expect(res.shouldHeal).toBe(false);
+    st = { idleTimer: res.idleTimer, tickTimer: res.tickTimer };
+
+    // Crossing 10s -> activates & triggers first gentle heal tick
+    res = stepIdleRegen(st, { hasInput: false, isResting: true, hp: 70, maxHp, dt: 0.6 });
+    expect(res.active).toBe(true);
+    expect(res.shouldHeal).toBe(true);
+    st = { idleTimer: res.idleTimer, tickTimer: res.tickTimer };
+
+    // Next 1.0s -> active, waiting for interval
+    res = stepIdleRegen(st, { hasInput: false, isResting: true, hp: 73, maxHp, dt: 1.0 });
+    expect(res.active).toBe(true);
+    expect(res.shouldHeal).toBe(false);
+    st = { idleTimer: res.idleTimer, tickTimer: res.tickTimer };
+
+    // At 2.0s interval -> heals again
+    res = stepIdleRegen(st, { hasInput: false, isResting: true, hp: 73, maxHp, dt: 1.0 });
+    expect(res.active).toBe(true);
+    expect(res.shouldHeal).toBe(true);
+    st = { idleTimer: res.idleTimer, tickTimer: res.tickTimer };
+
+    // Any player input immediately cancels idle regen state
+    res = stepIdleRegen(st, { hasInput: true, isResting: true, hp: 76, maxHp, dt: 0.1 });
+    expect(res.active).toBe(false);
+    expect(res.shouldHeal).toBe(false);
+    expect(res.idleTimer).toBe(0);
+
+    // At full HP, regen never triggers
+    res = stepIdleRegen({ idleTimer: 10, tickTimer: 2 }, { hasInput: false, isResting: true, hp: maxHp, maxHp, dt: 0.5 });
+    expect(res.active).toBe(false);
+    expect(res.shouldHeal).toBe(false);
+  });
+
+  it("enforces 10s idle delay, clamps at maxHp, and preserves already-recovered HP when interrupted by input or attack", () => {
+    const now = 1_700_000_900_000;
+    const room = {
+      roomId: "room-regen",
+      gameId: "sunny-meadow",
+      mode: "default",
+      minPlayers: 1,
+      maxPlayers: 500,
+      config: {},
+      createdAt: now
+    };
+    const p1 = { playerId: "p1", displayName: "휴식테스터", seat: 0, connected: true, ready: true, joinedAt: now };
+    let state: RoomState = {
+      room,
+      phase: "active",
+      version: 1,
+      players: [p1],
+      stageState: sunnyMeadowDefinition.initialStageState({ room, players: [], now }),
+      playerStates: {},
+      updatedAt: now
+    };
+    state = sunnyMeadowDefinition.onPlayerJoin!({ state, now }, p1, null).state;
+
+    // Player takes 20 damage -> HP drops 100 -> 80
+    state = sunnyMeadowDefinition.applyAction(
+      { state, now: now + 1000 },
+      { playerId: "p1", clientActionId: "hurt1", expectedVersion: 0, type: "playerHurt", payload: { amount: 20 } }
+    ).state;
+    expect((state.playerStates.p1 as { hp: number }).hp).toBe(80);
+
+    // Attempting idleRegen after only 5s is ignored
+    const tooEarly = sunnyMeadowDefinition.applyAction(
+      { state, now: now + 6000 },
+      { playerId: "p1", clientActionId: "reg_early", expectedVersion: 0, type: "idleRegen", payload: {} }
+    );
+    expect((tooEarly.state.playerStates.p1 as { hp: number }).hp).toBe(80);
+    expect(tooEarly.events).toContainEqual(
+      expect.objectContaining({ type: "sunny.actionIgnored", payload: expect.objectContaining({ reason: "not_idle_long_enough" }) })
+    );
+
+    // After 10s idle (now + 11_000), idleRegen heals gently (+3 HP -> 83)
+    const tick1 = sunnyMeadowDefinition.applyAction(
+      { state, now: now + 11_000 },
+      { playerId: "p1", clientActionId: "reg1", expectedVersion: 0, type: "idleRegen", payload: {} }
+    );
+    state = tick1.state;
+    const expectedTick = computeIdleRegenAmount(100);
+    expect((state.playerStates.p1 as { hp: number }).hp).toBe(80 + expectedTick);
+    expect(tick1.events).toContainEqual(
+      expect.objectContaining({
+        type: "sunny.playerHealed",
+        payload: expect.objectContaining({ reason: "idle_regen", amount: expectedTick })
+      })
+    );
+
+    // Player gets attacked for 5 damage while regenerating -> regen cancels, already-recovered HP is NOT reverted!
+    state = sunnyMeadowDefinition.applyAction(
+      { state, now: now + 12_000 },
+      { playerId: "p1", clientActionId: "hurt2", expectedVersion: 0, type: "playerHurt", payload: { amount: 5 } }
+    ).state;
+    expect((state.playerStates.p1 as { hp: number }).hp).toBe(80 + expectedTick - 5);
+
+    // Regen right after taking damage is blocked until another 10s passes
+    const afterHurt = sunnyMeadowDefinition.applyAction(
+      { state, now: now + 15_000 },
+      { playerId: "p1", clientActionId: "reg_blocked", expectedVersion: 0, type: "idleRegen", payload: {} }
+    );
+    expect((afterHurt.state.playerStates.p1 as { hp: number }).hp).toBe(80 + expectedTick - 5);
+    expect(afterHurt.events).toContainEqual(
+      expect.objectContaining({ type: "sunny.actionIgnored", payload: expect.objectContaining({ reason: "not_idle_long_enough" }) })
+    );
+
+    // Clamping at maxHp: set HP to 99, wait 10s -> heals by +1 to 100 and never exceeds 100
+    (state.playerStates.p1 as { hp: number }).hp = 99;
+    const clampRes = sunnyMeadowDefinition.applyAction(
+      { state, now: now + 22_500 },
+      { playerId: "p1", clientActionId: "reg_clamp", expectedVersion: 0, type: "idleRegen", payload: {} }
+    );
+    expect((clampRes.state.playerStates.p1 as { hp: number }).hp).toBe(100);
+    expect(clampRes.events).toContainEqual(
+      expect.objectContaining({
+        type: "sunny.playerHealed",
+        payload: expect.objectContaining({ reason: "idle_regen", amount: 1, hp: 100 })
+      })
+    );
   });
 });

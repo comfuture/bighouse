@@ -90,8 +90,87 @@ export const PLAYER_CONFIG = {
   portalCooldown: 0.7,
   startingPotions: 2,
   potionHealRatio: 0.45,
-  minPotionHeal: 55
+  minPotionHeal: 55,
+  /** Seconds of zero player input before gentle idle HP regeneration begins */
+  idleRegenDelaySec: 10,
+  /** Interval (seconds) between gentle idle HP regeneration ticks */
+  idleRegenIntervalSec: 2.0,
+  /** Fraction of maxHp recovered per idle tick (much smaller than apple 25% / potion 45%) */
+  idleRegenRatio: 0.03,
+  minIdleRegenHeal: 2
 } as const;
+
+export function computeIdleRegenAmount(maxHp: number): number {
+  return Math.max(PLAYER_CONFIG.minIdleRegenHeal, Math.round(maxHp * PLAYER_CONFIG.idleRegenRatio));
+}
+
+export type IdleRegenState = {
+  idleTimer: number;
+  tickTimer: number;
+};
+
+/**
+ * Pure idle HP regeneration state machine:
+ * - Resets immediately on any player input, damage, or non-resting movement.
+ * - Activates after 10 seconds of zero input when hp < maxHp.
+ * - Triggers a gentle heal tick at 10s and every `idleRegenIntervalSec` thereafter, never exceeding maxHp.
+ */
+export function stepIdleRegen(
+  state: IdleRegenState,
+  input: {
+    hasInput: boolean;
+    isResting: boolean;
+    hp: number;
+    maxHp: number;
+    dt: number;
+  }
+): IdleRegenState & { active: boolean; shouldHeal: boolean } {
+  if (input.hasInput || !input.isResting) {
+    return { idleTimer: 0, tickTimer: 0, active: false, shouldHeal: false };
+  }
+
+  const prevIdle = state.idleTimer;
+  const nextIdle = prevIdle + input.dt;
+  if (nextIdle < PLAYER_CONFIG.idleRegenDelaySec) {
+    return { idleTimer: nextIdle, tickTimer: 0, active: false, shouldHeal: false };
+  }
+
+  if (input.hp >= input.maxHp) {
+    return {
+      idleTimer: PLAYER_CONFIG.idleRegenDelaySec,
+      tickTimer: 0,
+      active: false,
+      shouldHeal: false
+    };
+  }
+
+  // Trigger first gentle heal right when crossing the 10s idle threshold
+  if (prevIdle < PLAYER_CONFIG.idleRegenDelaySec) {
+    return {
+      idleTimer: PLAYER_CONFIG.idleRegenDelaySec,
+      tickTimer: 0,
+      active: true,
+      shouldHeal: true
+    };
+  }
+
+  const nextTick = state.tickTimer + input.dt;
+  if (nextTick >= PLAYER_CONFIG.idleRegenIntervalSec) {
+    return {
+      idleTimer: PLAYER_CONFIG.idleRegenDelaySec,
+      tickTimer: nextTick - PLAYER_CONFIG.idleRegenIntervalSec,
+      active: true,
+      shouldHeal: true
+    };
+  }
+
+  return {
+    idleTimer: PLAYER_CONFIG.idleRegenDelaySec,
+    tickTimer: nextTick,
+    active: true,
+    shouldHeal: false
+  };
+}
 
 export const WEAPON_CATALOG: Record<string, WeaponTemplate> = {
   wooden_sword: {

@@ -208,6 +208,7 @@ export type LocalPlayerRender = {
   invulnTimer: number;
   slowTimer: number;
   statuses: Partial<Record<StatusEffectKind, ActiveStatusEffect>>;
+  idleRegenActive: boolean;
   attackAnimTimer: number;
   attackAnimDuration: number;
   animTimer: number;
@@ -1758,6 +1759,33 @@ export class SunnyRenderer {
     if (p.statuses) {
       this.drawActorStatuses(ctx, footX, p.y - 12, p.w + 8, p.h + 8, p.statuses, 22);
     }
+
+    // Gentle green resting aura & rising '+' motes when idle HP regen is active
+    if (p.idleRegenActive) {
+      ctx.save();
+      const pulse = 0.5 + 0.5 * Math.sin(this.time * 3.6);
+      ctx.strokeStyle = `rgba(105, 240, 174, ${0.38 + pulse * 0.28})`;
+      ctx.lineWidth = 2.2;
+      ctx.beginPath();
+      ctx.ellipse(footX, footY - 1, 20 + pulse * 4, 6 + pulse * 1.5, 0, 0, Math.PI * 2);
+      ctx.stroke();
+
+      for (let i = 0; i < 3; i++) {
+        const phase = (this.time * 0.75 + i * 0.33) % 1;
+        const mx = footX + Math.sin(this.time * 2.4 + i * 2.1) * 16;
+        const my = footY - 8 - phase * 42;
+        ctx.globalAlpha = Math.sin(phase * Math.PI) * 0.9;
+        ctx.strokeStyle = "#69F0AE";
+        ctx.lineWidth = 2.2;
+        ctx.beginPath();
+        ctx.moveTo(mx - 3.5, my);
+        ctx.lineTo(mx + 3.5, my);
+        ctx.moveTo(mx, my - 3.5);
+        ctx.lineTo(mx, my + 3.5);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
   }
 
   private drawPlayerNameTag(
@@ -2093,17 +2121,33 @@ export class SunnyRenderer {
     ctx.fillStyle = p.potions > 0 ? "#FFCDD2" : "#9E9E9E";
     ctx.fillText(`포션 ×${p.potions} [F]`, barX + 102, 71);
 
-    // Active Player Status Pills directly beneath top-left HUD card
-    if (p.statuses) {
-      const activeList = (Object.values(p.statuses) as Array<ActiveStatusEffect | undefined>).filter(
-        (s): s is ActiveStatusEffect => Boolean(s && s.remaining > 0)
-      );
-      if (activeList.length > 0) {
+    // Active Player Status Pills & Idle Regen Badge directly beneath top-left HUD card
+    {
+      const activeList = p.statuses
+        ? (Object.values(p.statuses) as Array<ActiveStatusEffect | undefined>).filter(
+            (s): s is ActiveStatusEffect => Boolean(s && s.remaining > 0)
+          )
+        : [];
+      if (activeList.length > 0 || p.idleRegenActive) {
         let px = 14;
         const py = 98;
         ctx.font = 'bold 11px "Pretendard", sans-serif';
         ctx.textAlign = "left";
         ctx.textBaseline = "middle";
+        if (p.idleRegenActive) {
+          const label = "+ 휴식 회복 중";
+          const pillW = ctx.measureText(label).width + 16;
+          ctx.fillStyle = "rgba(16, 46, 32, 0.86)";
+          ctx.strokeStyle = "#69F0AE";
+          ctx.lineWidth = 1.8;
+          ctx.beginPath();
+          ctx.roundRect(px, py, pillW, 20, 9);
+          ctx.fill();
+          ctx.stroke();
+          ctx.fillStyle = "#69F0AE";
+          ctx.fillText(label, px + 8, py + 10);
+          px += pillW + 6;
+        }
         for (const st of activeList) {
           const meta = STATUS_METADATA[st.kind];
           const label = `${meta.label} ${st.remaining.toFixed(1)}s`;

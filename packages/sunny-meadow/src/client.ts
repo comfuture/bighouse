@@ -5,15 +5,18 @@ import type {
   MountedGameClient
 } from "@bighouse/game-sdk/client";
 import {
+  computeIdleRegenAmount,
   isActiveMobAi,
   ITEM_CATALOG,
   MOB_ALERT_TELEGRAPH_SEC,
   MOB_CATALOG,
   PLAYER_CONFIG,
   STATUS_METADATA,
+  stepIdleRegen,
   VIEWPORT,
   WEAPON_CATALOG,
-  WEAPON_ORDER
+  WEAPON_ORDER,
+  type IdleRegenState
 } from "./catalogs";
 import { SunnyAudioManager } from "./audio";
 import { gameMetadata } from "./client-metadata";
@@ -307,6 +310,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
     invulnTimer: 0,
     slowTimer: 0,
     statuses: {},
+    idleRegenActive: false,
     attackAnimTimer: 0,
     attackAnimDuration: 0.22,
     animTimer: 0,
@@ -326,6 +330,11 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
   let hurtStunTimer = 0;
   let ladderStepTimer = 0;
   let ladderGrabCooldown = 0;
+  let idleRegenState: IdleRegenState = { idleTimer: 0, tickTimer: 0 };
+  const resetIdleRegen = () => {
+    idleRegenState = { idleTimer: 0, tickTimer: 0 };
+    localPlayer.idleRegenActive = false;
+  };
   let lastSafeX = 160;
   let lastSafeY = 660;
   let poseSendTimer = 0;
@@ -352,6 +361,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
     localPlayer.vy = 0;
     localPlayer.statuses = {};
     localPlayer.slowTimer = 0;
+    resetIdleRegen();
     keysDown.clear();
     virtualDown.clear();
     stageFrame.classList.add("is-dead");
@@ -407,6 +417,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
   const predictedHitIds = new Set<string>();
   const predictedPickupIds = new Set<string>();
   const predictedPotionIds = new Set<string>();
+  const predictedRegenIds = new Set<string>();
   const optimisticMobLocks = new Map<string, { hp: number; alive: boolean; expiresAt: number }>();
   const optimisticItemLocks = new Map<string, number>();
   let localPredSeq = 0;
@@ -1293,16 +1304,21 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
 
     if (ev.type === "sunny.playerHealed" && p.playerId === ctx.playerId) {
       const clientPotionId = typeof p.clientPotionId === "string" ? p.clientPotionId : "";
-      const wasPredicted = clientPotionId !== "" && predictedPotionIds.has(clientPotionId);
-      if (wasPredicted) {
+      const clientRegenId = typeof p.clientRegenId === "string" ? p.clientRegenId : "";
+      if (clientPotionId !== "" && predictedPotionIds.has(clientPotionId)) {
         predictedPotionIds.delete(clientPotionId);
+        return;
+      }
+      if (clientRegenId !== "" && predictedRegenIds.has(clientRegenId)) {
+        predictedRegenIds.delete(clientRegenId);
         return;
       }
       const amt = Number(p.amount ?? 0);
       if (amt > 0) {
+        const isIdleRegen = p.reason === "idle_regen";
         spawnText(localPlayer.x + 14, localPlayer.y - 12, `+${amt} HP`, "heal");
-        spawnSparkles(localPlayer.x + 14, localPlayer.y + 18, "#69F0AE", 10);
-        audio.playSfx("sfx_potion", 0);
+        spawnSparkles(localPlayer.x + 14, localPlayer.y + 18, "#69F0AE", isIdleRegen ? 5 : 10);
+        if (!isIdleRegen) audio.playSfx("sfx_potion", 0);
       }
       return;
     }
@@ -1447,6 +1463,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
     if (PREVENT_KEYS.has(e.code)) e.preventDefault();
     void audio.unlock();
     keysDown.add(e.code);
+    resetIdleRegen();
 
     // Quick weapon selection 1..9, 0 and rapid Q / E cycling (handled on keydown so fast taps never drop)
     if (e.code.startsWith("Digit") && !e.repeat) {
@@ -1532,6 +1549,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
 
     updateMovingPlatforms(compiledStage.movingPlatforms, dt, now + serverClockOffset);
     stepLocalPlayer(dt, now);
+    stepLocalIdleRegen(dt);
     stepMobs(dt, now);
     stepProjectiles(dt, now);
     stepRemotePlayers(dt, now);
@@ -1539,6 +1557,54 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
     updateEffects(dt);
     updateCamera(dt);
     sendPeriodicSync(dt);
+  }
+
+  function stepLocalIdleRegen(dt: number): void {
+    const p = localPlayer;
+    const hasInput =
+      keysDown.size > 0 ||
+      virtualDown.size > 0 ||
+      Object.values(curInput).some(Boolean) ||
+      p.attackAnimTimer > 0;
+    const isResting =
+      !downed() &&
+      hurtStunTimer <= 0 &&
+      (p.grounded || p.onLadder) &&
+      Math.abs(p.vx) < 8 &&
+      Math.abs(p.vy) < 8 &&
+      !Boolean(p.statuses.poison?.remaining) &&
+      !Boolean(p.statuses.burn?.remaining);
+
+    const res = stepIdleRegen(idleRegenState, {
+      hasInput,
+      isResting,
+      hp: p.hp,
+      maxHp: p.maxHp,
+      dt
+    });
+    idleRegenState = { idleTimer: res.idleTimer, tickTimer: res.tickTimer };
+    p.idleRegenActive = res.active;
+
+    if (res.shouldHeal && p.hp < p.maxHp) {
+      const healAmt = computeIdleRegenAmount(p.maxHp);
+      const before = p.hp;
+      p.hp = Math.min(p.maxHp, p.hp + healAmt);
+      const actual = p.hp - before;
+      if (actual > 0) {
+        const clientRegenId = nextPredId("reg");
+        predictedRegenIds.add(clientRegenId);
+        if (predictedRegenIds.size > 60) {
+          const first = predictedRegenIds.values().next().value;
+          if (first) predictedRegenIds.delete(first);
+        }
+        spawnText(p.x + p.w * 0.5, p.y - 12, `+${actual} HP`, "heal");
+        spawnSparkles(p.x + p.w * 0.5, p.y + p.h * 0.45, "#69F0AE", 5);
+        actions.sendAction({ type: "idleRegen", payload: { clientRegenId } });
+      }
+      if (p.hp >= p.maxHp) {
+        p.idleRegenActive = false;
+      }
+    }
   }
 
   function stepLocalPlayer(dt: number, now: number): void {
@@ -2188,6 +2254,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
   function hurtLocalPlayer(amount: number, sourceX: number): void {
     const p = localPlayer;
     if (p.invulnTimer > 0 || downed()) return;
+    resetIdleRegen();
     p.invulnTimer = PLAYER_CONFIG.invulnDuration;
     hurtStunTimer = 0.22;
     p.onLadder = false;

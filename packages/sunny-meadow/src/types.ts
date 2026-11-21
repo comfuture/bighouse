@@ -347,6 +347,10 @@ export type WorldPlayerState = {
   weaponSwitchSeq?: number;
   highestStageNumber: number;
   lastUpdatedAt: number;
+  /** Server timestamp of last active input/combat (used to validate 10s idle HP regen). */
+  lastActivityAt?: number;
+  /** Server timestamp of last idle HP regen tick (rate-limits gentle regen interval). */
+  lastIdleRegenAt?: number;
   /**
    * Set while the player is down and waiting to revive. A dead player takes no
    * actions and does not move. Absent on states saved before death existed.

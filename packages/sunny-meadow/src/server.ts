@@ -12,6 +12,7 @@ import type {
 } from "@bighouse/game-sdk/server";
 import { createGameEventId, defineGameDefinition } from "@bighouse/game-sdk/server";
 import {
+  computeIdleRegenAmount,
   ITEM_CATALOG,
   MOB_CATALOG,
   PLAYER_CONFIG,
@@ -456,7 +457,8 @@ function createFreshPlayerState(
     unlockedWeapons,
     equippedWeaponId,
     highestStageNumber,
-    lastUpdatedAt: now
+    lastUpdatedAt: now,
+    lastActivityAt: now
   };
 }
 
@@ -680,6 +682,24 @@ function checkAction(context: GameContext, action: ClientGameAction): ActionChec
     case "usePotion": {
       if (ps.potions <= 0 || ps.hp >= ps.maxHp) {
         return { ok: false, code: "potion_unusable", message: "Cannot use potion right now", stale: true };
+      }
+      return { ok: true };
+    }
+    case "idleRegen": {
+      if (ps.hp >= ps.maxHp) {
+        return { ok: false, code: "hp_full", message: "HP is already full", stale: true };
+      }
+      const lastAct = ps.lastActivityAt ?? 0;
+      if (context.now - lastAct < PLAYER_CONFIG.idleRegenDelaySec * 1000 - 400) {
+        return {
+          ok: false,
+          code: "not_idle_long_enough",
+          message: "Must remain idle for 10 seconds before regenerating",
+          stale: true
+        };
+      }
+      if (ps.lastIdleRegenAt && context.now - ps.lastIdleRegenAt < PLAYER_CONFIG.idleRegenIntervalSec * 1000 - 300) {
+        return { ok: false, code: "regen_cooldown", message: "Idle regen cooling down", stale: true };
       }
       return { ok: true };
     }
@@ -1049,6 +1069,30 @@ function applyCheckedAction(context: GameContext, action: ClientGameAction): Act
         now
       )
     );
+  } else if (action.type === "idleRegen") {
+    const clientRegenId =
+      typeof action.payload.clientRegenId === "string" ? action.payload.clientRegenId : undefined;
+    const healAmt = computeIdleRegenAmount(ps.maxHp);
+    const before = ps.hp;
+    ps.hp = Math.min(ps.maxHp, ps.hp + healAmt);
+    ps.lastIdleRegenAt = now;
+    events.push(
+      makeEvent(
+        "sunny.playerHealed",
+        {
+          stageId: ps.stageId,
+          playerId: ps.playerId,
+          amount: ps.hp - before,
+          hp: ps.hp,
+          maxHp: ps.maxHp,
+          potions: ps.potions,
+          reason: "idle_regen",
+          ...(clientRegenId ? { clientRegenId } : {}),
+          persistProfile: true
+        },
+        now
+      )
+    );
   } else if (action.type === "switchWeapon") {
     ps.equippedWeaponId = String(action.payload.weaponId);
     const seq = Number(action.payload.switchSeq);
@@ -1177,6 +1221,13 @@ function applyCheckedAction(context: GameContext, action: ClientGameAction): Act
     );
   }
 
+  if (
+    action.type !== "idleRegen" &&
+    action.type !== "checkpoint" &&
+    !(action.type === "attackMob" && action.payload.hitKind === "dot")
+  ) {
+    ps.lastActivityAt = now;
+  }
   ps.lastUpdatedAt = now;
   state.playerStates[action.playerId] = ps as unknown as JsonObject;
   return { state, events };
@@ -1313,9 +1364,13 @@ export const sunnyMeadowDefinition = defineGameDefinition(gameMetadata, {
       anim === "walk" || anim === "jump" || anim === "climb" || anim === "attack" ? anim : "idle";
 
     if (!Number.isFinite(rawX) || !Number.isFinite(rawY)) return undefined;
+    const prevX = ps.x;
+    const prevY = ps.y;
     const { x, y } = clampToStage(ps.stageId, rawX, rawY);
     const vx = Number.isFinite(rawVx) ? Math.max(-600, Math.min(600, Math.round(rawVx))) : 0;
     const vy = Number.isFinite(rawVy) ? Math.max(-900, Math.min(900, Math.round(rawVy))) : 0;
+    const movedOrActive =
+      animState !== "idle" || Math.abs(vx) > 8 || Math.abs(vy) > 8 || Math.abs(x - prevX) > 2 || Math.abs(y - prevY) > 2;
 
     // Update sender position on the cloned state before evaluating nearest-player mob authority
     ps.x = x;
@@ -1384,7 +1439,8 @@ export const sunnyMeadowDefinition = defineGameDefinition(gameMetadata, {
         vy,
         facing,
         animState,
-        lastUpdatedAt: context.now
+        lastUpdatedAt: context.now,
+        ...(movedOrActive ? { lastActivityAt: context.now } : {})
       },
       ...(stageMutated ? { stageState: world as unknown as JsonObject } : {})
     };
