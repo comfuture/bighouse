@@ -169,7 +169,7 @@ export const WEAPON_CATALOG: Record<string, WeaponTemplate> = {
     critMult: 1.6,
     slashColor: "#FF8A65",
     accentColor: "#D84315",
-    iconIndex: 5,
+    iconIndex: 8,
     sfx: "sfx_attack_sword",
     description: "단풍 협곡의 열기를 품은 장검"
   },
@@ -190,7 +190,7 @@ export const WEAPON_CATALOG: Record<string, WeaponTemplate> = {
     critMult: 1.6,
     slashColor: "#40C4FF",
     accentColor: "#0277BD",
-    iconIndex: 6,
+    iconIndex: 9,
     sfx: "sfx_attack_staff",
     description: "적을 꿰뚫는 수정 광선을 발사"
   },
@@ -208,7 +208,7 @@ export const WEAPON_CATALOG: Record<string, WeaponTemplate> = {
     critMult: 1.65,
     slashColor: "#FFFF00",
     accentColor: "#F9A825",
-    iconIndex: 5,
+    iconIndex: 10,
     sfx: "sfx_attack_sword",
     description: "초고속 연타와 높은 치명타의 번개 검"
   },
@@ -226,7 +226,7 @@ export const WEAPON_CATALOG: Record<string, WeaponTemplate> = {
     critMult: 1.7,
     slashColor: "#FFCA28",
     accentColor: "#FF6F00",
-    iconIndex: 7,
+    iconIndex: 11,
     sfx: "sfx_attack_sword",
     description: "구름 신전의 태양빛을 응축한 대망치"
   },
@@ -244,7 +244,7 @@ export const WEAPON_CATALOG: Record<string, WeaponTemplate> = {
     critMult: 1.7,
     slashColor: "#FF5252",
     accentColor: "#B71C1C",
-    iconIndex: 5,
+    iconIndex: 12,
     sfx: "sfx_attack_sword",
     description: "화산 용의 비늘로 벼려낸 붉은 검"
   },
@@ -265,7 +265,7 @@ export const WEAPON_CATALOG: Record<string, WeaponTemplate> = {
     critMult: 1.75,
     slashColor: "#EA80FC",
     accentColor: "#6A1B9A",
-    iconIndex: 6,
+    iconIndex: 13,
     sfx: "sfx_attack_staff",
     description: "별빛 정상의 성운 탄환을 날리는 궁극 지팡이"
   }
@@ -823,7 +823,7 @@ export const ITEM_CATALOG: Record<string, ItemTemplate> = {
     category: "weapon",
     weaponId: "maple_greatsword",
     score: 400,
-    iconIndex: 5,
+    iconIndex: 8,
     glowColor: "#FF8A65",
     sfx: "sfx_potion",
     respawnSec: 0
@@ -834,7 +834,7 @@ export const ITEM_CATALOG: Record<string, ItemTemplate> = {
     category: "weapon",
     weaponId: "crystal_rod",
     score: 500,
-    iconIndex: 6,
+    iconIndex: 9,
     glowColor: "#40C4FF",
     sfx: "sfx_potion",
     respawnSec: 0
@@ -845,7 +845,7 @@ export const ITEM_CATALOG: Record<string, ItemTemplate> = {
     category: "weapon",
     weaponId: "thunder_dagger",
     score: 600,
-    iconIndex: 5,
+    iconIndex: 10,
     glowColor: "#FFFF00",
     sfx: "sfx_potion",
     respawnSec: 0
@@ -856,7 +856,7 @@ export const ITEM_CATALOG: Record<string, ItemTemplate> = {
     category: "weapon",
     weaponId: "solar_hammer",
     score: 750,
-    iconIndex: 7,
+    iconIndex: 11,
     glowColor: "#FFCA28",
     sfx: "sfx_potion",
     respawnSec: 0
@@ -867,7 +867,7 @@ export const ITEM_CATALOG: Record<string, ItemTemplate> = {
     category: "weapon",
     weaponId: "dragon_blade",
     score: 900,
-    iconIndex: 5,
+    iconIndex: 12,
     glowColor: "#FF5252",
     sfx: "sfx_potion",
     respawnSec: 0
@@ -878,7 +878,7 @@ export const ITEM_CATALOG: Record<string, ItemTemplate> = {
     category: "weapon",
     weaponId: "nebula_staff",
     score: 1200,
-    iconIndex: 6,
+    iconIndex: 13,
     glowColor: "#EA80FC",
     sfx: "sfx_potion",
     respawnSec: 0
