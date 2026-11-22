@@ -3,6 +3,33 @@ import Phaser from "phaser";
 import type { GameClientContext, MountedGameClient } from "@bighouse/game-sdk/client";
 import { triggerPlacementFeedback, triggerSelectionFeedback } from "@bighouse/game-sdk/feedback";
 import { createGameUi, type MountedGameUi } from "@bighouse/ui";
+import skyBackdropUrl from "./assets/images/sky_backdrop.png?url";
+import parallaxMountainsUrl from "./assets/images/parallax_mountains.png?url";
+import cloudsSheetUrl from "./assets/images/clouds_sheet.png?url";
+import terrainTileUrl from "./assets/images/terrain_tile.png?url";
+import tanksSheetUrl from "./assets/images/tanks_sheet.png?url";
+import barrelProjectileSheetUrl from "./assets/images/barrel_projectile_sheet.png?url";
+import explosionSheetUrl from "./assets/images/explosion_sheet.png?url";
+import itemsSheetUrl from "./assets/images/items_sheet.png?url";
+import {
+  BARREL_FRAME_INDEX,
+  BARREL_PROJECTILE_SHEET_SPEC,
+  CLOUDS_SHEET_SPEC,
+  EXPLOSION_SHEET_SPEC,
+  ITEM_ICON_FRAME,
+  ITEMS_SHEET_SPEC,
+  PROJECTILE_FRAME_BY_ITEM,
+  TANK_SHEET_SPEC,
+  createInitialClouds,
+  createInitialWindStreaks,
+  evaluateTankPose,
+  resolveTankAnimState,
+  selectExplosionFrame,
+  stepCloudDrift,
+  stepWindStreaks,
+  type DriftingCloud,
+  type WindStreak
+} from "./animation";
 import { createTankBattleAudio, type TankBattleAudioController } from "./audio";
 import { clamp, simulateTrajectory, tankFacing } from "./physics";
 import type {
@@ -33,6 +60,19 @@ type BattleButton = {
   container: Phaser.GameObjects.Container;
   background: Phaser.GameObjects.Rectangle;
   label: Phaser.GameObjects.Text;
+  icon?: Phaser.GameObjects.Sprite;
+};
+
+type TankVisual = {
+  aura: Phaser.GameObjects.Arc;
+  barrel: Phaser.GameObjects.Sprite;
+  hull: Phaser.GameObjects.Sprite;
+};
+
+type ActiveExplosion = {
+  sprite: Phaser.GameObjects.Sprite;
+  startedAt: number;
+  durationMs: number;
 };
 
 type ShotAnimation = {
@@ -40,6 +80,7 @@ type ShotAnimation = {
   startedAt: number;
   baseView: TankBattlePublicView;
   exploded: boolean;
+  lastTrailAt: number;
 };
 
 type QueuedShotAnimation = Pick<ShotAnimation, "shot" | "baseView">;
@@ -76,6 +117,13 @@ type TankBattleLayout = {
     startY: number;
     stepX: number;
     stepY: number;
+    width: number;
+    height: number;
+    fontSize: number;
+  };
+  mute: {
+    x: number;
+    y: number;
     width: number;
     height: number;
     fontSize: number;
@@ -118,11 +166,18 @@ const standardLayout: TankBattleLayout = {
   items: {
     startX: 385,
     startY: 650,
-    stepX: 168,
+    stepX: 162,
     stepY: 0,
-    width: 154,
+    width: 152,
     height: 62,
-    fontSize: 14
+    fontSize: 13
+  },
+  mute: {
+    x: 896,
+    y: 650,
+    width: 168,
+    height: 56,
+    fontSize: 15
   },
   power: {
     textX: 36,
@@ -168,6 +223,13 @@ const compactLandscapeLayout: TankBattleLayout = {
     height: 144,
     fontSize: 13
   },
+  mute: {
+    x: 118,
+    y: 656,
+    width: 188,
+    height: 62,
+    fontSize: 16
+  },
   power: {
     textX: 1038,
     textY: 494,
@@ -184,10 +246,30 @@ const compactLandscapeLayout: TankBattleLayout = {
 };
 
 const compactLandscapeQuery = "(orientation: landscape) and (max-height: 520px)";
+const reducedMotionQuery = "(prefers-reduced-motion: reduce)";
 const ANGLE_MIN = 10;
 const ANGLE_MAX = 80;
 const IMPACT_EFFECT_MS = 950;
+const EXPLOSION_ANIM_MS = 520;
+const FIRE_POSE_MS = 420;
+const HIT_POSE_MS = 460;
 const MAX_WIND_SPEED = 12;
+
+const TEX_SKY = "tb-sky-backdrop";
+const TEX_MOUNTAINS = "tb-parallax-mountains";
+const TEX_CLOUDS = "tb-clouds";
+const TEX_TERRAIN_TILE = "tb-terrain-tile";
+const TEX_TERRAIN_CANVAS = "tb-terrain-canvas";
+const TEX_TANKS = "tb-tanks";
+const TEX_WEAPONS = "tb-weapons";
+const TEX_EXPLOSION = "tb-explosion";
+const TEX_ITEMS = "tb-items";
+
+const TANK_SPRITE_SCALE = 0.72;
+const TANK_GROUND_ORIGIN_Y = 108 / 128;
+const BARREL_SPRITE_SCALE = 0.52;
+const BARREL_PIVOT_ORIGIN_X = 25 / 128;
+
 const itemLabels: Record<Exclude<TankItemSelection, "none">, string> = {
   megaBlast: "광역 폭탄",
   warhead: "고폭탄",
@@ -216,7 +298,7 @@ export function mountGame(container: HTMLElement, context: GameClientContext): M
       parent: surface,
       width: layout.width,
       height: layout.height,
-      backgroundColor: "#101a35",
+      backgroundColor: "#0a1228",
       render: { antialias: true, pixelArt: false, roundPixels: false },
       scale: {
         mode: Phaser.Scale.FIT,
@@ -270,14 +352,28 @@ class TankBattleScene extends Phaser.Scene {
   private readonly getClient: () => TankBattleClient;
   private readonly layout: TankBattleLayout;
   private readonly audio: TankBattleAudioController = createTankBattleAudio();
-  private skyGraphics?: Phaser.GameObjects.Graphics;
-  private terrainGraphics?: Phaser.GameObjects.Graphics;
-  private tankGraphics?: Phaser.GameObjects.Graphics;
+
+  private skyImage?: Phaser.GameObjects.Image;
+  private mountainImage?: Phaser.GameObjects.Image;
+  private cloudSprites: Phaser.GameObjects.Sprite[] = [];
+  private cloudStates: DriftingCloud[] = [];
+  private windStreaks: WindStreak[] = [];
+  private windStreakGraphics?: Phaser.GameObjects.Graphics;
+
+  private terrainCanvasTexture?: Phaser.Textures.CanvasTexture;
+  private terrainImage?: Phaser.GameObjects.Image;
+  private terrainFallbackGraphics?: Phaser.GameObjects.Graphics;
+  private initialTerrain: number[] = [];
+  private lastTerrainSignature = "";
+
+  private readonly tankVisuals = new Map<string, TankVisual>();
+  private tankOverlayGraphics?: Phaser.GameObjects.Graphics;
   private previewGraphics?: Phaser.GameObjects.Graphics;
   private hudGraphics?: Phaser.GameObjects.Graphics;
   private windGraphics?: Phaser.GameObjects.Graphics;
   private powerGaugeGraphics?: Phaser.GameObjects.Graphics;
-  private projectile?: Phaser.GameObjects.Arc;
+  private projectileSprite?: Phaser.GameObjects.Sprite;
+
   private statusText?: Phaser.GameObjects.Text;
   private windText?: Phaser.GameObjects.Text;
   private gravityText?: Phaser.GameObjects.Text;
@@ -288,6 +384,8 @@ class TankBattleScene extends Phaser.Scene {
   private itemButtons = new Map<Exclude<TankItemSelection, "none">, BattleButton>();
   private angleButtons: BattleButton[] = [];
   private fireButton?: BattleButton;
+  private muteButton?: BattleButton;
+
   private selectedItem: TankItemSelection = "none";
   private angle = 45;
   private power = 55;
@@ -297,14 +395,24 @@ class TankBattleScene extends Phaser.Scene {
   private awaitingSnapshot = false;
   private shotAnimation: ShotAnimation | undefined;
   private readonly shotAnimationQueue: QueuedShotAnimation[] = [];
+  private readonly activeExplosions: ActiveExplosion[] = [];
+  private readonly tankFireTimes = new Map<string, number>();
+  private readonly tankHitTimes = new Map<string, number>();
+  private readonly shownDamageShotIds = new Set<number>();
   private seenShotId: number | undefined;
+  private playedOutcomeKey: string | undefined;
   private lastUiSecond = -1;
+  private lastSmokeEmitAt = 0;
   private readonly heldAngleKeys = new Set<string>();
   private angleHoldStartedAt: number | undefined;
   private nextGearCreakAt = 0;
   private activeAimPointerId: number | undefined;
   private flightSafetyTimer: Phaser.Time.TimerEvent | undefined;
   private soundingShotId: number | undefined;
+
+  private reducedMotion = false;
+  private reducedMotionMedia?: MediaQueryList;
+  private handleReducedMotionChange?: (event: MediaQueryListEvent) => void;
 
   constructor(getClient: () => TankBattleClient, layout: TankBattleLayout, localState?: TankBattleLocalState) {
     super({ key: "tank-battle" });
@@ -327,19 +435,53 @@ class TankBattleScene extends Phaser.Scene {
     };
   }
 
+  preload(): void {
+    this.load.image(TEX_SKY, skyBackdropUrl);
+    this.load.image(TEX_MOUNTAINS, parallaxMountainsUrl);
+    this.load.image(TEX_TERRAIN_TILE, terrainTileUrl);
+    this.load.spritesheet(TEX_CLOUDS, cloudsSheetUrl, {
+      frameWidth: CLOUDS_SHEET_SPEC.frameWidth,
+      frameHeight: CLOUDS_SHEET_SPEC.frameHeight
+    });
+    this.load.spritesheet(TEX_TANKS, tanksSheetUrl, {
+      frameWidth: TANK_SHEET_SPEC.frameWidth,
+      frameHeight: TANK_SHEET_SPEC.frameHeight
+    });
+    this.load.spritesheet(TEX_WEAPONS, barrelProjectileSheetUrl, {
+      frameWidth: BARREL_PROJECTILE_SHEET_SPEC.frameWidth,
+      frameHeight: BARREL_PROJECTILE_SHEET_SPEC.frameHeight
+    });
+    this.load.spritesheet(TEX_EXPLOSION, explosionSheetUrl, {
+      frameWidth: EXPLOSION_SHEET_SPEC.frameWidth,
+      frameHeight: EXPLOSION_SHEET_SPEC.frameHeight
+    });
+    this.load.spritesheet(TEX_ITEMS, itemsSheetUrl, {
+      frameWidth: ITEMS_SHEET_SPEC.frameWidth,
+      frameHeight: ITEMS_SHEET_SPEC.frameHeight
+    });
+  }
+
   create(): void {
-    this.skyGraphics = this.add.graphics().setDepth(0);
-    this.terrainGraphics = this.add.graphics().setDepth(2);
-    this.tankGraphics = this.add.graphics().setDepth(4);
+    this.setupReducedMotion();
+    this.createSkyBackdrop();
+    this.createTerrainLayer();
+    this.tankOverlayGraphics = this.add.graphics().setDepth(5.5);
     this.previewGraphics = this.add.graphics().setDepth(3);
     this.hudGraphics = this.add.graphics().setDepth(10);
     this.windGraphics = this.add.graphics().setDepth(11);
-    this.projectile = this.add.circle(0, 0, 5, 0xfff2a8).setDepth(7).setVisible(false);
+    this.projectileSprite = this.add
+      .sprite(0, 0, TEX_WEAPONS, PROJECTILE_FRAME_BY_ITEM.none)
+      .setScale(0.46)
+      .setDepth(7)
+      .setVisible(false);
+
     this.createParticleTextures();
     this.createHud();
     this.createControls();
-    this.drawSky();
-    const initialShot = this.getClient().publicView.lastShot;
+
+    const initialView = this.getClient().publicView;
+    this.initialTerrain = [...initialView.terrain];
+    const initialShot = initialView.lastShot;
     this.seenShotId = initialShot?.id;
     if (initialShot?.shooterPlayerId === this.getClient().playerId) {
       this.lastOwnShotPower = initialShot.power;
@@ -366,6 +508,11 @@ class TankBattleScene extends Phaser.Scene {
     if (this.shotAnimation) {
       this.updateShotAnimation(time);
     }
+    this.updateAtmosphere(time, delta);
+    this.updateTanksTick(time);
+    this.updateExplosions(time);
+    this.emitDamagedTankSmoke(time);
+
     const second = Math.floor(time / 250);
     if (second !== this.lastUiSecond) {
       this.lastUiSecond = second;
@@ -381,26 +528,28 @@ class TankBattleScene extends Phaser.Scene {
       this.awaitingSnapshot &&
       (next.actionErrorRevision !== previous.actionErrorRevision || (previous.connected && !next.connected))
     ) {
-      // The fire was rejected or never left: no snapshot will come for it, so
-      // let the player aim again instead of waiting out the turn.
       this.awaitingSnapshot = false;
       this.stopFlightAudio();
       this.renderPowerAndPreview();
       this.refreshButtonStyles();
     }
+
     const shot = next.publicView.lastShot;
     if (!shot) {
-      // A rematch starts shot ids over at 1, so the previous match's id must
-      // not suppress the first projectile animation in the new match.
       this.seenShotId = undefined;
+      this.shownDamageShotIds.clear();
+      this.playedOutcomeKey = undefined;
       if (previous.publicView.lastShot && next.publicView.turnNumber <= 1) {
         this.lastOwnShotPower = undefined;
         this.power = 55;
         this.angle = 45;
+        this.initialTerrain = [...next.publicView.terrain];
+        this.lastTerrainSignature = "";
       }
     } else if (shot.shooterPlayerId === next.playerId) {
       this.lastOwnShotPower = shot.power;
     }
+
     if (shot && shot.id !== this.seenShotId) {
       this.seenShotId = shot.id;
       const nextAnimation = {
@@ -413,6 +562,17 @@ class TankBattleScene extends Phaser.Scene {
         this.beginShotAnimation(nextAnimation);
       }
     }
+
+    // Show authoritative damage popups & hit reactions as soon as resolved shot arrives
+    if (shot?.resolved && shot.damage.length > 0 && !this.shownDamageShotIds.has(shot.id) && !this.shotAnimation) {
+      this.presentShotDamage(shot, next.publicView);
+    }
+
+    // Play victory/defeat fanfare once match ends (after replay finishes or immediately if already finished)
+    if (next.publicView.result && !this.shotAnimation) {
+      this.playMatchOutcomeSound(next);
+    }
+
     this.ensureSelectedItemAvailable();
     this.renderAll();
   }
@@ -422,6 +582,9 @@ class TankBattleScene extends Phaser.Scene {
     this.stopAngleAdjustment();
     this.activeAimPointerId = undefined;
     this.shotAnimationQueue.length = 0;
+    if (this.reducedMotionMedia && this.handleReducedMotionChange) {
+      this.reducedMotionMedia.removeEventListener("change", this.handleReducedMotionChange);
+    }
     if (!this.sys.isActive()) {
       this.audio.destroy();
       return;
@@ -440,20 +603,80 @@ class TankBattleScene extends Phaser.Scene {
     this.audio.destroy();
     this.tweens.killAll();
     this.time.removeAllEvents();
+    for (const exp of this.activeExplosions) exp.sprite.destroy();
+    this.activeExplosions.length = 0;
+    if (this.textures.exists(TEX_TERRAIN_CANVAS)) {
+      this.textures.remove(TEX_TERRAIN_CANVAS);
+    }
+  }
+
+  private setupReducedMotion(): void {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return;
+    this.reducedMotionMedia = window.matchMedia(reducedMotionQuery);
+    this.reducedMotion = this.reducedMotionMedia.matches;
+    this.handleReducedMotionChange = (event: MediaQueryListEvent) => {
+      this.reducedMotion = event.matches;
+    };
+    this.reducedMotionMedia.addEventListener("change", this.handleReducedMotionChange);
+  }
+
+  private createSkyBackdrop(): void {
+    const bw = this.layout.battleWidth;
+    const bh = this.layout.battleHeight;
+
+    if (this.textures.exists(TEX_SKY)) {
+      this.skyImage = this.add.image(0, 0, TEX_SKY).setOrigin(0, 0).setDisplaySize(bw, bh).setDepth(0);
+    }
+    if (this.textures.exists(TEX_MOUNTAINS)) {
+      this.mountainImage = this.add
+        .image(bw / 2, bh - 26, TEX_MOUNTAINS)
+        .setOrigin(0.5, 1)
+        .setDisplaySize(bw + 40, 320)
+        .setDepth(0.4);
+    }
+
+    this.cloudStates = createInitialClouds(bw);
+    this.cloudSprites = this.cloudStates.map((cloud) =>
+      this.add
+        .sprite(cloud.x, cloud.y, TEX_CLOUDS, cloud.frame)
+        .setScale(cloud.scale)
+        .setAlpha(cloud.alpha)
+        .setDepth(0.7)
+    );
+
+    this.windStreaks = createInitialWindStreaks(bw, bh);
+    this.windStreakGraphics = this.add.graphics().setDepth(0.85);
+  }
+
+  private createTerrainLayer(): void {
+    const bw = this.layout.battleWidth;
+    const bh = this.layout.battleHeight;
+    if (this.textures.exists(TEX_TERRAIN_CANVAS)) {
+      this.textures.remove(TEX_TERRAIN_CANVAS);
+    }
+    const canvasTex = this.textures.createCanvas(TEX_TERRAIN_CANVAS, bw, bh);
+    if (canvasTex) {
+      this.terrainCanvasTexture = canvasTex;
+      this.terrainImage = this.add.image(0, 0, TEX_TERRAIN_CANVAS).setOrigin(0, 0).setDepth(2);
+    } else {
+      this.terrainFallbackGraphics = this.add.graphics().setDepth(2);
+    }
   }
 
   private createHud(): void {
     const layout = this.layout;
     const style: Phaser.Types.GameObjects.Text.TextStyle = {
       fontFamily: "Inter, Pretendard, system-ui, sans-serif",
-      color: "#f8fbff"
+      color: "#f8fbff",
+      stroke: "#091224",
+      strokeThickness: 3
     };
-    this.statusText = this.add.text(layout.hudCenterX, 98, "", { ...style, fontSize: "20px", fontStyle: "bold" }).setOrigin(0.5).setDepth(12);
-    this.windText = this.add.text(layout.hudCenterX, 18, "", { ...style, fontSize: "17px", fontStyle: "bold" }).setOrigin(0.5).setDepth(12);
-    this.gravityText = this.add.text(layout.hudCenterX, 70, "", { ...style, fontSize: "13px", color: "#c7d7f4" }).setOrigin(0.5).setDepth(12);
+    this.statusText = this.add.text(layout.hudCenterX, 102, "", { ...style, fontSize: "19px", fontStyle: "bold" }).setOrigin(0.5).setDepth(12);
+    this.windText = this.add.text(layout.hudCenterX, 20, "", { ...style, fontSize: "16px", fontStyle: "bold" }).setOrigin(0.5).setDepth(12);
+    this.gravityText = this.add.text(layout.hudCenterX, 71, "", { ...style, fontSize: "12px", color: "#cfe4ff", strokeThickness: 2 }).setOrigin(0.5).setDepth(12);
     this.playerTexts = [
-      this.add.text(28, 19, "", { ...style, fontSize: "16px", fontStyle: "bold" }).setDepth(12),
-      this.add.text(layout.playerRightX, 19, "", { ...style, fontSize: "16px", fontStyle: "bold", align: "right" }).setOrigin(1, 0).setDepth(12)
+      this.add.text(28, 20, "", { ...style, fontSize: "16px", fontStyle: "bold" }).setDepth(12),
+      this.add.text(layout.playerRightX, 20, "", { ...style, fontSize: "16px", fontStyle: "bold", align: "right" }).setOrigin(1, 0).setDepth(12)
     ];
   }
 
@@ -497,17 +720,29 @@ class TankBattleScene extends Phaser.Scene {
 
     const itemEntries = ["megaBlast", "warhead", "scope"] as const;
     itemEntries.forEach((item, index) => {
-      const button = this.createButton(
+      const button = this.createItemButton(
         layout.items.startX + index * layout.items.stepX,
         layout.items.startY + index * layout.items.stepY,
         layout.items.width,
         layout.items.height,
-        itemLabels[item],
+        item,
         () => this.selectItem(item),
         layout.items.fontSize
       );
       this.itemButtons.set(item, button);
     });
+
+    this.muteButton = this.createButton(
+      layout.mute.x,
+      layout.mute.y,
+      layout.mute.width,
+      layout.mute.height,
+      this.muteButtonLabel(),
+      () => this.handleToggleMute(),
+      layout.mute.fontSize,
+      true,
+      true
+    );
 
     this.powerGaugeGraphics = this.add.graphics().setDepth(13);
     this.powerText = this.add.text(layout.power.textX, layout.power.textY, "", {
@@ -542,6 +777,7 @@ class TankBattleScene extends Phaser.Scene {
       fontStyle: "bold",
       color: "#b9d9ff"
     }).setOrigin(0.5).setDepth(14);
+
     this.fireButton = this.createButton(
       layout.fire.x,
       layout.fire.y,
@@ -558,12 +794,31 @@ class TankBattleScene extends Phaser.Scene {
     const graphics = this.hudGraphics;
     if (!graphics) return;
     graphics.clear();
+
+    // Sleek dark glass HUD pills over the twilight battlefield sky
+    const centerX = this.layout.hudCenterX;
+    graphics
+      .fillStyle(0x071226, 0.72)
+      .fillRoundedRect(centerX - 134, 6, 268, 78, 14)
+      .lineStyle(1.5, 0x7dd3fc, 0.45)
+      .strokeRoundedRect(centerX - 134, 6, 268, 78, 14)
+      .fillStyle(0x071226, 0.68)
+      .fillRoundedRect(14, 10, 232, 38, 11)
+      .lineStyle(1.5, 0x49b6ff, 0.55)
+      .strokeRoundedRect(14, 10, 232, 38, 11)
+      .fillStyle(0x071226, 0.68)
+      .fillRoundedRect(this.layout.battleWidth - 246, 10, 232, 38, 11)
+      .lineStyle(1.5, 0xff6b5f, 0.55)
+      .strokeRoundedRect(this.layout.battleWidth - 246, 10, 232, 38, 11);
+
     if (this.layout.mode === "compact-landscape") {
       graphics
         .fillStyle(0x07101f, 1)
         .fillRect(this.layout.battleWidth, 0, this.layout.width - this.layout.battleWidth, this.layout.height)
+        .fillRect(0, this.layout.battleHeight, this.layout.battleWidth, this.layout.height - this.layout.battleHeight)
         .lineStyle(3, 0x7dd3fc, 0.8)
         .lineBetween(this.layout.battleWidth + 1, 0, this.layout.battleWidth + 1, this.layout.height)
+        .lineBetween(0, this.layout.battleHeight + 1, this.layout.battleWidth, this.layout.battleHeight + 1)
         .fillStyle(0x073e78, 0.96)
         .fillRoundedRect(1020, 34, 460, 186, 18)
         .lineStyle(3, 0x22d3ee, 1)
@@ -582,6 +837,7 @@ class TankBattleScene extends Phaser.Scene {
         .strokeRoundedRect(1020, 594, 460, 186, 18);
       return;
     }
+
     graphics
       .fillStyle(0x07101f, 1)
       .fillRect(0, this.layout.battleHeight, this.layout.width, this.layout.height - this.layout.battleHeight)
@@ -601,6 +857,45 @@ class TankBattleScene extends Phaser.Scene {
       .strokeRoundedRect(688, 708, 300, 82, 14);
   }
 
+  private createItemButton(
+    x: number,
+    y: number,
+    width: number,
+    height: number,
+    item: Exclude<TankItemSelection, "none">,
+    onPress: () => void,
+    fontSize: number
+  ): BattleButton {
+    const background = this.add.rectangle(0, 0, width, height, 0x203250, 1).setStrokeStyle(2, 0x5475a3, 0.9);
+    const isCompact = this.layout.mode === "compact-landscape";
+    const icon = this.add
+      .sprite(isCompact ? 0 : -width / 2 + 28, isCompact ? -22 : 0, TEX_ITEMS, ITEM_ICON_FRAME[item])
+      .setDisplaySize(isCompact ? 62 : 42, isCompact ? 62 : 42);
+    const label = this.add.text(isCompact ? 0 : 18, isCompact ? 34 : 0, itemLabels[item], {
+      fontFamily: "Inter, Pretendard, system-ui, sans-serif",
+      fontSize: `${fontSize}px`,
+      fontStyle: "bold",
+      color: "#f8fbff",
+      align: "center",
+      lineSpacing: 2
+    }).setOrigin(0.5);
+
+    const container = this.add.container(x, y, [background, icon, label])
+      .setDepth(14)
+      .setSize(width, height)
+      .setInteractive({ useHandCursor: true });
+    container.on("pointerover", () => background.setFillStyle(0x2c4772, 1));
+    container.on("pointerout", () => this.refreshButtonStyles());
+    container.on("pointerdown", (_pointer: Phaser.Input.Pointer, _localX: number, _localY: number, event: Phaser.Types.Input.EventData) => {
+      void this.audio.unlock();
+      event.stopPropagation();
+      if (!this.canAim()) return;
+      triggerSelectionFeedback();
+      onPress();
+    });
+    return { container, background, label, icon };
+  }
+
   private createButton(
     x: number,
     y: number,
@@ -609,7 +904,8 @@ class TankBattleScene extends Phaser.Scene {
     text: string,
     onPress: () => void,
     fontSize = 18,
-    addToScene = true
+    addToScene = true,
+    alwaysEnabled = false
   ): BattleButton {
     const background = this.add.rectangle(0, 0, width, height, 0x203250, 1).setStrokeStyle(1, 0x5475a3, 0.9);
     const label = this.add.text(0, 0, text, {
@@ -628,7 +924,7 @@ class TankBattleScene extends Phaser.Scene {
     container.on("pointerdown", (_pointer: Phaser.Input.Pointer, _localX: number, _localY: number, event: Phaser.Types.Input.EventData) => {
       void this.audio.unlock();
       event.stopPropagation();
-      if (addToScene && !this.canAim()) return;
+      if (!alwaysEnabled && addToScene && !this.canAim()) return;
       triggerSelectionFeedback();
       onPress();
     });
@@ -640,10 +936,20 @@ class TankBattleScene extends Phaser.Scene {
     return { container, background, label };
   }
 
+  private muteButtonLabel(): string {
+    return this.audio.isMuted() ? "🔇 음소거" : "🔊 사운드";
+  }
+
+  private handleToggleMute(): void {
+    this.audio.toggleMute();
+    this.muteButton?.label.setText(this.muteButtonLabel());
+    this.refreshButtonStyles();
+  }
+
   private renderAll(): void {
     if (!this.sys.isActive()) return;
     this.drawTerrain(this.getVisualView().terrain);
-    this.drawTanks();
+    this.updateTanksTick(this.time.now);
     this.renderStatus();
     this.renderPowerAndPreview();
     this.renderItems();
@@ -655,34 +961,179 @@ class TankBattleScene extends Phaser.Scene {
   }
 
   private beginShotAnimation(animation: QueuedShotAnimation, startedAt = performance.now()): void {
-    this.shotAnimation = { ...animation, startedAt, exploded: false };
+    this.shotAnimation = { ...animation, startedAt, exploded: false, lastTrailAt: 0 };
+    this.tankFireTimes.set(animation.shot.shooterPlayerId, this.time.now);
+    this.spawnMuzzleFlash(animation.shot, animation.baseView);
     if (this.soundingShotId !== animation.shot.id) {
       this.startFlightAudio(animation.shot.id);
     }
   }
 
-  private drawSky(): void {
-    const graphics = this.skyGraphics;
-    if (!graphics) return;
-    graphics.clear();
-    graphics.fillGradientStyle(0x0d1732, 0x0d1732, 0x315687, 0x315687, 1);
-    graphics.fillRect(0, 0, this.layout.battleWidth, this.layout.battleHeight);
-    graphics.fillStyle(0xf8e8b0, 0.92).fillCircle(850, 105, 38);
-    graphics.fillStyle(0xffffff, 0.7);
-    for (let index = 0; index < 52; index += 1) {
-      const x = (index * 191 + 43) % this.layout.battleWidth;
-      const y = 112 + ((index * 83) % 255);
-      graphics.fillCircle(x, y, index % 5 === 0 ? 2 : 1);
+  private updateAtmosphere(time: number, delta: number): void {
+    const view = this.getVisualView();
+    const bw = this.layout.battleWidth;
+
+    this.cloudStates = stepCloudDrift(this.cloudStates, view.wind, delta, bw, this.reducedMotion);
+    for (let i = 0; i < this.cloudSprites.length; i += 1) {
+      const sprite = this.cloudSprites[i];
+      const state = this.cloudStates[i];
+      if (!sprite || !state) continue;
+      const bob = this.reducedMotion ? 0 : Math.sin(time / 1000 * 0.65 + i * 1.4) * 2.2;
+      sprite.setPosition(state.x, state.y + bob);
     }
-    graphics.fillStyle(0x8cc6ec, 0.08).fillCircle(185, 160, 130);
+
+    if (this.mountainImage && !this.reducedMotion) {
+      const parallaxOffset = Math.sin(time / 6500) * 6 + clamp(view.wind, -12, 12) * 0.7;
+      this.mountainImage.setX(bw / 2 + parallaxOffset);
+    }
+
+    const streaksGraphics = this.windStreakGraphics;
+    if (!streaksGraphics) return;
+    streaksGraphics.clear();
+    const windStrength = clamp(Math.abs(view.wind) / MAX_WIND_SPEED, 0, 1);
+    if (windStrength < 0.04 || this.reducedMotion) return;
+
+    this.windStreaks = stepWindStreaks(this.windStreaks, view.wind, delta, bw, this.reducedMotion);
+    const dir = view.wind >= 0 ? 1 : -1;
+    for (const streak of this.windStreaks) {
+      const alpha = streak.alpha * (0.35 + windStrength * 0.65);
+      const len = streak.length * (0.55 + windStrength * 0.85);
+      streaksGraphics.lineStyle(1.6, 0xe0f2fe, alpha);
+      streaksGraphics.lineBetween(streak.x, streak.y, streak.x + dir * len, streak.y);
+    }
   }
 
   private drawTerrain(terrain: number[]): void {
-    const graphics = this.terrainGraphics;
     const view = this.getVisualView();
-    if (!graphics || terrain.length === 0) return;
+    if (terrain.length === 0) return;
+
+    const signature = terrain.map((v) => Math.round(v)).join(",");
+    if (signature === this.lastTerrainSignature) return;
+    this.lastTerrainSignature = signature;
+
+    if (this.initialTerrain.length !== terrain.length) {
+      this.initialTerrain = [...terrain];
+    }
+
+    if (this.terrainCanvasTexture) {
+      const ctx = this.terrainCanvasTexture.getContext();
+      const width = this.layout.battleWidth;
+      const height = this.layout.battleHeight;
+      ctx.clearRect(0, 0, width, height);
+
+      // 1. Textured earth & rock strata interior clipped to the live destructible polygon
+      ctx.save();
+      ctx.beginPath();
+      ctx.moveTo(0, terrain[0] ?? height);
+      for (let i = 0; i < terrain.length; i += 1) {
+        ctx.lineTo(i * view.terrainStep, terrain[i] ?? height);
+      }
+      ctx.lineTo(width, height);
+      ctx.lineTo(0, height);
+      ctx.closePath();
+      ctx.clip();
+
+      const tileSource = this.textures.exists(TEX_TERRAIN_TILE)
+        ? (this.textures.get(TEX_TERRAIN_TILE).getSourceImage() as CanvasImageSource)
+        : null;
+      if (tileSource) {
+        const pattern = ctx.createPattern(tileSource, "repeat");
+        if (pattern) {
+          ctx.fillStyle = pattern;
+          ctx.fillRect(0, 0, width, height);
+        }
+      } else {
+        ctx.fillStyle = "#5c3e2b";
+        ctx.fillRect(0, 0, width, height);
+      }
+
+      // Atmospheric depth shadow gradient toward bottom of earth cut
+      const depthGrad = ctx.createLinearGradient(0, height * 0.48, 0, height);
+      depthGrad.addColorStop(0, "rgba(18, 12, 10, 0)");
+      depthGrad.addColorStop(0.7, "rgba(18, 12, 16, 0.24)");
+      depthGrad.addColorStop(1, "rgba(8, 10, 22, 0.56)");
+      ctx.fillStyle = depthGrad;
+      ctx.fillRect(0, 0, width, height);
+
+      // Soft soil-lip underside shadow just below the rim
+      ctx.beginPath();
+      for (let i = 0; i < terrain.length; i += 1) {
+        const x = i * view.terrainStep;
+        const y = (terrain[i] ?? height) + 10;
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.strokeStyle = "rgba(22, 13, 10, 0.48)";
+      ctx.lineWidth = 10;
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+      ctx.stroke();
+      ctx.restore();
+
+      // 2. Per-segment lush grass rim vs. scorched dark crater rim
+      ctx.save();
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+      for (let i = 0; i < terrain.length - 1; i += 1) {
+        const x0 = i * view.terrainStep;
+        const y0 = terrain[i] ?? height;
+        const x1 = (i + 1) * view.terrainStep;
+        const y1 = terrain[i + 1] ?? height;
+        const base0 = this.initialTerrain[i] ?? y0;
+        const base1 = this.initialTerrain[i + 1] ?? y1;
+        const scorched = (y0 - base0 > 4) || (y1 - base1 > 4);
+
+        // Crisp dark ink backing outline
+        ctx.strokeStyle = "#111829";
+        ctx.lineWidth = scorched ? 10 : 12;
+        ctx.beginPath();
+        ctx.moveTo(x0, y0 + 2);
+        ctx.lineTo(x1, y1 + 2);
+        ctx.stroke();
+
+        // Main rim band (scorched charcoal crater vs lush emerald grass)
+        ctx.strokeStyle = scorched ? "#3d2a25" : "#65a30d";
+        ctx.lineWidth = scorched ? 6 : 8;
+        ctx.beginPath();
+        ctx.moveTo(x0, y0 + 1);
+        ctx.lineTo(x1, y1 + 1);
+        ctx.stroke();
+
+        // Top sunlit highlight edge
+        ctx.strokeStyle = scorched ? "#7c4a32" : "#bef264";
+        ctx.lineWidth = 2.4;
+        ctx.beginPath();
+        ctx.moveTo(x0, y0 - 1.5);
+        ctx.lineTo(x1, y1 - 1.5);
+        ctx.stroke();
+
+        // Occasional charming grass tufts on undisturbed terrain
+        if (!scorched && i % 9 === 3) {
+          ctx.fillStyle = "#84cc16";
+          ctx.strokeStyle = "#111829";
+          ctx.lineWidth = 1.6;
+          ctx.beginPath();
+          ctx.moveTo(x0 - 4, y0);
+          ctx.lineTo(x0 - 6, y0 - 7);
+          ctx.lineTo(x0 - 1, y0 - 2);
+          ctx.lineTo(x0 + 2, y0 - 9);
+          ctx.lineTo(x0 + 5, y0);
+          ctx.closePath();
+          ctx.fill();
+          ctx.stroke();
+        }
+      }
+      ctx.restore();
+
+      this.terrainCanvasTexture.refresh();
+      return;
+    }
+
+    // Fallback graphics renderer if CanvasTexture is unavailable
+    const graphics = this.terrainFallbackGraphics;
+    if (!graphics) return;
     graphics.clear();
-    graphics.fillStyle(0x405639, 1);
+    graphics.fillStyle(0x5a3e2c, 1);
     graphics.beginPath();
     graphics.moveTo(0, terrain[0] ?? view.worldHeight);
     terrain.forEach((y, index) => graphics.lineTo(index * view.terrainStep, y));
@@ -690,52 +1141,207 @@ class TankBattleScene extends Phaser.Scene {
     graphics.lineTo(0, view.worldHeight);
     graphics.closePath();
     graphics.fillPath();
-    graphics.lineStyle(6, 0x9bb76b, 1);
+    graphics.lineStyle(6, 0x84cc16, 1);
     graphics.beginPath();
     terrain.forEach((y, index) => index === 0 ? graphics.moveTo(0, y) : graphics.lineTo(index * view.terrainStep, y));
     graphics.strokePath();
-    graphics.lineStyle(2, 0x2b3d2d, 0.65);
-    for (let layer = 1; layer <= 3; layer += 1) {
-      graphics.beginPath();
-      terrain.forEach((y, index) => index === 0
-        ? graphics.moveTo(0, Math.min(view.worldHeight, y + layer * 22))
-        : graphics.lineTo(index * view.terrainStep, Math.min(view.worldHeight, y + layer * 22)));
-      graphics.strokePath();
-    }
   }
 
-  private drawTanks(): void {
-    const graphics = this.tankGraphics;
-    if (!graphics) return;
-    graphics.clear();
-    const { playerId } = this.getClient();
+  private ensureTankVisual(playerId: string, seat: number, colorHex: string): TankVisual {
+    const existing = this.tankVisuals.get(playerId);
+    if (existing) return existing;
+
+    const colorNum = Phaser.Display.Color.HexStringToColor(colorHex).color;
+    const aura = this.add.circle(0, 0, 38, colorNum, 0).setDepth(3.5);
+    const barrel = this.add
+      .sprite(0, 0, TEX_WEAPONS, BARREL_FRAME_INDEX)
+      .setOrigin(BARREL_PIVOT_ORIGIN_X, 0.5)
+      .setScale(BARREL_SPRITE_SCALE)
+      .setDepth(4.0);
+    const hull = this.add
+      .sprite(0, 0, TEX_TANKS, seat % 2 === 0 ? 0 : 4)
+      .setOrigin(0.5, TANK_GROUND_ORIGIN_Y)
+      .setScale(TANK_SPRITE_SCALE)
+      .setDepth(4.2);
+
+    const visual: TankVisual = { aura, barrel, hull };
+    this.tankVisuals.set(playerId, visual);
+    return visual;
+  }
+
+  private updateTanksTick(timeMs: number): void {
+    const overlay = this.tankOverlayGraphics;
+    if (!overlay) return;
+    overlay.clear();
+
+    const client = this.getClient();
     const publicView = this.getVisualView();
+    const activeIds = new Set<string>();
+    const timeSec = timeMs / 1000;
+    const chargeRatio = this.chargeStartedAt === undefined ? 0 : clamp((this.power - 10) / 90, 0, 1);
+
     for (const tank of publicView.players) {
+      activeIds.add(tank.playerId);
       const alive = tank.health > 0;
       const facing = tankFacing(tank);
+      const isMe = tank.playerId === client.playerId;
+      const isActiveTurn = publicView.roomPhase === "active" && publicView.currentPlayerId === tank.playerId && !publicView.result;
+      const isCharging = isMe && this.chargeStartedAt !== undefined;
+
+      const fireStarted = this.tankFireTimes.get(tank.playerId);
+      const fireElapsedMs = fireStarted !== undefined ? timeMs - fireStarted : Number.POSITIVE_INFINITY;
+      const firingRemainingMs = Math.max(0, FIRE_POSE_MS - fireElapsedMs);
+
+      const hitStarted = this.tankHitTimes.get(tank.playerId);
+      const hitElapsedMs = hitStarted !== undefined ? timeMs - hitStarted : Number.POSITIVE_INFINITY;
+      const hitRemainingMs = Math.max(0, HIT_POSE_MS - hitElapsedMs);
+
+      const state = resolveTankAnimState({
+        alive,
+        isMyTurn: isActiveTurn,
+        isCharging,
+        firingRemainingMs,
+        hitRemainingMs
+      });
+
+      const stateElapsedSec = state === "hit"
+        ? Math.max(0, hitElapsedMs / 1000)
+        : state === "fire"
+          ? Math.max(0, fireElapsedMs / 1000)
+          : 0;
+
+      const pose = evaluateTankPose(state, timeSec, isCharging ? chargeRatio : 0, {
+        seat: tank.seat,
+        stateElapsedSec,
+        reducedMotion: this.reducedMotion
+      });
+
+      const visual = this.ensureTankVisual(tank.playerId, tank.seat, tank.color);
+      const anchorX = tank.x + pose.offsetX * facing;
+      const anchorY = tank.y + 11 + pose.offsetY;
+
+      visual.hull
+        .setPosition(anchorX, anchorY)
+        .setFrame(pose.frameIndex)
+        .setFlipX(facing < 0)
+        .setScale(TANK_SPRITE_SCALE * pose.scaleX, TANK_SPRITE_SCALE * pose.scaleY)
+        .setRotation(pose.rotation * facing)
+        .setVisible(true);
+
+      // Rotate and recoil the illustrated cannon barrel cleanly from the turret mantlet socket
       const displayedShot = this.shotAnimation?.shot ?? publicView.lastShot;
       const barrelAngle = displayedShot?.shooterPlayerId === tank.playerId
         ? displayedShot.angle
-        : tank.playerId === playerId ? this.angle : 45;
+        : isMe ? this.angle : 45;
       const radians = (barrelAngle * Math.PI) / 180;
-      const barrelStartY = tank.y - 21;
-      graphics.lineStyle(8, alive ? Phaser.Display.Color.HexStringToColor(tank.color).color : 0x4b5563, 1);
-      graphics.beginPath();
-      graphics.moveTo(tank.x + facing * 4, barrelStartY);
-      graphics.lineTo(tank.x + facing * Math.cos(radians) * 34, barrelStartY - Math.sin(radians) * 34);
-      graphics.strokePath();
-      graphics.fillStyle(0x142033, 1).fillRoundedRect(tank.x - 25, tank.y - 11, 50, 18, 7);
-      graphics.fillStyle(alive ? Phaser.Display.Color.HexStringToColor(tank.color).color : 0x596275, 1)
-        .fillRoundedRect(tank.x - 22, tank.y - 18, 44, 18, 6)
-        .fillCircle(tank.x, tank.y - 21, 13);
-      graphics.fillStyle(0x0b1220, 1);
-      [-16, 0, 16].forEach((offset) => graphics.fillCircle(tank.x + offset, tank.y + 2, 8));
-      graphics.fillStyle(0x172034, 1).fillRect(tank.x - 31, tank.y - 3, 62, 8);
-      const healthWidth = 72;
-      graphics.fillStyle(0x101827, 0.9).fillRoundedRect(tank.x - healthWidth / 2, tank.y - 67, healthWidth, 9, 4);
-      const healthColor = tank.health > 55 ? 0x4ade80 : tank.health > 25 ? 0xfbbf24 : 0xfb7185;
-      graphics.fillStyle(healthColor, 1).fillRoundedRect(tank.x - healthWidth / 2, tank.y - 67, healthWidth * (tank.health / tank.maxHealth), 9, 4);
+      const mantletX = anchorX + facing * 13;
+      const mantletY = anchorY - 35;
+      const recoilX = -facing * Math.cos(radians) * pose.barrelRecoilPx;
+      const recoilY = Math.sin(radians) * pose.barrelRecoilPx;
+
+      visual.barrel
+        .setPosition(mantletX + recoilX, mantletY + recoilY)
+        .setVisible(alive)
+        .setFlipY(facing < 0)
+        .setRotation(facing > 0 ? -radians : Math.PI + radians)
+        .setScale(BARREL_SPRITE_SCALE * (1 - pose.barrelRecoilPx * 0.008), BARREL_SPRITE_SCALE);
+
+      // Glowing charge / active turn aura
+      if (pose.glowIntensity > 0.02 && alive) {
+        const auraColor = state === "charge" ? 0xfbbf24 : state === "fire" ? 0xfef08a : Phaser.Display.Color.HexStringToColor(tank.color).color;
+        visual.aura
+          .setPosition(anchorX, anchorY - 24)
+          .setFillStyle(auraColor, pose.glowIntensity * (state === "charge" ? 0.36 : 0.2))
+          .setScale(1 + pose.glowIntensity * 0.35)
+          .setVisible(true);
+      } else {
+        visual.aura.setVisible(false);
+      }
+
+      // Stylized floating health bar with dark outline & gloss shine
+      const healthWidth = 74;
+      const healthY = tank.y - 72;
+      const hpRatio = clamp(tank.health / Math.max(1, tank.maxHealth), 0, 1);
+      overlay.fillStyle(0x0b1220, 0.92).fillRoundedRect(tank.x - healthWidth / 2 - 2, healthY - 2, healthWidth + 4, 13, 5);
+      overlay.lineStyle(1.5, 0x94a3b8, 0.65).strokeRoundedRect(tank.x - healthWidth / 2 - 2, healthY - 2, healthWidth + 4, 13, 5);
+      if (hpRatio > 0) {
+        const healthColor = tank.health > 55 ? 0x4ade80 : tank.health > 25 ? 0xfbbf24 : 0xfb7185;
+        overlay.fillStyle(healthColor, 1).fillRoundedRect(tank.x - healthWidth / 2, healthY, Math.max(4, healthWidth * hpRatio), 9, 3.5);
+        overlay.fillStyle(0xffffff, 0.32).fillRoundedRect(tank.x - healthWidth / 2 + 1, healthY + 1, Math.max(2, healthWidth * hpRatio - 2), 3, 2);
+      }
+
+      // Bouncing active-turn pointer chevron above active player's HP bar
+      if (isActiveTurn && alive) {
+        const chevronBob = this.reducedMotion ? 0 : Math.sin(timeSec * 6.5) * 3.5;
+        const cy = healthY - 12 + chevronBob;
+        overlay.fillStyle(0xfde047, 1).fillTriangle(tank.x, cy + 7, tank.x - 7, cy - 3, tank.x + 7, cy - 3);
+        overlay.lineStyle(1.5, 0x0f172a, 1).strokeTriangle(tank.x, cy + 7, tank.x - 7, cy - 3, tank.x + 7, cy - 3);
+      }
     }
+
+    // Hide any stale visuals if players changed
+    for (const [id, visual] of this.tankVisuals) {
+      if (!activeIds.has(id)) {
+        visual.hull.setVisible(false);
+        visual.barrel.setVisible(false);
+        visual.aura.setVisible(false);
+      }
+    }
+  }
+
+  private emitDamagedTankSmoke(timeMs: number): void {
+    if (this.reducedMotion || (typeof document !== "undefined" && document.hidden)) return;
+    if (timeMs - this.lastSmokeEmitAt < 260) return;
+    this.lastSmokeEmitAt = timeMs;
+
+    const view = this.getVisualView();
+    for (const tank of view.players) {
+      const wrecked = tank.health <= 0;
+      const damaged = tank.health > 0 && tank.health <= 45;
+      if (!wrecked && !damaged) continue;
+      const puff = this.add
+        .circle(
+          tank.x + (Math.random() * 14 - 7),
+          tank.y - 28,
+          wrecked ? 6 + Math.random() * 4 : 4 + Math.random() * 2.5,
+          wrecked ? 0x334155 : 0x94a3b8,
+          wrecked ? 0.65 : 0.42
+        )
+        .setDepth(4.5);
+      this.tweens.add({
+        targets: puff,
+        x: puff.x + view.wind * 1.8 + (Math.random() * 10 - 5),
+        y: puff.y - (wrecked ? 36 : 24),
+        scale: wrecked ? 2.1 : 1.6,
+        alpha: 0,
+        duration: wrecked ? 850 : 620,
+        ease: "Sine.Out",
+        onComplete: () => puff.destroy()
+      });
+    }
+  }
+
+  private spawnMuzzleFlash(shot: LastShot, view: TankBattlePublicView): void {
+    const shooter = view.players.find((p) => p.playerId === shot.shooterPlayerId);
+    if (!shooter) return;
+    const facing = tankFacing(shooter);
+    const radians = (shot.angle * Math.PI) / 180;
+    const tipX = shooter.x + facing * (13 + Math.cos(radians) * 44);
+    const tipY = shooter.y - 24 - Math.sin(radians) * 44;
+
+    const flash = this.add
+      .sprite(tipX, tipY, TEX_EXPLOSION, 0)
+      .setScale(0.45)
+      .setDepth(6.5)
+      .setRotation(Math.random() * Math.PI);
+    this.tweens.add({
+      targets: flash,
+      scale: 0.78,
+      alpha: 0,
+      duration: 180,
+      ease: "Quad.Out",
+      onComplete: () => flash.destroy()
+    });
   }
 
   private renderStatus(): void {
@@ -776,7 +1382,6 @@ class TankBattleScene extends Phaser.Scene {
     }
     this.renderPowerGauge();
     this.drawPreview();
-    this.drawTanks();
   }
 
   private renderWindIndicator(wind: number): void {
@@ -790,8 +1395,8 @@ class TankBattleScene extends Phaser.Scene {
     const endX = centerX + direction * maxLength * normalized;
 
     graphics.clear();
-    graphics.lineStyle(2, 0x6083ac, 0.8).lineBetween(centerX - maxLength, y, centerX + maxLength, y);
-    graphics.lineStyle(2, 0xc7d7f4, 0.85).lineBetween(centerX, y - 7, centerX, y + 7);
+    graphics.lineStyle(2, 0x6083ac, 0.85).lineBetween(centerX - maxLength, y, centerX + maxLength, y);
+    graphics.lineStyle(2, 0xc7d7f4, 0.9).lineBetween(centerX, y - 7, centerX, y + 7);
     graphics.fillStyle(0xdbeafe, 1).fillCircle(centerX, y, 3);
     if (direction === 0 || normalized === 0) return;
 
@@ -866,10 +1471,10 @@ class TankBattleScene extends Phaser.Scene {
     const facing = tankFacing(tank);
     const radians = (this.angle * Math.PI) / 180;
     if (this.selectedItem !== "scope") {
-      graphics.lineStyle(3, 0xffffff, 0.55);
+      graphics.lineStyle(3, 0xfef3c7, 0.58);
       graphics.beginPath();
       graphics.moveTo(tank.x + facing * 19, tank.y - 20);
-      graphics.lineTo(tank.x + facing * Math.cos(radians) * 74, tank.y - 20 - Math.sin(radians) * 74);
+      graphics.lineTo(tank.x + facing * Math.cos(radians) * 78, tank.y - 20 - Math.sin(radians) * 78);
       graphics.strokePath();
       return;
     }
@@ -887,19 +1492,22 @@ class TankBattleScene extends Phaser.Scene {
       worldHeight: view.worldHeight,
       terrainStep: view.terrainStep
     });
-    graphics.fillStyle(0x8be9ff, 0.82);
+    graphics.fillStyle(0x67e8f9, 0.88);
     prediction.trajectory.forEach((point, index) => {
-      if (index % 3 === 0) graphics.fillCircle(point.x, point.y, index % 9 === 0 ? 3 : 2);
+      if (index % 3 === 0) graphics.fillCircle(point.x, point.y, index % 9 === 0 ? 3.5 : 2.2);
     });
     if (prediction.impact) {
-      graphics.lineStyle(2, 0xffe082, 0.9).strokeCircle(prediction.impact.x, prediction.impact.y, 8);
+      graphics.lineStyle(2.5, 0xfde047, 0.95).strokeCircle(prediction.impact.x, prediction.impact.y, 10);
+      graphics.lineStyle(1.5, 0xfde047, 0.7).lineBetween(prediction.impact.x - 15, prediction.impact.y, prediction.impact.x + 15, prediction.impact.y);
+      graphics.lineStyle(1.5, 0xfde047, 0.7).lineBetween(prediction.impact.x, prediction.impact.y - 15, prediction.impact.x, prediction.impact.y + 15);
     }
   }
 
   private renderItems(): void {
     const items = this.getClient().privateView.items ?? { megaBlast: 0, warhead: 0, scope: 0 };
+    const separator = this.layout.mode === "compact-landscape" ? "\n×" : "\n×";
     for (const [item, button] of this.itemButtons) {
-      button.label.setText(`${itemLabels[item]}  ×${items[item] ?? 0}`);
+      button.label.setText(`${itemLabels[item]}${separator}${items[item] ?? 0}`);
     }
   }
 
@@ -914,9 +1522,16 @@ class TankBattleScene extends Phaser.Scene {
     }
     for (const [item, button] of this.itemButtons) {
       const available = enabled && (items[item] ?? 0) > 0;
-      button.container.setAlpha(available ? 1 : 0.36);
+      button.container.setAlpha(available ? 1 : 0.38);
       button.background.setFillStyle(this.selectedItem === item ? 0x0f766e : available ? 0x244b78 : 0x203250, 1);
       button.background.setStrokeStyle(2, this.selectedItem === item ? 0x67e8f9 : 0x5475a3, 0.9);
+    }
+    if (this.muteButton) {
+      const muted = this.audio.isMuted();
+      this.muteButton.label.setText(this.muteButtonLabel());
+      this.muteButton.background.setFillStyle(muted ? 0x3b1d2e : 0x153458, 1);
+      this.muteButton.background.setStrokeStyle(2, muted ? 0xfb7185 : 0x67e8f9, 0.92);
+      this.muteButton.label.setColor(muted ? "#fecdd3" : "#e0f2fe");
     }
     if (this.fireButton) {
       this.fireButton.container.setAlpha(enabled ? 1 : 0.78);
@@ -938,11 +1553,29 @@ class TankBattleScene extends Phaser.Scene {
     const elapsed = time - animation.startedAt;
     const flightProgress = clamp(elapsed / flightDuration, 0, 1);
     const point = pointAlongPath(animation.shot.trajectory, flightProgress);
-    if (point && flightProgress < 1) {
-      this.projectile?.setPosition(point.x, point.y).setVisible(true);
+
+    if (point && flightProgress < 1 && this.projectileSprite) {
+      const nextPoint = pointAlongPath(animation.shot.trajectory, Math.min(1, flightProgress + 0.02)) ?? point;
+      const dx = nextPoint.x - point.x;
+      const dy = nextPoint.y - point.y;
+      const angleRad = Math.hypot(dx, dy) > 0.01 ? Math.atan2(dy, dx) : 0;
+      const frame = PROJECTILE_FRAME_BY_ITEM[animation.shot.item];
+      this.projectileSprite
+        .setFrame(frame)
+        .setPosition(point.x, point.y)
+        .setRotation(angleRad)
+        .setScale(animation.shot.item === "megaBlast" ? 0.56 : 0.48)
+        .setVisible(true);
+
+      // Continuous smoke-puff + glowing spark trail behind flying shell
+      if (time - animation.lastTrailAt >= (this.reducedMotion ? 75 : 28)) {
+        animation.lastTrailAt = time;
+        this.spawnProjectileTrail(point.x, point.y, animation.shot.item);
+      }
     } else {
-      this.projectile?.setVisible(false);
+      this.projectileSprite?.setVisible(false);
     }
+
     if (flightProgress >= 1 && !animation.exploded) {
       animation.exploded = true;
       this.audio.stopFlight();
@@ -951,15 +1584,63 @@ class TankBattleScene extends Phaser.Scene {
       }
       this.renderStatus();
     }
+
     if (elapsed >= flightDuration + impactDuration) {
       this.shotAnimation = undefined;
-      this.projectile?.setVisible(false);
+      this.projectileSprite?.setVisible(false);
       this.stopFlightAudio();
+
+      const latestClient = this.getClient();
+      const latestShot = latestClient.publicView.lastShot;
+      if (latestShot?.resolved && latestShot.damage.length > 0 && !this.shownDamageShotIds.has(latestShot.id)) {
+        this.presentShotDamage(latestShot, latestClient.publicView);
+      }
+      if (latestClient.publicView.result) {
+        this.playMatchOutcomeSound(latestClient);
+      }
+
       const nextAnimation = this.shotAnimationQueue.shift();
       if (nextAnimation) this.beginShotAnimation(nextAnimation, time);
-      // Commit the newest authoritative terrain, tank positions, HP, and result
-      // only after the projectile and impact effects have both completed.
       this.renderAll();
+    }
+  }
+
+  private spawnProjectileTrail(x: number, y: number, item: TankItemSelection): void {
+    const smoke = this.add.circle(x, y, item === "megaBlast" ? 5.5 : 4, 0xe2e8f0, 0.55).setDepth(6.2);
+    this.tweens.add({
+      targets: smoke,
+      scale: 2.0,
+      alpha: 0,
+      duration: 360,
+      ease: "Sine.Out",
+      onComplete: () => smoke.destroy()
+    });
+    const sparkColor = item === "warhead" ? 0xfb7185 : item === "megaBlast" ? 0xf97316 : 0xfef08a;
+    const spark = this.add
+      .circle(x + (Math.random() * 6 - 3), y + (Math.random() * 6 - 3), 2.5, sparkColor, 0.92)
+      .setDepth(6.5);
+    this.tweens.add({
+      targets: spark,
+      y: spark.y + 8,
+      scale: 0.2,
+      alpha: 0,
+      duration: 240,
+      ease: "Quad.Out",
+      onComplete: () => spark.destroy()
+    });
+  }
+
+  private updateExplosions(timeMs: number): void {
+    for (let i = this.activeExplosions.length - 1; i >= 0; i -= 1) {
+      const exp = this.activeExplosions[i]!;
+      const elapsed = timeMs - exp.startedAt;
+      if (elapsed >= exp.durationMs) {
+        exp.sprite.destroy();
+        this.activeExplosions.splice(i, 1);
+        continue;
+      }
+      const frame = selectExplosionFrame(elapsed, exp.durationMs);
+      exp.sprite.setFrame(frame);
     }
   }
 
@@ -967,31 +1648,51 @@ class TankBattleScene extends Phaser.Scene {
     if (!shot.impact) return;
     if (shot.directHitPlayerId) {
       this.audio.playTankExplosion();
+      this.tankHitTimes.set(shot.directHitPlayerId, this.time.now);
     } else {
       this.audio.playTerrainExplosion();
     }
+
     const { x, y } = shot.impact;
-    const blast = this.add.circle(x, y, Math.max(14, shot.explosionRadius * 0.6), 0xffb347, 0.68).setDepth(8);
-    this.tweens.add({
-      targets: blast,
-      scale: 1.8,
-      alpha: 0,
-      duration: 480,
-      ease: "Quad.Out",
-      onComplete: () => blast.destroy()
+
+    // 8-frame illustrated cartoon explosion sprite
+    const expScale = Math.max(1.05, shot.explosionRadius / 32);
+    const expSprite = this.add
+      .sprite(x, y, TEX_EXPLOSION, 0)
+      .setScale(expScale)
+      .setDepth(8.5);
+    this.activeExplosions.push({
+      sprite: expSprite,
+      startedAt: this.time.now,
+      durationMs: EXPLOSION_ANIM_MS
     });
+
+    // Crisp shockwave ring pulse
+    const ring = this.add.circle(x, y, Math.max(12, shot.explosionRadius * 0.45), 0xfef08a, 0)
+      .setStrokeStyle(4, 0xfde047, 0.9)
+      .setDepth(8.2);
+    this.tweens.add({
+      targets: ring,
+      scale: 2.1,
+      alpha: 0,
+      duration: 420,
+      ease: "Quad.Out",
+      onComplete: () => ring.destroy()
+    });
+
     const sparks = this.add.particles(x, y, "tank-battle-spark", {
       speed: { min: 110, max: 320 },
-      angle: { min: 195, max: 345 },
-      lifespan: { min: 300, max: 650 },
+      angle: { min: 190, max: 350 },
+      lifespan: { min: 300, max: 640 },
       gravityY: 260,
-      scale: { start: 1.2, end: 0 },
+      scale: { start: 1.25, end: 0 },
       quantity: 0,
       emitting: false
     }).setDepth(9);
-    sparks.explode(34);
+    sparks.explode(this.reducedMotion ? 12 : 34);
+
     const debris = this.add.particles(x, y, "tank-battle-debris", {
-      speedX: { min: -190, max: 190 },
+      speedX: { min: -195, max: 195 },
       speedY: { min: -310, max: -80 },
       lifespan: { min: 520, max: 880 },
       gravityY: 390,
@@ -1000,12 +1701,63 @@ class TankBattleScene extends Phaser.Scene {
       quantity: 0,
       emitting: false
     }).setDepth(8);
-    debris.explode(26);
+    debris.explode(this.reducedMotion ? 8 : 26);
+
     this.time.delayedCall(IMPACT_EFFECT_MS - 50, () => {
       sparks.destroy();
       debris.destroy();
     });
-    this.cameras.main.shake(330, 0.007 + shot.explosionRadius / 25_000);
+
+    if (!this.reducedMotion) {
+      this.cameras.main.shake(330, 0.007 + shot.explosionRadius / 25_000);
+    }
+
+    if (shot.resolved && shot.damage.length > 0 && !this.shownDamageShotIds.has(shot.id)) {
+      this.presentShotDamage(shot, this.getClient().publicView);
+    }
+  }
+
+  private presentShotDamage(shot: LastShot, view: TankBattlePublicView): void {
+    this.shownDamageShotIds.add(shot.id);
+    for (const entry of shot.damage) {
+      if (entry.totalDamage <= 0) continue;
+      this.tankHitTimes.set(entry.playerId, this.time.now);
+      const target = view.players.find((p) => p.playerId === entry.playerId);
+      if (!target) continue;
+
+      const isDirect = entry.directHitDamage > 0;
+      const label = isDirect ? `직격! -${entry.totalDamage}` : `-${entry.totalDamage}`;
+      const text = this.add.text(target.x, target.y - 82, label, {
+        fontFamily: "Inter, Pretendard, system-ui, sans-serif",
+        fontSize: isDirect ? "22px" : "18px",
+        fontStyle: "bold",
+        color: isDirect ? "#fde047" : "#fb7185",
+        stroke: "#091224",
+        strokeThickness: 5
+      }).setOrigin(0.5).setDepth(13);
+
+      this.tweens.add({
+        targets: text,
+        y: text.y - 44,
+        alpha: 0,
+        duration: 1_150,
+        ease: "Cubic.Out",
+        onComplete: () => text.destroy()
+      });
+    }
+  }
+
+  private playMatchOutcomeSound(client: TankBattleClient): void {
+    const view = client.publicView;
+    if (!view.result) return;
+    const outcomeKey = `${view.result}:${view.winnerPlayerId ?? "none"}:${view.turnNumber}`;
+    if (this.playedOutcomeKey === outcomeKey) return;
+    this.playedOutcomeKey = outcomeKey;
+    if (view.result === "win" && view.winnerPlayerId === client.playerId) {
+      this.audio.playVictory();
+    } else {
+      this.audio.playDefeat();
+    }
   }
 
   private createParticleTextures(): void {
@@ -1022,6 +1774,7 @@ class TankBattleScene extends Phaser.Scene {
   private changeAngle(delta: number): void {
     if (!this.canAim()) return;
     this.angle = clamp(this.angle + delta, ANGLE_MIN, ANGLE_MAX);
+    this.audio.playGearCreak(0.45);
     this.renderPowerAndPreview();
   }
 
@@ -1121,6 +1874,7 @@ class TankBattleScene extends Phaser.Scene {
   private selectItem(item: Exclude<TankItemSelection, "none">): void {
     if (!this.canAim() || (this.getClient().privateView.items?.[item] ?? 0) <= 0) return;
     this.selectedItem = this.selectedItem === item ? "none" : item;
+    this.audio.playItemSelect();
     this.renderItems();
     this.renderPowerAndPreview();
     this.refreshButtonStyles();
@@ -1145,6 +1899,7 @@ class TankBattleScene extends Phaser.Scene {
       const firedPower = Math.round(this.power * 10) / 10;
       this.lastOwnShotPower = firedPower;
       this.awaitingSnapshot = true;
+      this.tankFireTimes.set(this.getClient().playerId, this.time.now);
       triggerPlacementFeedback();
       this.startFlightAudio(this.getClient().publicView.turnNumber);
       this.getClient().sendAction({
@@ -1235,8 +1990,6 @@ function toTankBattleClient(
     playerId: context.playerId,
     version: context.version,
     serverTime: context.serverTime,
-    // Chat, presence and error updates repeat the last snapshot's server time,
-    // so the receipt time moves only when a new snapshot brings a new one.
     receivedAt: previous && previous.serverTime === context.serverTime ? previous.receivedAt : performance.now(),
     connected: context.connected !== false,
     actionErrorRevision: context.actionError?.revision ?? 0,
