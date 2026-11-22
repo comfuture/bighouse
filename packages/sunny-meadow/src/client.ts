@@ -44,8 +44,10 @@ import {
 import { gameMetadata } from "./client-metadata";
 import {
   clientPointToCanvasLogical,
+  computeWeaponSlotHitboxes,
   createHudClickController,
   hitTestHudPoint,
+  hitTestWeaponSlotPoint,
   type HudActionTarget
 } from "./hud-interactions";
 import { createMenuModeSync } from "./menu-mode-sync";
@@ -196,6 +198,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
         <canvas class="sm-canvas" width="960" height="576" data-el="canvas"></canvas>
         <button type="button" class="sm-hud-hotspot sm-hud-hotspot-status" data-act="hud-inventory" aria-label="인벤토리 열기 (I)"></button>
         <button type="button" class="sm-hud-hotspot sm-hud-hotspot-shop" data-act="hud-shop" aria-label="상점 열기 (B)"></button>
+        <div class="sm-hud-weapon-bar" data-el="hud-weapon-bar" role="group" aria-label="무기 슬롯"></div>
       </section>
       <div class="sm-mobile-controls" data-el="mobile-controls" aria-label="모바일 터치 조작">
         <div class="sm-joypad-zone" data-el="joypad-zone" role="application" aria-label="이동 조이패드 (터치 후 드래그)">
@@ -211,9 +214,6 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
           <button type="button" class="sm-action-btn sm-action-btn-sub sm-action-btn-potion" data-touch="potion" aria-label="포션 사용">
             <span class="sm-action-icon" aria-hidden="true">🧪</span>
             <span class="sm-action-badge" data-el="touch-potion-count">2</span>
-          </button>
-          <button type="button" class="sm-action-btn sm-action-btn-sub sm-action-btn-weapon" data-touch="weaponNext" aria-label="무기 교체">
-            <span class="sm-action-icon" aria-hidden="true">🔄</span>
           </button>
           <button type="button" class="sm-action-btn sm-action-btn-jump" data-touch="jump" aria-label="점프">
             <span class="sm-action-label" aria-hidden="true">JUMP</span>
@@ -350,11 +350,11 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
   const playShell = root.querySelector<HTMLElement>('[data-el="play-shell"]')!;
   const canvas = root.querySelector<HTMLCanvasElement>('[data-el="canvas"]')!;
   const stageFrame = root.querySelector<HTMLElement>('[data-el="stage-frame"]')!;
+  const hudWeaponBarEl = root.querySelector<HTMLElement>('[data-el="hud-weapon-bar"]')!;
   const joypadZone = root.querySelector<HTMLElement>('[data-el="joypad-zone"]')!;
   const joypadBase = root.querySelector<HTMLElement>('[data-el="joypad-base"]')!;
   const joypadKnob = root.querySelector<HTMLElement>('[data-el="joypad-knob"]')!;
   const touchPotionCountEl = root.querySelector<HTMLElement>('[data-el="touch-potion-count"]')!;
-  const touchWeaponBtn = root.querySelector<HTMLButtonElement>('[data-touch="weaponNext"]')!;
   const stageBadge = root.querySelector<HTMLElement>('[data-el="stage-badge"]')!;
   const stageTitle = root.querySelector<HTMLElement>('[data-el="stage-title"]')!;
   const mapDialog = root.querySelector<HTMLDialogElement>('[data-el="map-dialog"]')!;
@@ -520,10 +520,61 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
     virtualTapQueue.clear();
   }
 
+  let lastHudWeaponSlotsKey = "";
+  let hoveredWeaponId: string | null = null;
+
+  function syncHudWeaponSlots(): void {
+    const key = `${localPlayer.unlockedWeapons.join(",")}|${localPlayer.equippedWeaponId}`;
+    if (key === lastHudWeaponSlotsKey) return;
+    lastHudWeaponSlotsKey = key;
+    const { slots } = computeWeaponSlotHitboxes(localPlayer.unlockedWeapons);
+    hudWeaponBarEl.textContent = "";
+    for (const { weaponId, rect } of slots) {
+      const w = WEAPON_CATALOG[weaponId];
+      if (!w) continue;
+      const active = localPlayer.equippedWeaponId === weaponId;
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = `sm-hud-hotspot sm-hud-weapon-slot${active ? " is-equipped" : ""}`;
+      btn.dataset.weaponSlot = weaponId;
+      btn.setAttribute("aria-label", `${w.name} 장착`);
+      btn.setAttribute("aria-pressed", String(active));
+      btn.style.left = `${((rect.x / VIEWPORT.width) * 100).toFixed(3)}%`;
+      btn.style.top = `${((rect.y / VIEWPORT.height) * 100).toFixed(3)}%`;
+      btn.style.width = `${((rect.w / VIEWPORT.width) * 100).toFixed(3)}%`;
+      btn.style.height = `${((rect.h / VIEWPORT.height) * 100).toFixed(3)}%`;
+      btn.addEventListener("pointerenter", () => {
+        if (!downed()) hoveredWeaponId = weaponId;
+      });
+      btn.addEventListener("pointerleave", () => {
+        if (hoveredWeaponId === weaponId) hoveredWeaponId = null;
+      });
+      btn.addEventListener("focus", () => {
+        if (!downed()) hoveredWeaponId = weaponId;
+      });
+      btn.addEventListener("blur", () => {
+        if (hoveredWeaponId === weaponId) hoveredWeaponId = null;
+      });
+      btn.addEventListener("pointerdown", (e: PointerEvent) => {
+        if (downed() || localPlayer.inMenu || chatOpen) return;
+        if (e.pointerType === "mouse" && e.button !== 0) return;
+        e.preventDefault();
+        void audio.unlock();
+        selectWeaponLocal(weaponId);
+      });
+      btn.addEventListener("click", () => {
+        if (downed() || localPlayer.inMenu || chatOpen) return;
+        void audio.unlock();
+        selectWeaponLocal(weaponId);
+      });
+      hudWeaponBarEl.append(btn);
+    }
+  }
+
   function syncMobileActionBadges(): void {
     touchPotionCountEl.textContent = String(localPlayer.potions);
     touchPotionCountEl.classList.toggle("is-empty", localPlayer.potions <= 0);
-    touchWeaponBtn.classList.toggle("is-dimmed", localPlayer.unlockedWeapons.length <= 1);
+    syncHudWeaponSlots();
   }
 
   // World runtime state
@@ -910,6 +961,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
       expiresAt: Date.now() + 2500
     };
     localPlayer.equippedWeaponId = wid;
+    syncHudWeaponSlots();
     resetIdleRegen();
     actions.sendAction({ type: "switchWeapon", payload: { weaponId: wid, switchSeq: weaponSwitchSeq } });
   }
@@ -1311,6 +1363,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
         localPlayer.equippedWeaponId = priv.equippedWeaponId;
       }
     }
+    syncHudWeaponSlots();
     if (typeof priv.highestStageNumber === "number") highestStageNumber = priv.highestStageNumber;
     if (priv.lastItemPickup && typeof priv.lastItemPickup === "object") {
       localLastItemPickup = { ...priv.lastItemPickup };
@@ -2749,21 +2802,29 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
     const pt = clientPointToCanvasLogical(e.clientX, e.clientY, canvas.getBoundingClientRect());
     return pt ? hitTestHudPoint(pt.x, pt.y) : null;
   };
+  const getWeaponSlotAtClientPoint = (clientX: number, clientY: number): string | null => {
+    const pt = clientPointToCanvasLogical(clientX, clientY, canvas.getBoundingClientRect());
+    return pt ? hitTestWeaponSlotPoint(pt.x, pt.y, localPlayer.unlockedWeapons) : null;
+  };
   const onCanvasPointerMove = (e: PointerEvent) => {
     const blocked = downed() || inventoryDialog.open || shopDialog.open || mapDialog.open || helpDialog.open;
     const hit = blocked ? null : getHudTargetAtEvent(e);
+    const hitWeapon = blocked || hit ? null : getWeaponSlotAtClientPoint(e.clientX, e.clientY);
     statusHover = hit === "inventory";
     coinHover = hit === "shop";
-    canvas.style.cursor = hit ? "pointer" : "";
+    hoveredWeaponId = hitWeapon;
+    canvas.style.cursor = hit || hitWeapon ? "pointer" : "";
   };
   const onCanvasPointerLeave = () => {
     statusHover = false;
     coinHover = false;
+    hoveredWeaponId = null;
     canvas.style.cursor = "";
   };
   const onCanvasPointerCancel = () => {
     statusHover = false;
     coinHover = false;
+    hoveredWeaponId = null;
     canvas.style.cursor = "";
     hudClickController.onPointerCancel();
   };
@@ -2771,6 +2832,15 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
     if (downed() || inventoryDialog.open || shopDialog.open || mapDialog.open || helpDialog.open) {
       hudClickController.onPointerCancel();
       return;
+    }
+    if (e.button === 0) {
+      const hitWeapon = getWeaponSlotAtClientPoint(e.clientX, e.clientY);
+      if (hitWeapon) {
+        void audio.unlock();
+        selectWeaponLocal(hitWeapon);
+        hudClickController.onPointerCancel();
+        return;
+      }
     }
     hudClickController.onPointerDown(getHudTargetAtEvent(e), e.button);
   };
@@ -2872,6 +2942,14 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
   const onJoypadPointerDown = (e: PointerEvent) => {
     if (downed() || localPlayer.inMenu || chatOpen) return;
     if (e.pointerType === "mouse" && e.button !== 0) return;
+    // Allow direct touch on bottom-center weapon slots even if a narrow viewport overlaps the zone edge.
+    const hitWeapon = getWeaponSlotAtClientPoint(e.clientX, e.clientY);
+    if (hitWeapon) {
+      e.preventDefault();
+      void audio.unlock();
+      selectWeaponLocal(hitWeapon);
+      return;
+    }
     e.preventDefault();
     void audio.unlock();
     const snap = joypadController.begin(e.pointerId, e.clientX, e.clientY, joypadZone.getBoundingClientRect());
@@ -2958,19 +3036,6 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
         btn.setPointerCapture(e.pointerId);
       } catch {
         // Window fallback listeners release cleanly if capture is unavailable.
-      }
-      if (act === "weaponNext" || act === "weaponPrev") {
-        // Trigger weapon cycling immediately on tap (like Q/E keydown) so quick taps never drop.
-        if (localPlayer.unlockedWeapons.length > 1) {
-          const delta = act === "weaponNext" ? 1 : -1;
-          const idx = localPlayer.unlockedWeapons.indexOf(localPlayer.equippedWeaponId);
-          const nextWid =
-            localPlayer.unlockedWeapons[
-              (idx + delta + localPlayer.unlockedWeapons.length) % localPlayer.unlockedWeapons.length
-            ]!;
-          selectWeaponLocal(nextWid);
-        }
-        return;
       }
       virtualDown.add(act);
       virtualTapQueue.add(act);
@@ -4479,6 +4544,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
           particles,
           coinHover,
           statusHover,
+          hoveredWeaponId,
           stagePlayerCount,
           totalPlayersOnline
         },
