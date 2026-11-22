@@ -100,6 +100,7 @@
   display: block;
   width: 100%;
   height: 100%;
+  touch-action: manipulation;
 }
 
 .sm-footer {
@@ -232,15 +233,24 @@
 
 .sm-dialog-footer {
   display: flex;
-  justify-content: flex-end;
-  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
 }
 
+.sm-dialog-footer > button:only-child {
+  margin-inline-start: auto;
+}
 
-
-
-
-
+.sm-help-list {
+  margin: 0;
+  padding-inline-start: 18px;
+  font-size: 0.84rem;
+  line-height: 1.5;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
 
 /* Death: the scene drains of colour until the player revives. */
 .sm-stage-frame.is-dead .sm-canvas {
@@ -249,19 +259,19 @@
 }
 
 .sm-death-dialog {
-  width: min(92vw, 400px);
+  width: min(92vw, 380px);
 }
 
 .sm-death-dialog p {
-  margin: 0 0 12px;
-  font-size: 0.9rem;
-  line-height: 1.5;
+  margin: 0;
+  font-size: 0.88rem;
+  line-height: 1.45;
 }
 
 .sm-death-penalty {
   display: grid;
-  gap: 8px;
-  margin: 0 0 12px;
+  gap: 6px;
+  margin: 0;
   padding: 0;
   list-style: none;
 }
@@ -272,9 +282,9 @@
   gap: 16px;
   border: 1.5px solid #e2c288;
   border-radius: 10px;
-  padding: 8px 12px;
+  padding: 7px 11px;
   background: #fff6e2;
-  font-size: 0.9rem;
+  font-size: 0.88rem;
 }
 
 .sm-death-penalty strong {
@@ -284,186 +294,418 @@
 
 .sm-death-dialog .sm-death-note {
   color: #7a5a37;
-  font-size: 0.82rem;
+  font-size: 0.8rem;
 }
 
-/* ==================== INVENTORY / CHARACTER REFIT & SHOP MODALS ==================== */
+/* ==================== INVENTORY & SHOP MODALS ==================== */
 
 .sm-dialog-wide {
-  width: min(96vw, 860px);
-  max-height: 90dvh;
+  inline-size: min(94dvw, 880px);
+  max-block-size: 92dvh;
   overflow-y: auto;
-  padding: 18px 20px;
+  padding: 14px 16px;
+}
+
+.sm-dialog-wide[open] {
+  gap: 10px;
 }
 
 .sm-modal-header {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
   border-bottom: 2px solid #ecd3a6;
-  padding-bottom: 10px;
+  padding-block-end: 8px;
 }
 
 .sm-modal-header h2 {
   display: flex;
   align-items: center;
-  gap: 8px;
-  font-size: 1.16rem;
+  gap: 6px;
+  font-size: 1.08rem;
 }
 
 .sm-coin-pill {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 4px 12px;
+  gap: 5px;
+  padding: 3px 11px;
   border-radius: 999px;
   background: #3d2410;
   border: 2px solid #ffb300;
   color: #ffd740;
   font-weight: 800;
-  font-size: 0.88rem;
+  font-size: 0.84rem;
   font-variant-numeric: tabular-nums;
 }
 
-.sm-safe-note {
-  margin: 0;
-  font-size: 0.78rem;
-  color: #5f6d78;
-  background: #eef2f5;
-  border: 1px solid #cfd8dc;
-  border-radius: 10px;
-  padding: 6px 10px;
+.sm-feedback {
+  flex: 1 1 auto;
+  min-inline-size: 0;
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: #5a3818;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.sm-feedback {
-  min-height: 22px;
-  font-size: 0.84rem;
-  font-weight: 700;
-  padding: 5px 10px;
-  border-radius: 10px;
-  background: #fff3d6;
-  border: 1.5px solid #e0be7c;
-  color: #5a3818;
+.sm-feedback:empty {
+  visibility: hidden;
 }
 
 .sm-feedback.is-success {
-  background: #e8f5e9;
-  border-color: #66bb6a;
   color: #1b5e20;
 }
 
 .sm-feedback.is-error {
-  background: #ffebee;
-  border-color: #ef5350;
   color: #b71c1c;
 }
 
 .sm-split {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 14px;
-  align-items: start;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 12px;
+  align-items: stretch;
+}
+
+.sm-split-inv {
+  grid-template-columns: minmax(0, 1.08fr) minmax(0, 0.92fr);
 }
 
 @media (max-width: 760px) {
-  .sm-split {
-    grid-template-columns: 1fr;
+  .sm-split,
+  .sm-split-inv {
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 
 .sm-panel {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
+  min-inline-size: 0;
   background: #fff6e4;
   border: 2px solid #e2c288;
   border-radius: 14px;
-  padding: 12px;
+  padding: 10px;
 }
 
-.sm-panel h3 {
-  margin: 0;
-  font-size: 0.94rem;
-  font-weight: 800;
-  color: #4a2c14;
+.sm-section-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 6px;
+}
+
+.sm-section-head h3 {
+  margin: 0;
+  font-size: 0.84rem;
+  font-weight: 800;
+  color: #4a2c14;
+}
+
+.sm-count-badge {
+  font-size: 0.72rem;
+  font-weight: 800;
+  color: #7a5a37;
+  background: rgba(217, 176, 115, 0.25);
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-variant-numeric: tabular-nums;
+}
+
+.sm-hero-strip {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 6px 8px;
+  border-radius: 11px;
+  background: linear-gradient(135deg, #fffdf5, #ffefc9);
+  border: 1.5px solid #dfbe87;
+}
+
+.sm-hero-strip img {
+  width: 40px;
+  height: 40px;
+  object-fit: contain;
+  flex-shrink: 0;
+}
+
+.sm-hero-meta {
+  flex: 1 1 auto;
+  min-inline-size: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.sm-hero-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  min-inline-size: 0;
+}
+
+.sm-hero-top strong {
+  font-size: 0.86rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sm-equip-pill {
+  flex-shrink: 0;
+  font-size: 0.72rem;
+  font-weight: 800;
+  color: #1b5e20;
+  background: #e8f5e9;
+  border: 1px solid #81c784;
+  padding: 1px 7px;
+  border-radius: 999px;
+}
+
+.sm-hero-meters {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 5px;
+}
+
+.sm-meter {
+  position: relative;
+  height: 15px;
+  border-radius: 999px;
+  background: #3e2723;
+  overflow: clip;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.sm-meter-exp {
+  background: #263238;
+}
+
+.sm-meter-fill {
+  position: absolute;
+  inset-block: 0;
+  inset-inline-start: 0;
+  border-radius: 999px;
+}
+
+.sm-meter-hp .sm-meter-fill {
+  background: #ef5350;
+}
+
+.sm-meter-exp .sm-meter-fill {
+  background: #7c4dff;
+}
+
+.sm-meter-label {
+  position: relative;
+  z-index: 1;
+  font-size: 0.66rem;
+  font-weight: 800;
+  color: #fff;
+  font-variant-numeric: tabular-nums;
+  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.55);
 }
 
 .sm-stat-grid {
   display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 6px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 5px;
 }
 
 .sm-stat-card {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 6px 9px;
-  border-radius: 9px;
+  gap: 4px;
+  padding: 4px 7px;
+  border-radius: 8px;
   background: #fffdf7;
   border: 1.5px solid #ead2a4;
-  font-size: 0.8rem;
+  font-size: 0.74rem;
+}
+
+.sm-stat-card span {
+  color: #7a5a37;
+  font-weight: 700;
 }
 
 .sm-stat-card strong {
   font-variant-numeric: tabular-nums;
   color: #3c2616;
+  white-space: nowrap;
 }
 
-.sm-hero-strip {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 8px 10px;
-  border-radius: 12px;
-  background: linear-gradient(135deg, #fffdf5, #ffefc9);
-  border: 1.5px solid #dfbe87;
+.sm-weapon-list {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 5px;
 }
 
-.sm-hero-strip img {
-  width: 52px;
-  height: 52px;
-  object-fit: contain;
-  flex-shrink: 0;
-}
-
-.sm-hero-meta {
+.sm-weapon-tile {
+  position: relative;
   display: flex;
   flex-direction: column;
+  align-items: center;
+  justify-content: center;
   gap: 2px;
-  font-size: 0.82rem;
+  padding: 5px 3px 4px;
+  border-radius: 9px;
+  border: 2px solid #dfbe87;
+  background: #fffdf7;
+  cursor: pointer;
+  font: inherit;
+  color: #3c2616;
+  min-inline-size: 0;
 }
 
-.sm-hero-meta strong {
-  font-size: 0.95rem;
+.sm-weapon-tile:hover {
+  background: #fff1cc;
+}
+
+.sm-weapon-tile.is-equipped {
+  border-color: #2e7d32;
+  background: #e8f5e9;
+}
+
+.sm-weapon-tile.is-selected {
+  border-color: #ff6f00;
+  box-shadow: 0 0 0 2px rgba(255, 111, 0, 0.22);
+}
+
+.sm-weapon-name {
+  inline-size: 100%;
+  text-align: center;
+  font-size: 0.66rem;
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sm-weapon-badge {
+  position: absolute;
+  top: 2px;
+  font-size: 0.6rem;
+  font-weight: 900;
+  line-height: 1.25;
+  padding: 0 4px;
+  border-radius: 5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.sm-weapon-badge.is-eq {
+  left: 2px;
+  background: #2e7d32;
+  color: #fff;
+}
+
+.sm-weapon-badge.is-lv {
+  right: 2px;
+  background: #ff6f00;
+  color: #fff;
+}
+
+.sm-upgrade-box {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-block-start: auto;
+  padding-block-start: 4px;
+  border-top: 1.5px solid #ead2a4;
+}
+
+.sm-upgrade-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 6px;
+}
+
+.sm-upgrade-card {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 7px 8px;
+  border-radius: 10px;
+  border: 1.5px solid #dfbe87;
+  background: #fffdf8;
+  font-size: 0.76rem;
+}
+
+.sm-upgrade-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+}
+
+.sm-upgrade-head strong {
+  font-size: 0.8rem;
+}
+
+.sm-inline-icon {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-inline-size: 0;
+}
+
+.sm-rate-pill {
+  font-size: 0.7rem;
+  font-weight: 800;
+  color: #5a3818;
+  background: #ffefc9;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-variant-numeric: tabular-nums;
+}
+
+.sm-upgrade-costs {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  min-block-size: 16px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.sm-upgrade-costs .is-ok {
+  color: #2e7d32;
+}
+
+.sm-upgrade-costs .is-short {
+  color: #c62828;
 }
 
 .sm-inv-grid {
   display: grid;
   grid-template-columns: repeat(6, minmax(0, 1fr));
-  gap: 6px;
+  gap: 5px;
 }
 
 .sm-slot {
   position: relative;
   aspect-ratio: 1;
-  border-radius: 10px;
+  border-radius: 9px;
   border: 2px solid #d9b67a;
   background: #fffdf8;
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 3px;
+  padding: 2px;
   cursor: pointer;
   transition: transform 90ms ease, border-color 120ms ease, background 120ms ease;
 }
 
-.sm-slot:hover {
+.sm-slot:hover:not(:disabled) {
   border-color: #c28020;
   background: #fff3d1;
 }
@@ -483,9 +725,9 @@
 
 .sm-slot-qty {
   position: absolute;
-  right: 3px;
+  right: 2px;
   bottom: 2px;
-  font-size: 0.7rem;
+  font-size: 0.68rem;
   font-weight: 900;
   color: #fff;
   background: rgba(42, 24, 10, 0.85);
@@ -496,8 +738,8 @@
 }
 
 .sm-sprite-icon {
-  width: 36px;
-  height: 36px;
+  width: 34px;
+  height: 34px;
   background-repeat: no-repeat;
   flex-shrink: 0;
   display: inline-block;
@@ -508,19 +750,17 @@
   height: 24px;
 }
 
-.sm-weapon-list {
+.sm-shop-list {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 6px;
-  max-height: 170px;
-  overflow-y: auto;
 }
 
-.sm-weapon-card {
+.sm-shop-card {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 6px 8px;
+  gap: 7px;
+  padding: 7px 8px;
   border-radius: 10px;
   border: 2px solid #dfbe87;
   background: #fffdf7;
@@ -528,88 +768,7 @@
   text-align: left;
   font: inherit;
   color: #3c2616;
-}
-
-.sm-weapon-card:hover {
-  background: #fff1cc;
-}
-
-.sm-weapon-card.is-equipped {
-  border-color: #2e7d32;
-  background: #e8f5e9;
-}
-
-.sm-weapon-card.is-selected {
-  border-color: #ff6f00;
-  box-shadow: 0 0 0 2px rgba(255, 111, 0, 0.22);
-}
-
-.sm-weapon-card-info {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  min-width: 0;
-}
-
-.sm-weapon-card-info strong {
-  font-size: 0.79rem;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.sm-weapon-card-info span {
-  font-size: 0.7rem;
-  color: #6b4e38;
-}
-
-.sm-upgrade-actions {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px;
-}
-
-.sm-upgrade-card {
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-  padding: 9px 10px;
-  border-radius: 11px;
-  border: 2px solid #dfbe87;
-  background: #fffdf8;
-  font-size: 0.78rem;
-}
-
-.sm-upgrade-card strong {
-  font-size: 0.85rem;
-}
-
-.sm-upgrade-meta {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  color: #5c402c;
-  font-size: 0.74rem;
-}
-
-.sm-shop-list {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 7px;
-}
-
-.sm-shop-card {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 9px;
-  border-radius: 11px;
-  border: 2px solid #dfbe87;
-  background: #fffdf7;
-  cursor: pointer;
-  text-align: left;
-  font: inherit;
-  color: #3c2616;
+  min-inline-size: 0;
 }
 
 .sm-shop-card:hover {
@@ -624,37 +783,77 @@
 .sm-shop-card-info {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  min-width: 0;
+  gap: 1px;
+  min-inline-size: 0;
 }
 
 .sm-shop-card-info strong {
-  font-size: 0.82rem;
+  font-size: 0.8rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .sm-shop-card-info span {
-  font-size: 0.73rem;
+  font-size: 0.72rem;
   color: #8c5a14;
   font-weight: 700;
+  font-variant-numeric: tabular-nums;
 }
 
 .sm-detail-box {
   display: flex;
   flex-direction: column;
-  gap: 7px;
-  padding: 10px;
-  border-radius: 11px;
+  justify-content: center;
+  gap: 6px;
+  margin-block-start: auto;
+  min-block-size: 58px;
+  padding: 8px 10px;
+  border-radius: 10px;
   border: 1.5px solid #dfbe87;
   background: #fffdf8;
-  font-size: 0.8rem;
+  font-size: 0.78rem;
 }
 
 .sm-detail-row {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
+  gap: 8px;
+  min-inline-size: 0;
+}
+
+.sm-detail-meta {
+  color: #6b4e38;
+  font-size: 0.74rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sm-detail-empty {
+  color: #8a6d4b;
+  font-size: 0.76rem;
+  text-align: center;
+}
+
+.sm-price-tag {
+  flex-shrink: 0;
+  font-size: 0.76rem;
+  font-weight: 800;
+  color: #8c5a14;
+  font-variant-numeric: tabular-nums;
+}
+
+.sm-action-row {
+  display: flex;
+  flex-wrap: wrap;
   gap: 6px;
+}
+
+.sm-btn-compact {
+  padding: 4px 9px;
+  font-size: 0.75rem;
 }
 
 .sm-btn-danger {

@@ -34,6 +34,12 @@ import {
   SHOP_OFFERS_BY_ID
 } from "./economy";
 import { gameMetadata } from "./client-metadata";
+import {
+  clientPointToCanvasLogical,
+  createHudClickController,
+  hitTestHudPoint,
+  type HudActionTarget
+} from "./hud-interactions";
 import { createMenuModeSync } from "./menu-mode-sync";
 import { createWeaponSwitchSequence } from "./weapon-switch-sequence";
 import { compileStageForRuntime, type CompiledStage, type RuntimeLadder } from "./map-schema";
@@ -49,7 +55,6 @@ import {
 import {
   economySheetUrl,
   heroUrl,
-  HUD_COIN_HITBOX,
   itemsSheetUrl,
   loadSunnyImages,
   SunnyRenderer,
@@ -153,9 +158,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
         <h1 class="sm-title" data-el="stage-title">햇살 초원 모험</h1>
       </div>
       <div class="sm-actions">
-        <button type="button" class="sm-btn sm-btn-primary" data-act="inventory">🎒 인벤토리</button>
-        <button type="button" class="sm-btn" data-act="shop">🏪 상점</button>
-        <button type="button" class="sm-btn" data-act="map">🗺 스테이지</button>
+        <button type="button" class="sm-btn sm-btn-primary" data-act="map">🗺 스테이지</button>
         <button type="button" class="sm-btn" data-act="chat">💬 채팅</button>
         <button type="button" class="sm-btn" data-act="mute">🔊 사운드</button>
         <button type="button" class="sm-btn" data-act="help">📖 가이드</button>
@@ -181,89 +184,91 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
       </div>
     </div>
     <footer class="sm-footer">
-      <span><strong>이동</strong> ←→ / A D</span>
-      <span><strong>점프</strong> Space / C</span>
-      <span><strong>내려오기</strong> ↓+Space</span>
-      <span><strong>사다리·포털</strong> ↑ / W</span>
-      <span><strong>공격</strong> X / Z</span>
+      <span><strong>이동</strong> ←→</span>
+      <span><strong>점프</strong> Space</span>
+      <span><strong>하강</strong> ↓+Space</span>
+      <span><strong>포털·사다리</strong> ↑</span>
+      <span><strong>공격</strong> X/Z</span>
       <span><strong>포션</strong> F</span>
-      <span><strong>무기</strong> Q / E / 1~0</span>
-      <span><strong>인벤토리·강화</strong> I</span>
-      <span><strong>상점</strong> B / 코인 클릭</span>
+      <span><strong>무기</strong> Q/E·1~0</span>
+      <span><strong>인벤토리</strong> I</span>
+      <span><strong>상점</strong> B</span>
     </footer>
     <dialog class="sm-dialog sm-dialog-wide" closedby="any" data-el="inventory-dialog" aria-labelledby="sm-inv-title">
       <div class="sm-modal-header">
-        <h2 id="sm-inv-title">🎒 인벤토리 · 캐릭터 정비 &amp; 무기 강화</h2>
-        <div style="display:flex;align-items:center;gap:8px;">
-          <span class="sm-coin-pill" data-el="inv-coins">0 코인</span>
-          <button type="button" class="sm-btn" data-act="switch-to-shop">🏪 상점 이동</button>
-        </div>
+        <h2 id="sm-inv-title">🎒 인벤토리</h2>
+        <span class="sm-coin-pill" data-el="inv-coins">0</span>
       </div>
-      <p class="sm-safe-note">정비 모드 활성화: 캐릭터가 회색 반투명 보호 상태가 되어 스테이지의 몬스터·함정·기물과 상호작용하지 않습니다.</p>
-      <div class="sm-feedback" data-el="inv-feedback">무기를 선택해 붉은 강화석(ATK) 또는 초록 강화석(DEX)으로 강화할 수 있습니다. (최대 +10)</div>
-      <div class="sm-split">
+      <div class="sm-split sm-split-inv">
         <div class="sm-panel">
           <div class="sm-hero-strip">
             <img data-el="inv-hero-img" alt="캐릭터" />
             <div class="sm-hero-meta" data-el="inv-hero-meta"></div>
           </div>
           <div class="sm-stat-grid" data-el="inv-stats"></div>
-          <h3>⚔️ 보유 무기 <span style="font-size:0.75rem;color:#7a5a37;">클릭하여 장착·강화 선택</span></h3>
+          <div class="sm-section-head">
+            <h3>무기</h3>
+            <span class="sm-count-badge" data-el="inv-weapon-count">1/10</span>
+          </div>
           <div class="sm-weapon-list" data-el="inv-weapons"></div>
-          <div data-el="inv-upgrade-panel"></div>
+          <div class="sm-upgrade-box" data-el="inv-upgrade-panel"></div>
         </div>
         <div class="sm-panel">
-          <h3>🎒 인벤토리 (4×6 · 24칸) <span style="font-size:0.75rem;color:#7a5a37;">강화석 최대 20개 스택</span></h3>
+          <div class="sm-section-head">
+            <h3>가방</h3>
+            <span class="sm-count-badge" data-el="inv-slot-count">0/24</span>
+          </div>
           <div class="sm-inv-grid" data-el="inv-grid"></div>
           <div class="sm-detail-box" data-el="inv-item-detail"></div>
         </div>
       </div>
       <form method="dialog" class="sm-dialog-footer">
-        <button value="close" class="sm-btn sm-btn-primary" autofocus>정비 마치기</button>
+        <span class="sm-feedback" data-el="inv-feedback" role="status" aria-live="polite"></span>
+        <button value="close" class="sm-btn sm-btn-primary" autofocus>닫기</button>
       </form>
     </dialog>
     <dialog class="sm-dialog sm-dialog-wide" closedby="any" data-el="shop-dialog" aria-labelledby="sm-shop-title">
       <div class="sm-modal-header">
-        <h2 id="sm-shop-title">🏪 초원 상점 (코인 ↔ 강화석 거래)</h2>
-        <div style="display:flex;align-items:center;gap:8px;">
-          <span class="sm-coin-pill" data-el="shop-coins">0 코인</span>
-          <button type="button" class="sm-btn" data-act="switch-to-inv">🎒 인벤토리·강화</button>
-        </div>
+        <h2 id="sm-shop-title">🏪 상점</h2>
+        <span class="sm-coin-pill" data-el="shop-coins">0</span>
       </div>
-      <p class="sm-safe-note">거래 중에는 캐릭터가 회색 반투명 보호 상태가 됩니다. 강화석 판매가는 구매가의 약 25%입니다.</p>
-      <div class="sm-feedback" data-el="shop-feedback">좌측 내 인벤토리에서 아이템을 선택해 판매하거나, 우측 상점에서 필요한 강화석을 구매하세요.</div>
       <div class="sm-split">
         <div class="sm-panel">
-          <h3>🎒 내 인벤토리 (4×6) <span style="font-size:0.75rem;color:#7a5a37;">선택 후 판매</span></h3>
+          <div class="sm-section-head">
+            <h3>판매</h3>
+            <span class="sm-count-badge" data-el="shop-slot-count">0/24</span>
+          </div>
           <div class="sm-inv-grid" data-el="shop-my-grid"></div>
           <div class="sm-detail-box" data-el="shop-sell-detail"></div>
         </div>
         <div class="sm-panel">
-          <h3>🛍️ 상점 상품 <span style="font-size:0.75rem;color:#7a5a37;">선택 후 구매</span></h3>
+          <div class="sm-section-head">
+            <h3>구매</h3>
+          </div>
           <div class="sm-shop-list" data-el="shop-offers"></div>
           <div class="sm-detail-box" data-el="shop-buy-detail"></div>
         </div>
       </div>
       <form method="dialog" class="sm-dialog-footer">
-        <button value="close" class="sm-btn sm-btn-primary" autofocus>상점 닫기</button>
+        <span class="sm-feedback" data-el="shop-feedback" role="status" aria-live="polite"></span>
+        <button value="close" class="sm-btn sm-btn-primary" autofocus>닫기</button>
       </form>
     </dialog>
     <dialog class="sm-dialog" closedby="any" data-el="map-dialog" aria-labelledby="sm-map-title">
-      <h2 id="sm-map-title">🗺 월드 지도 (스테이지 1 ~ 10)</h2>
+      <h2 id="sm-map-title">🗺 스테이지</h2>
       <div class="sm-stage-grid" data-el="stage-grid"></div>
       <form method="dialog" class="sm-dialog-footer">
         <button value="close" class="sm-btn sm-btn-primary" autofocus>닫기</button>
       </form>
     </dialog>
     <dialog class="sm-dialog" closedby="any" data-el="help-dialog" aria-labelledby="sm-help-title">
-      <h2 id="sm-help-title">📖 햇살 초원 모험 가이드</h2>
-      <ul style="margin:0;padding-left:18px;font-size:0.86rem;line-height:1.55;display:flex;flex-direction:column;gap:7px;">
-        <li><strong>전통 플랫포머 착지</strong>: 점프 상승 중에는 위 발판을 통과하고 착지할 때만 섭니다. <kbd>↓</kbd>+<kbd>Space</kbd>로 한 층 내려올 수 있어요.</li>
-        <li><strong>특수 지형 &amp; 위험 구역</strong>: 탄성 발판(고공 점프), 빙판(미끄럼), 컨베이어(이동), 진흙(감속)을 활용하세요! 바닥의 물·가시·용암·독 늪에 떨어지면 피해를 입고 위로 튕겨 오릅니다.</li>
-        <li><strong>비밀 포털 &amp; 확장 스테이지</strong>: 스테이지가 올라갈수록 화면이 넓어지고(10→20화면) 수직 탑과 격리된 비밀 포털 사냥터가 열립니다!</li>
-        <li><strong>지수 성장 레벨링</strong>: 몹 처치 시 경험치를 얻고 레벨업마다 최대 체력·공격력이 크게 상승합니다. 레벨이 높아지면 하위 스테이지 경험치 효율이 줄어드니 스테이지 2~10으로 이동하세요!</li>
-        <li><strong>동적 리젠 &amp; 2초 무적</strong>: 같은 스테이지의 플레이어 수에 맞춰 몹과 아이템이 빠르게 리젠됩니다. 갓 리젠된 몹은 2초간 점멸하며 공격하거나 공격당하지 않습니다.</li>
-        <li><strong>자동 영구 저장</strong>: 레벨, 경험치, 무기, 마지막 스테이지와 위치가 서버에 자동 저장되어 재접속 시 그대로 이어집니다.</li>
+      <h2 id="sm-help-title">📖 가이드</h2>
+      <ul class="sm-help-list">
+        <li><strong>이동·하강</strong> ←→ 이동, <kbd>Space</kbd> 점프, <kbd>↓</kbd>+<kbd>Space</kbd> 한 층 하강</li>
+        <li><strong>지형·함정</strong> 탄성·빙판·컨베이어·진흙 활용, 바닥 함정 주의</li>
+        <li><strong>인벤토리</strong> <kbd>I</kbd> 또는 좌상단 상태창 클릭 (무기 장착·강화)</li>
+        <li><strong>상점</strong> <kbd>B</kbd> 또는 우상단 코인 클릭 (강화석·포션 거래)</li>
+        <li><strong>성장·저장</strong> 권장 레벨 스테이지 이동, 진행 자동 저장</li>
       </ul>
       <form method="dialog" class="sm-dialog-footer">
         <button value="close" class="sm-btn sm-btn-primary" autofocus>확인</button>
@@ -271,14 +276,14 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
     </dialog>
     <dialog class="sm-dialog sm-death-dialog" closedby="none" data-el="death-dialog" aria-labelledby="sm-death-title">
       <h2 id="sm-death-title">쓰러졌습니다</h2>
-      <p>부활하면 스테이지 시작 지점에서 체력 60%로 다시 시작하고, 아래를 잃습니다.</p>
+      <p>체력 60%로 시작 지점에서 부활합니다.</p>
       <ul class="sm-death-penalty">
         <li><span>경험치</span><strong data-el="death-xp">0</strong></li>
         <li><span>코인</span><strong data-el="death-coins">0</strong></li>
       </ul>
-      <p class="sm-death-note">레벨, 무기, 포션은 그대로 유지됩니다.</p>
+      <p class="sm-death-note">레벨·무기·포션 유지</p>
       <div class="sm-dialog-footer">
-        <button type="button" class="sm-btn sm-btn-primary" data-act="revive">부활하기</button>
+        <button type="button" class="sm-btn sm-btn-primary" data-act="revive">부활</button>
       </div>
     </dialog>
   `;
@@ -298,12 +303,15 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
   invHeroImg.src = heroUrl;
   const invHeroMetaEl = root.querySelector<HTMLElement>('[data-el="inv-hero-meta"]')!;
   const invStatsEl = root.querySelector<HTMLElement>('[data-el="inv-stats"]')!;
+  const invWeaponCountEl = root.querySelector<HTMLElement>('[data-el="inv-weapon-count"]')!;
   const invWeaponsEl = root.querySelector<HTMLElement>('[data-el="inv-weapons"]')!;
   const invUpgradePanelEl = root.querySelector<HTMLElement>('[data-el="inv-upgrade-panel"]')!;
+  const invSlotCountEl = root.querySelector<HTMLElement>('[data-el="inv-slot-count"]')!;
   const invGridEl = root.querySelector<HTMLElement>('[data-el="inv-grid"]')!;
   const invItemDetailEl = root.querySelector<HTMLElement>('[data-el="inv-item-detail"]')!;
   const shopCoinsEl = root.querySelector<HTMLElement>('[data-el="shop-coins"]')!;
   const shopFeedbackEl = root.querySelector<HTMLElement>('[data-el="shop-feedback"]')!;
+  const shopSlotCountEl = root.querySelector<HTMLElement>('[data-el="shop-slot-count"]')!;
   const shopMyGridEl = root.querySelector<HTMLElement>('[data-el="shop-my-grid"]')!;
   const shopSellDetailEl = root.querySelector<HTMLElement>('[data-el="shop-sell-detail"]')!;
   const shopOffersEl = root.querySelector<HTMLElement>('[data-el="shop-offers"]')!;
@@ -354,7 +362,12 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
         downOut = isOutside(e, dlg);
       });
       dlg.addEventListener("pointerup", (e) => {
-        if (downOut && isOutside(e, dlg)) dlg.close();
+        const shouldClose = downOut && isOutside(e, dlg);
+        downOut = false;
+        if (shouldClose) dlg.close();
+      });
+      dlg.addEventListener("close", () => {
+        downOut = false;
       });
     }
   }
@@ -537,6 +550,8 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
   let selectedShopOfferId: string = SHOP_OFFERS[0]!.id;
   let selectedUpgradeWeaponId = "wooden_sword";
   let coinHover = false;
+  let statusHover = false;
+  const hudClickController = createHudClickController();
 
   const menuModeSync = createMenuModeSync();
 
@@ -1275,19 +1290,19 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
       }
       if (p.action === "shopBuy" || p.action === "shopSell") {
         const msgMap: Record<string, string> = {
-          insufficient_coins: "코인이 부족합니다.",
-          inventory_full: "인벤토리(4×6) 공간이 부족합니다.",
-          economy_cooldown: "잠시 후 다시 시도해주세요."
+          insufficient_coins: "코인 부족",
+          inventory_full: "가방 가득 참",
+          economy_cooldown: "잠시 후 재시도"
         };
-        setFeedback(shopFeedbackEl, msgMap[String(p.reason ?? "")] ?? "거래를 처리할 수 없습니다.", "error");
+        setFeedback(shopFeedbackEl, msgMap[String(p.reason ?? "")] ?? "거래 실패", "error");
       } else if (p.action === "upgradeWeapon") {
         const msgMap: Record<string, string> = {
-          upgrade_maxed: "이미 최대 강화(+10)에 도달했습니다.",
-          insufficient_coins: "강화 비용(코인)이 부족합니다.",
-          insufficient_stones: "필요한 강화석이 부족합니다.",
-          economy_cooldown: "잠시 후 다시 강화할 수 있습니다."
+          upgrade_maxed: "최대 강화(+10)",
+          insufficient_coins: "코인 부족",
+          insufficient_stones: "강화석 부족",
+          economy_cooldown: "잠시 후 재시도"
         };
-        setFeedback(invFeedbackEl, msgMap[String(p.reason ?? "")] ?? "강화를 진행할 수 없습니다.", "error");
+        setFeedback(invFeedbackEl, msgMap[String(p.reason ?? "")] ?? "강화 실패", "error");
       }
       return;
     }
@@ -1309,10 +1324,10 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
       const qty = Number(p.quantity ?? 1);
       const delta = Number(p.coinsDelta ?? 0);
       if (kind === "buy") {
-        setFeedback(shopFeedbackEl, `★ ${itemName} ×${qty} 구매 완료! (${delta.toLocaleString()} 코인)`, "success");
+        setFeedback(shopFeedbackEl, `${itemName} ×${qty} 구매 (${delta.toLocaleString()})`, "success");
         audio.playSfx("sfx_item_pickup", 0.03);
       } else {
-        setFeedback(shopFeedbackEl, `💰 ${itemName} ×${qty} 판매 완료! (+${delta.toLocaleString()} 코인)`, "success");
+        setFeedback(shopFeedbackEl, `${itemName} ×${qty} 판매 (+${delta.toLocaleString()})`, "success");
         audio.playSfx("sfx_item_pickup", 0.03);
       }
       if (shopDialog.open) renderShopDialog();
@@ -1326,15 +1341,11 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
       const ok = Boolean(p.success);
       const tot = Number(p.totalLevel ?? 0);
       if (ok) {
-        setFeedback(invFeedbackEl, `★ 강화 성공! ${wName} +${tot} (${stat} 상승)`, "success");
+        setFeedback(invFeedbackEl, `★ ${wName} +${tot} (${stat}↑)`, "success");
         audio.playSfx("sfx_level_up", 0.04);
       } else {
         const failStreak = Number(p.failStreak ?? 0);
-        setFeedback(
-          invFeedbackEl,
-          `강화 실패 (${wName} 유지 · 다음 성공 보정 +${Math.min(25, failStreak * 5)}%)`,
-          "error"
-        );
+        setFeedback(invFeedbackEl, `강화 실패 · 보정 +${Math.min(25, failStreak * 5)}%`, "error");
         audio.playSfx("sfx_land", 0.04);
       }
       if (inventoryDialog.open) renderInventoryDialog();
@@ -1793,14 +1804,13 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
       btn.className = `sm-stage-card${isCurrent ? " is-current" : ""}`;
       btn.disabled = !unlocked || isCurrent;
       const playersHere = stagePlayerCounts[st.meta.id] ?? 0;
-      const screens = Math.round(st.meta.widthTiles / st.meta.screenWidthTiles);
       const tallTag = st.meta.heightTiles >= 24 ? " · 고층" : "";
       const title = document.createElement("strong");
       title.textContent = `${st.meta.name}${isCurrent ? " (현재)" : ""}`;
       const meta = document.createElement("span");
       meta.textContent = unlocked
-        ? `${screens}화면${tallTag} · 권장 Lv.${st.meta.recommendedMinLevel}~${st.meta.recommendedMaxLevel} · 접속 ${playersHere}명`
-        : `🔒 Lv.${st.meta.minEntryLevel} 이상 해금 (${screens}화면${tallTag})`;
+        ? `Lv.${st.meta.recommendedMinLevel}~${st.meta.recommendedMaxLevel} · ${playersHere}명${tallTag}`
+        : `🔒 Lv.${st.meta.minEntryLevel}+`;
       btn.append(title, meta);
       btn.addEventListener("click", () => {
         if (!unlocked || isCurrent) return;
@@ -1826,8 +1836,8 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
       if (slot) {
         const spec = INVENTORY_ITEMS[slot.itemId];
         if (spec) {
-          btn.title = `${spec.name} (×${slot.quantity})`;
-          btn.append(makeSpriteIcon(spec.sheet, spec.iconIndex, 34));
+          btn.title = `${spec.name} (${slot.quantity}/${spec.maxStack})`;
+          btn.append(makeSpriteIcon(spec.sheet, spec.iconIndex, 32));
           if (spec.stackable && slot.quantity > 1) {
             const qty = document.createElement("span");
             qty.className = "sm-slot-qty";
@@ -1844,8 +1854,16 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
     });
   }
 
+  function countUsedSlots(): number {
+    let used = 0;
+    for (const s of localInventory) {
+      if (s) used++;
+    }
+    return used;
+  }
+
   function renderInventoryDialog(): void {
-    invCoinsEl.textContent = `🪙 ${localPlayer.coins.toLocaleString()} 코인`;
+    invCoinsEl.textContent = `🪙 ${localPlayer.coins.toLocaleString()}`;
     if (!localPlayer.unlockedWeapons.includes(selectedUpgradeWeaponId)) {
       selectedUpgradeWeaponId = localPlayer.equippedWeaponId;
     }
@@ -1854,23 +1872,49 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
     const eqUpg = getWeaponUpgrade(localPlayer.weaponUpgrades, eqW.id);
     const eqCombat = computeEffectiveCombatStats(eqW, localPlayer.baseAtk, localPlayer.baseDex, eqUpg);
 
+    // Compact hero header with visual HP / EXP meters
     invHeroMetaEl.textContent = "";
+    const topLine = document.createElement("div");
+    topLine.className = "sm-hero-top";
     const nameEl = document.createElement("strong");
     nameEl.textContent = `Lv.${localPlayer.level} ${localPlayer.displayName}`;
-    const hpEl = document.createElement("span");
-    hpEl.textContent = `HP ${Math.ceil(localPlayer.hp)} / ${localPlayer.maxHp}  ·  EXP ${localPlayer.xp.toLocaleString()} / ${localPlayer.xpToNext.toLocaleString()}`;
-    const eqEl = document.createElement("span");
-    eqEl.textContent = `장착 무기: ${eqW.name}${eqCombat.totalLevel > 0 ? ` +${eqCombat.totalLevel}` : ""}`;
-    invHeroMetaEl.append(nameEl, hpEl, eqEl);
+    const eqBadge = document.createElement("span");
+    eqBadge.className = "sm-equip-pill";
+    eqBadge.textContent = `${eqW.name}${eqCombat.totalLevel > 0 ? ` +${eqCombat.totalLevel}` : ""}`;
+    topLine.append(nameEl, eqBadge);
+
+    const meters = document.createElement("div");
+    meters.className = "sm-hero-meters";
+    const makeMeter = (kind: "hp" | "exp", ratio: number, label: string) => {
+      const track = document.createElement("div");
+      track.className = `sm-meter sm-meter-${kind}`;
+      const fill = document.createElement("span");
+      fill.className = "sm-meter-fill";
+      fill.style.width = `${Math.round(Math.max(0, Math.min(1, ratio)) * 100)}%`;
+      const text = document.createElement("span");
+      text.className = "sm-meter-label";
+      text.textContent = label;
+      track.append(fill, text);
+      return track;
+    };
+    meters.append(
+      makeMeter("hp", localPlayer.hp / Math.max(1, localPlayer.maxHp), `HP ${Math.ceil(localPlayer.hp)}/${localPlayer.maxHp}`),
+      makeMeter(
+        "exp",
+        localPlayer.xp / Math.max(1, localPlayer.xpToNext),
+        `EXP ${localPlayer.xp.toLocaleString()}/${localPlayer.xpToNext.toLocaleString()}`
+      )
+    );
+    invHeroMetaEl.append(topLine, meters);
 
     invStatsEl.textContent = "";
     const stats: Array<[string, string]> = [
-      ["총 ATK", `${eqCombat.totalAtk} (무기강화 +${eqCombat.atkBonus})`],
-      ["총 DEX", `${eqCombat.totalDex} (무기강화 +${eqCombat.dexBonus})`],
-      ["치명타 확률", `${Math.round(eqCombat.critChance * 100)}%`],
-      ["공격 속도", `${eqCombat.cooldownSec.toFixed(2)}초/회`],
-      ["보유 포션", `${localPlayer.potions}개`],
-      ["점수 / 처치", `${localPlayer.score.toLocaleString()} / ${localPlayer.mobsDefeated}`]
+      ["ATK", eqCombat.atkBonus > 0 ? `${eqCombat.totalAtk} (+${eqCombat.atkBonus})` : String(eqCombat.totalAtk)],
+      ["DEX", eqCombat.dexBonus > 0 ? `${eqCombat.totalDex} (+${eqCombat.dexBonus})` : String(eqCombat.totalDex)],
+      ["치명타", `${Math.round(eqCombat.critChance * 100)}%`],
+      ["공속", `${eqCombat.cooldownSec.toFixed(2)}s`],
+      ["포션", `×${localPlayer.potions}`],
+      ["처치", localPlayer.mobsDefeated.toLocaleString()]
     ];
     for (const [label, val] of stats) {
       const card = document.createElement("div");
@@ -1883,7 +1927,8 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
       invStatsEl.append(card);
     }
 
-    // Owned Weapons selector (click to equip & target for enhancement)
+    // Owned Weapons compact 5-column tile grid (up to 10 weapons -> max 2 rows, zero scroll)
+    invWeaponCountEl.textContent = `${localPlayer.unlockedWeapons.length}/${WEAPON_ORDER.length}`;
     invWeaponsEl.textContent = "";
     for (const wid of localPlayer.unlockedWeapons) {
       const w = WEAPON_CATALOG[wid];
@@ -1894,16 +1939,25 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
       const isSel = wid === selectedUpgradeWeaponId;
       const btn = document.createElement("button");
       btn.type = "button";
-      btn.className = `sm-weapon-card${isEq ? " is-equipped" : ""}${isSel ? " is-selected" : ""}`;
-      btn.append(makeSpriteIcon("items", w.iconIndex, 30));
-      const info = document.createElement("div");
-      info.className = "sm-weapon-card-info";
-      const title = document.createElement("strong");
-      title.textContent = `${w.name}${tot > 0 ? ` +${tot}` : ""}`;
-      const sub = document.createElement("span");
-      sub.textContent = `${isEq ? "장착 중 · " : ""}ATK ${w.atk}${upg.atkLevel > 0 ? `(+${upg.atkLevel})` : ""}${upg.dexLevel > 0 ? ` DEX+${upg.dexLevel * 2}` : ""}`;
-      info.append(title, sub);
-      btn.append(info);
+      btn.className = `sm-weapon-tile${isEq ? " is-equipped" : ""}${isSel ? " is-selected" : ""}`;
+      btn.title = `${w.name}${tot > 0 ? ` +${tot}` : ""} · ATK ${w.atk}${upg.atkLevel > 0 ? `(+${upg.atkLevel})` : ""}${upg.dexLevel > 0 ? ` · DEX+${upg.dexLevel * 2}` : ""}`;
+      if (isEq) {
+        const eqTag = document.createElement("span");
+        eqTag.className = "sm-weapon-badge is-eq";
+        eqTag.textContent = "E";
+        btn.append(eqTag);
+      }
+      if (tot > 0) {
+        const lvTag = document.createElement("span");
+        lvTag.className = "sm-weapon-badge is-lv";
+        lvTag.textContent = `+${tot}`;
+        btn.append(lvTag);
+      }
+      btn.append(makeSpriteIcon("items", w.iconIndex, 26));
+      const nm = document.createElement("span");
+      nm.className = "sm-weapon-name";
+      nm.textContent = w.name;
+      btn.append(nm);
       btn.addEventListener("click", () => {
         selectedUpgradeWeaponId = wid;
         if (localPlayer.equippedWeaponId !== wid) {
@@ -1922,10 +1976,15 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
     const greenOwned = countItemInInventory(localInventory, "stone_green");
 
     invUpgradePanelEl.textContent = "";
-    const upgHeader = document.createElement("h3");
-    upgHeader.style.margin = "4px 0 6px";
-    upgHeader.textContent = `🔨 무기 강화 · ${selW.name} (+${selCombat.totalLevel} / 최대 +${MAX_WEAPON_UPGRADE_LEVEL})`;
-    invUpgradePanelEl.append(upgHeader);
+    const upgHead = document.createElement("div");
+    upgHead.className = "sm-section-head";
+    const upgTitle = document.createElement("h3");
+    upgTitle.textContent = `${selW.name}${selCombat.totalLevel > 0 ? ` +${selCombat.totalLevel}` : ""}`;
+    const upgCap = document.createElement("span");
+    upgCap.className = "sm-count-badge";
+    upgCap.textContent = `${selCombat.totalLevel}/${MAX_WEAPON_UPGRADE_LEVEL}`;
+    upgHead.append(upgTitle, upgCap);
+    invUpgradePanelEl.append(upgHead);
 
     const actionsWrap = document.createElement("div");
     actionsWrap.className = "sm-upgrade-actions";
@@ -1937,32 +1996,36 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
       card.className = "sm-upgrade-card";
 
       const head = document.createElement("div");
-      head.style.display = "flex";
-      head.style.alignItems = "center";
-      head.style.gap = "6px";
-      head.append(makeSpriteIcon("economy", stoneSpec.iconIndex, 24));
+      head.className = "sm-upgrade-head";
+      const headLeft = document.createElement("span");
+      headLeft.className = "sm-inline-icon";
+      headLeft.append(makeSpriteIcon("economy", stoneSpec.iconIndex, 20));
       const t = document.createElement("strong");
-      t.textContent = stat === "atk" ? `ATK 강화 (+${prev.statGain})` : `DEX 강화 (+${prev.statGain})`;
-      head.append(t);
+      t.textContent = prev.atCap ? stat.toUpperCase() : `${stat.toUpperCase()} +${prev.statGain}`;
+      headLeft.append(t);
+      const rate = document.createElement("span");
+      rate.className = "sm-rate-pill";
+      rate.textContent = prev.atCap ? "MAX" : `${Math.round(prev.successRate * 100)}%`;
+      head.append(headLeft, rate);
 
-      const meta = document.createElement("div");
-      meta.className = "sm-upgrade-meta";
-      if (prev.atCap) {
-        meta.textContent = `최대 강화(+${prev.maxTotalLevel}) 도달!`;
-      } else {
-        const l1 = document.createElement("span");
-        l1.textContent = `재료: ${stoneSpec.name} ${prev.stonesRequired}개 (보유 ${ownedStones})`;
-        const l2 = document.createElement("span");
-        l2.textContent = `비용: ${prev.coinCost.toLocaleString()} 코인 · 성공률 ${Math.round(prev.successRate * 100)}%`;
-        meta.append(l1, l2);
+      const costRow = document.createElement("div");
+      costRow.className = "sm-upgrade-costs";
+      if (!prev.atCap) {
+        const stoneCost = document.createElement("span");
+        stoneCost.className = ownedStones >= prev.stonesRequired ? "is-ok" : "is-short";
+        stoneCost.textContent = `석 ${ownedStones}/${prev.stonesRequired}`;
+        const coinCost = document.createElement("span");
+        coinCost.className = localPlayer.coins >= prev.coinCost ? "is-ok" : "is-short";
+        coinCost.textContent = `🪙 ${prev.coinCost.toLocaleString()}`;
+        costRow.append(stoneCost, coinCost);
       }
 
       const btn = document.createElement("button");
       btn.type = "button";
-      btn.className = "sm-btn sm-btn-primary";
+      btn.className = "sm-btn sm-btn-primary sm-btn-compact";
       const canAfford = !prev.atCap && ownedStones >= prev.stonesRequired && localPlayer.coins >= prev.coinCost;
       btn.disabled = !canAfford;
-      btn.textContent = prev.atCap ? "최대 강화 완료" : `${stat.toUpperCase()} 강화 시도`;
+      btn.textContent = prev.atCap ? "MAX" : `${stat.toUpperCase()} 강화`;
       btn.addEventListener("click", () => {
         if (!canAfford) return;
         actions.sendAction({
@@ -1971,14 +2034,15 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
         });
       });
 
-      card.append(head, meta, btn);
+      card.append(head, costRow, btn);
       return card;
     };
 
     actionsWrap.append(buildUpgradeCard("atk", redOwned), buildUpgradeCard("dex", greenOwned));
     invUpgradePanelEl.append(actionsWrap);
 
-    // 4x6 Inventory Grid & Selected Item Detail
+    // 4x6 Inventory Grid & Selected Item Bar
+    invSlotCountEl.textContent = `${countUsedSlots()}/${localInventory.length}`;
     if (selectedInvSlot >= 0 && !localInventory[selectedInvSlot]) {
       selectedInvSlot = localInventory.findIndex((s) => s !== null);
     }
@@ -1994,30 +2058,34 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
       const topRow = document.createElement("div");
       topRow.className = "sm-detail-row";
       const left = document.createElement("div");
-      left.style.display = "flex";
-      left.style.alignItems = "center";
-      left.style.gap = "8px";
-      left.append(makeSpriteIcon(spec.sheet, spec.iconIndex, 28));
+      left.className = "sm-inline-icon";
+      left.append(makeSpriteIcon(spec.sheet, spec.iconIndex, 24));
       const nm = document.createElement("strong");
-      nm.textContent = `${spec.name} (${curSlot.quantity}/${spec.maxStack})`;
-      left.append(nm);
-      const badge = document.createElement("span");
-      badge.textContent = spec.stackable ? "스택 가능" : "스택 불가";
-      topRow.append(left, badge);
+      nm.textContent = spec.name;
+      const qty = document.createElement("span");
+      qty.className = "sm-count-badge";
+      qty.textContent = `${curSlot.quantity}/${spec.maxStack}`;
+      left.append(nm, qty);
+      const price = document.createElement("span");
+      price.className = "sm-price-tag";
+      price.textContent = `🪙 ${spec.sellPrice}`;
+      topRow.append(left, price);
 
       const desc = document.createElement("div");
+      desc.className = "sm-detail-meta";
       desc.textContent = spec.description;
-      const priceHint = document.createElement("div");
-      priceHint.style.color = "#7a5a37";
-      priceHint.textContent = `상점 판매가: 개당 ${spec.sellPrice} 코인 (상점에서 판매 가능)`;
-      invItemDetailEl.append(topRow, desc, priceHint);
+      invItemDetailEl.append(topRow, desc);
     } else {
-      invItemDetailEl.textContent = "인벤토리 칸을 선택하면 아이템 정보를 확인할 수 있습니다. 엘리트 몬스터 처치나 보물 상자, 상점에서 강화석을 모아보세요!";
+      const empty = document.createElement("span");
+      empty.className = "sm-detail-empty";
+      empty.textContent = "아이템 없음";
+      invItemDetailEl.append(empty);
     }
   }
 
   function renderShopDialog(): void {
-    shopCoinsEl.textContent = `🪙 ${localPlayer.coins.toLocaleString()} 코인`;
+    shopCoinsEl.textContent = `🪙 ${localPlayer.coins.toLocaleString()}`;
+    shopSlotCountEl.textContent = `${countUsedSlots()}/${localInventory.length}`;
     if (selectedShopInvSlot >= 0 && !localInventory[selectedShopInvSlot]) {
       selectedShopInvSlot = localInventory.findIndex((s) => s !== null);
     }
@@ -2035,44 +2103,39 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
       const row = document.createElement("div");
       row.className = "sm-detail-row";
       const left = document.createElement("div");
-      left.style.display = "flex";
-      left.style.alignItems = "center";
-      left.style.gap = "8px";
-      left.append(makeSpriteIcon(spec.sheet, spec.iconIndex, 28));
+      left.className = "sm-inline-icon";
+      left.append(makeSpriteIcon(spec.sheet, spec.iconIndex, 24));
       const title = document.createElement("strong");
       title.textContent = `${spec.name} ×${sellSlot.quantity}`;
       left.append(title);
-      const price = document.createElement("strong");
-      price.style.color = "#8c5a14";
-      price.textContent = `판매가 ${spec.sellPrice} 코인/개`;
+      const price = document.createElement("span");
+      price.className = "sm-price-tag";
+      price.textContent = `🪙 ${spec.sellPrice}/개`;
       row.append(left, price);
 
-      const desc = document.createElement("div");
-      desc.style.color = "#6b4e38";
-      desc.textContent = spec.buyPrice
-        ? `${spec.description} (구매가 ${spec.buyPrice} 코인 → 판매가 ${spec.sellPrice} 코인)`
-        : spec.description;
-
       const btns = document.createElement("div");
-      btns.className = "sm-detail-row";
+      btns.className = "sm-action-row";
       const makeSellBtn = (label: string, qty: number) => {
         const b = document.createElement("button");
         b.type = "button";
-        b.className = "sm-btn sm-btn-danger";
+        b.className = "sm-btn sm-btn-danger sm-btn-compact";
         b.disabled = sellSlot.quantity < qty || qty <= 0;
-        b.textContent = `${label} (+${(spec.sellPrice * qty).toLocaleString()} 코인)`;
+        b.textContent = `${label} (+${(spec.sellPrice * qty).toLocaleString()})`;
         b.addEventListener("click", () => {
           actions.sendAction({ type: "shopSell", payload: { slotIndex: selectedShopInvSlot, quantity: qty } });
         });
         return b;
       };
-      btns.append(makeSellBtn("1개 판매", 1));
-      if (sellSlot.quantity >= 5) btns.append(makeSellBtn("5개 판매", 5));
-      if (sellSlot.quantity > 1) btns.append(makeSellBtn(`전체(${sellSlot.quantity}) 판매`, sellSlot.quantity));
+      btns.append(makeSellBtn("1개", 1));
+      if (sellSlot.quantity >= 5) btns.append(makeSellBtn("5개", 5));
+      if (sellSlot.quantity > 1) btns.append(makeSellBtn("전체", sellSlot.quantity));
 
-      shopSellDetailEl.append(row, desc, btns);
+      shopSellDetailEl.append(row, btns);
     } else {
-      shopSellDetailEl.textContent = "판매할 아이템을 좌측 내 인벤토리에서 선택하세요.";
+      const empty = document.createElement("span");
+      empty.className = "sm-detail-empty";
+      empty.textContent = "판매할 아이템 선택";
+      shopSellDetailEl.append(empty);
     }
 
     // Right: Shop Offers + Buy Controls
@@ -2081,13 +2144,13 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
       const btn = document.createElement("button");
       btn.type = "button";
       btn.className = `sm-shop-card${offer.id === selectedShopOfferId ? " is-selected" : ""}`;
-      btn.append(makeSpriteIcon(offer.sheet, offer.iconIndex, 32));
+      btn.append(makeSpriteIcon(offer.sheet, offer.iconIndex, 30));
       const info = document.createElement("div");
       info.className = "sm-shop-card-info";
       const nm = document.createElement("strong");
       nm.textContent = offer.name;
       const pr = document.createElement("span");
-      pr.textContent = `${offer.buyPrice.toLocaleString()} 코인`;
+      pr.textContent = `🪙 ${offer.buyPrice.toLocaleString()}`;
       info.append(nm, pr);
       btn.append(info);
       btn.addEventListener("click", () => {
@@ -2102,43 +2165,39 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
     const buyRow = document.createElement("div");
     buyRow.className = "sm-detail-row";
     const buyLeft = document.createElement("div");
-    buyLeft.style.display = "flex";
-    buyLeft.style.alignItems = "center";
-    buyLeft.style.gap = "8px";
-    buyLeft.append(makeSpriteIcon(selOffer.sheet, selOffer.iconIndex, 28));
+    buyLeft.className = "sm-inline-icon";
+    buyLeft.append(makeSpriteIcon(selOffer.sheet, selOffer.iconIndex, 24));
     const buyTitle = document.createElement("strong");
     buyTitle.textContent = selOffer.name;
-    buyLeft.append(buyTitle);
-    const buyPrice = document.createElement("strong");
-    buyPrice.style.color = "#8c5a14";
-    buyPrice.textContent = `${selOffer.buyPrice.toLocaleString()} 코인/개`;
-    buyRow.append(buyLeft, buyPrice);
-
-    const buyDesc = document.createElement("div");
-    buyDesc.textContent = selOffer.description;
+    const buyMeta = document.createElement("span");
+    buyMeta.className = "sm-detail-meta";
+    buyMeta.textContent = selOffer.description;
+    buyLeft.append(buyTitle, buyMeta);
+    buyRow.append(buyLeft);
 
     const buyBtns = document.createElement("div");
-    buyBtns.className = "sm-detail-row";
+    buyBtns.className = "sm-action-row";
     const makeBuyBtn = (qty: number) => {
       const b = document.createElement("button");
       b.type = "button";
-      b.className = "sm-btn sm-btn-primary";
+      b.className = "sm-btn sm-btn-primary sm-btn-compact";
       const cost = selOffer.buyPrice * qty;
       b.disabled = localPlayer.coins < cost;
-      b.textContent = `${qty}개 구매 (-${cost.toLocaleString()} 코인)`;
+      b.textContent = `${qty}개 구매 (-${cost.toLocaleString()})`;
       b.addEventListener("click", () => {
         actions.sendAction({ type: "shopBuy", payload: { offerId: selOffer.id, quantity: qty } });
       });
       return b;
     };
     buyBtns.append(makeBuyBtn(1), makeBuyBtn(5));
-    shopBuyDetailEl.append(buyRow, buyDesc, buyBtns);
+    shopBuyDetailEl.append(buyRow, buyBtns);
   }
 
   function openInventoryModal(): void {
     if (downed()) return;
     void audio.unlock();
     if (shopDialog.open) shopDialog.close();
+    setFeedback(invFeedbackEl, "");
     selectedUpgradeWeaponId = localPlayer.equippedWeaponId;
     if (selectedInvSlot < 0) selectedInvSlot = localInventory.findIndex((s) => s !== null);
     renderInventoryDialog();
@@ -2151,6 +2210,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
     if (downed()) return;
     void audio.unlock();
     if (inventoryDialog.open) inventoryDialog.close();
+    setFeedback(shopFeedbackEl, "");
     if (selectedShopInvSlot < 0) selectedShopInvSlot = localInventory.findIndex((s) => s !== null);
     renderShopDialog();
     if (!shopDialog.open) shopDialog.showModal();
@@ -2159,10 +2219,6 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
   }
 
   // Toolbar event handlers
-  root.querySelector('[data-act="inventory"]')?.addEventListener("click", openInventoryModal);
-  root.querySelector('[data-act="shop"]')?.addEventListener("click", openShopModal);
-  root.querySelector('[data-act="switch-to-shop"]')?.addEventListener("click", openShopModal);
-  root.querySelector('[data-act="switch-to-inv"]')?.addEventListener("click", openInventoryModal);
   root.querySelector('[data-act="map"]')?.addEventListener("click", () => {
     void audio.unlock();
     renderStageMapDialog();
@@ -2191,40 +2247,76 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
     actions.sendAction({ type: "checkpoint", payload: { x: Math.round(localPlayer.x), y: Math.round(localPlayer.y) } });
     actions.leaveRoom();
   });
-  // Clickable Coin Pill in Top-Right Canvas HUD -> Opens Shop!
-  const isOverCoinHud = (e: PointerEvent): boolean => {
-    const rect = canvas.getBoundingClientRect();
-    if (rect.width <= 0 || rect.height <= 0) return false;
-    const cx = ((e.clientX - rect.left) / rect.width) * VIEWPORT.width;
-    const cy = ((e.clientY - rect.top) / rect.height) * VIEWPORT.height;
-    return (
-      cx >= HUD_COIN_HITBOX.x &&
-      cx <= HUD_COIN_HITBOX.x + HUD_COIN_HITBOX.w &&
-      cy >= HUD_COIN_HITBOX.y &&
-      cy <= HUD_COIN_HITBOX.y + HUD_COIN_HITBOX.h
-    );
+
+  // Separated Canvas HUD Entry Points:
+  // - Top-Left Character Status Card -> Inventory
+  // - Top-Right Coin Pill -> Shop
+  // Activated on `click` (not `pointerdown`) so `closedby="any"` dialogs are never
+  // light-dismissed by the matching `pointerup` release outside the centered modal.
+  const getHudTargetAtEvent = (e: MouseEvent): HudActionTarget | null => {
+    const pt = clientPointToCanvasLogical(e.clientX, e.clientY, canvas.getBoundingClientRect());
+    return pt ? hitTestHudPoint(pt.x, pt.y) : null;
   };
   const onCanvasPointerMove = (e: PointerEvent) => {
-    const hit = !downed() && !inventoryDialog.open && !shopDialog.open && isOverCoinHud(e);
-    coinHover = hit;
+    const blocked = downed() || inventoryDialog.open || shopDialog.open || mapDialog.open || helpDialog.open;
+    const hit = blocked ? null : getHudTargetAtEvent(e);
+    statusHover = hit === "inventory";
+    coinHover = hit === "shop";
     canvas.style.cursor = hit ? "pointer" : "";
   };
   const onCanvasPointerLeave = () => {
+    statusHover = false;
     coinHover = false;
     canvas.style.cursor = "";
+    hudClickController.onPointerCancel();
+  };
+  const onCanvasPointerCancel = () => {
+    statusHover = false;
+    coinHover = false;
+    canvas.style.cursor = "";
+    hudClickController.onPointerCancel();
   };
   const onCanvasPointerDown = (e: PointerEvent) => {
-    if (!downed() && isOverCoinHud(e)) {
-      e.preventDefault();
+    if (downed() || inventoryDialog.open || shopDialog.open || mapDialog.open || helpDialog.open) {
+      hudClickController.onPointerCancel();
+      return;
+    }
+    hudClickController.onPointerDown(getHudTargetAtEvent(e), e.button);
+  };
+  const onCanvasClick = (e: MouseEvent) => {
+    if (downed() || inventoryDialog.open || shopDialog.open || mapDialog.open || helpDialog.open) {
+      hudClickController.onPointerCancel();
+      return;
+    }
+    const target = hudClickController.onClick(getHudTargetAtEvent(e));
+    if (target === "inventory") {
+      statusHover = false;
+      canvas.style.cursor = "";
+      openInventoryModal();
+    } else if (target === "shop") {
+      coinHover = false;
+      canvas.style.cursor = "";
       openShopModal();
     }
   };
   canvas.addEventListener("pointermove", onCanvasPointerMove);
   canvas.addEventListener("pointerleave", onCanvasPointerLeave);
+  canvas.addEventListener("pointercancel", onCanvasPointerCancel);
   canvas.addEventListener("pointerdown", onCanvasPointerDown);
+  canvas.addEventListener("click", onCanvasClick);
 
   // Keyboard listeners
   const onKeyDown = (e: KeyboardEvent) => {
+    if (!e.repeat && e.code === "KeyI" && inventoryDialog.open) {
+      e.preventDefault();
+      inventoryDialog.close();
+      return;
+    }
+    if (!e.repeat && e.code === "KeyB" && shopDialog.open) {
+      e.preventDefault();
+      shopDialog.close();
+      return;
+    }
     if (chatOpen || mapDialog.open || helpDialog.open || deathDialog.open || inventoryDialog.open || shopDialog.open) {
       return;
     }
@@ -3715,6 +3807,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
           hitEffects,
           particles,
           coinHover,
+          statusHover,
           stagePlayerCount,
           totalPlayersOnline
         },
@@ -3777,7 +3870,9 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
       window.removeEventListener("blur", onBlur);
       canvas.removeEventListener("pointermove", onCanvasPointerMove);
       canvas.removeEventListener("pointerleave", onCanvasPointerLeave);
+      canvas.removeEventListener("pointercancel", onCanvasPointerCancel);
       canvas.removeEventListener("pointerdown", onCanvasPointerDown);
+      canvas.removeEventListener("click", onCanvasClick);
       stageFrame.removeEventListener("contentvisibilityautostatechange", onContentVis);
       intersectionObserver?.disconnect();
       audio.destroy();

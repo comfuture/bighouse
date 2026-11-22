@@ -42,7 +42,7 @@ export const INVENTORY_ITEMS: Record<string, InventoryItemSpec> = {
     buyPrice: 60,
     sellPrice: 15,
     upgradeStat: "atk",
-    description: "무기의 ATK(공격력)를 강화하는 붉은빛 결정석 (최대 20개 스택)"
+    description: "ATK 강화 재료"
   },
   stone_green: {
     id: "stone_green",
@@ -56,7 +56,7 @@ export const INVENTORY_ITEMS: Record<string, InventoryItemSpec> = {
     buyPrice: 55,
     sellPrice: 14,
     upgradeStat: "dex",
-    description: "무기의 DEX(치명타·공격속도)를 강화하는 초록빛 결정석 (최대 20개 스택)"
+    description: "DEX 강화 재료"
   },
   stone_blue: {
     id: "stone_blue",
@@ -69,7 +69,7 @@ export const INVENTORY_ITEMS: Record<string, InventoryItemSpec> = {
     color: "#40C4FF",
     buyPrice: 80,
     sellPrice: 20,
-    description: "향후 마력·속성 효과 부여에 사용되는 희귀한 푸른 강화석 (최대 20개 스택)"
+    description: "마력 강화 재료"
   },
   stone_orange: {
     id: "stone_orange",
@@ -82,7 +82,7 @@ export const INVENTORY_ITEMS: Record<string, InventoryItemSpec> = {
     color: "#FFAB40",
     buyPrice: 100,
     sellPrice: 25,
-    description: "향후 특수 태양 효과 부여에 사용되는 희귀한 주황 강화석 (최대 20개 스택)"
+    description: "태양 강화 재료"
   },
   lucky_charm: {
     id: "lucky_charm",
@@ -95,7 +95,7 @@ export const INVENTORY_ITEMS: Record<string, InventoryItemSpec> = {
     color: "#FFD740",
     buyPrice: 90,
     sellPrice: 22,
-    description: "겹칠 수 없는 희귀 장식 유물 (1칸 점유 · 상점에 되팔 수 있음)"
+    description: "희귀 장식 유물"
   }
 };
 
@@ -123,7 +123,7 @@ export const SHOP_OFFERS: readonly ShopOffer[] = [
     sheet: "economy",
     iconIndex: 5,
     color: "#FF5252",
-    description: "무기 ATK 강화 재료 · 판매가 15 코인"
+    description: "ATK 강화 재료"
   },
   {
     id: "offer_stone_green",
@@ -135,7 +135,7 @@ export const SHOP_OFFERS: readonly ShopOffer[] = [
     sheet: "economy",
     iconIndex: 2,
     color: "#69F0AE",
-    description: "무기 DEX 강화 재료 · 판매가 14 코인"
+    description: "DEX 강화 재료"
   },
   {
     id: "offer_stone_blue",
@@ -147,7 +147,7 @@ export const SHOP_OFFERS: readonly ShopOffer[] = [
     sheet: "economy",
     iconIndex: 3,
     color: "#40C4FF",
-    description: "마력 속성 부여 예정 재료 · 판매가 20 코인"
+    description: "마력 강화 재료"
   },
   {
     id: "offer_stone_orange",
@@ -159,7 +159,7 @@ export const SHOP_OFFERS: readonly ShopOffer[] = [
     sheet: "economy",
     iconIndex: 4,
     color: "#FFAB40",
-    description: "태양 특수 부여 예정 재료 · 판매가 25 코인"
+    description: "태양 강화 재료"
   },
   {
     id: "offer_sweet_potion",
@@ -171,7 +171,7 @@ export const SHOP_OFFERS: readonly ShopOffer[] = [
     sheet: "items",
     iconIndex: 1,
     color: "#FF80AB",
-    description: "구매 즉시 [F] 포션 슬롯에 +1 추가 (최대 체력의 45% 회복)"
+    description: "HP 45% 회복 · [F] 즉시 추가"
   },
   {
     id: "offer_lucky_charm",
@@ -183,7 +183,7 @@ export const SHOP_OFFERS: readonly ShopOffer[] = [
     sheet: "items",
     iconIndex: 2,
     color: "#FFD740",
-    description: "스택 불가 장식 유물 (1칸 점유) · 판매가 22 코인"
+    description: "희귀 장식 유물"
   }
 ];
 
