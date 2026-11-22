@@ -60,6 +60,17 @@ Always preserve these invariants when adding weapons, monsters, stages, stones, 
 | `+3 → +6` | 중급 (`t2`) | `1, 2, 2` | `80, 120, 175` | `85%, 75%, 65%` | +5%/fail (max +25%) |
 | `+6 → +10` | 고급 (`t3`) | `1, 2, 2, 3` | `250, 360, 500, 700` | `55%, 45%, 35%, 25%` | +5%/fail (max +25%) |
 
+### E. Item Respawn & Anti-Camping Policy
+- **Respawn Cooldowns (`src/catalogs.ts`, `src/progression.ts`)**:
+  - `treasure_chest`: `300s` base (5 min), conservative crowd scaling with a strict **`180s` (3 min) minimum floor** so chests remain rare in busy rooms.
+  - `golden_heart`: `60s` base.
+  - `sweet_potion`: `54s` base, spawned from per-stage **candidate-position pools** (~45% active density; relocates to an unoccupied different candidate on every respawn).
+  - `red_apple`: `36s` base, spawned from per-stage **candidate-position pools** (~45% active density; relocates to an unoccupied different candidate on every respawn).
+  - `star_coin`: `18s` base.
+- **Anti-Abuse Guards (`src/server.ts`, `src/client.ts`)**:
+  - **10s Idle Rest Mode (`idle_rest_mode`)**: After `10s` without active player-initiated input (`lastActiveInputAt`), item collection is blocked on both client and server until active movement/combat resumes.
+  - **Consecutive Same-Location Same-Item Guard (`consecutive_same_spot_pickup`)**: Players cannot collect the same item type consecutively at the same spot (`<= 48px` on the same stage) without collecting another item elsewhere (or changing stage / reviving).
+
 ---
 
 ## 3. Workflow for Future Balance & Economy Updates

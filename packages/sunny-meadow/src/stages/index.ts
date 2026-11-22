@@ -586,8 +586,20 @@ function buildStageFromBlueprint(bp: StageBlueprint): NormalizedStage {
       facing
     });
 
-  const addItem = (id: string, templateId: string, x: number, surfaceY: number) =>
+  const appleCandidates: Array<{ x: number; y: number }> = [];
+  const potionCandidates: Array<{ x: number; y: number }> = [];
+
+  const addItem = (id: string, templateId: string, x: number, surfaceY: number) => {
+    if (templateId === "red_apple") {
+      appleCandidates.push({ x, y: surfaceY - 1 });
+      return;
+    }
+    if (templateId === "sweet_potion") {
+      potionCandidates.push({ x, y: surfaceY - 1 });
+      return;
+    }
     upsertEntity(stage.layers.itemSpawns, { id: `${pfx}_${id}`, templateId, x, y: surfaceY - 1 });
+  };
 
   const addDeco = (id: string, kind: DecorationEntity["kind"], x: number, surfaceY: number, text?: string) =>
     upsertEntity(stage.layers.decorations, {
@@ -707,6 +719,7 @@ function buildStageFromBlueprint(bp: StageBlueprint): NormalizedStage {
       addMob(uid(`${z}_m`), m2, x0 + 17, groundY, x0 + 13.5, x0 + 19.5);
 
       addItem(uid(`${z}_i`), "star_coin", x0 + 6, groundY - 4);
+      addItem(uid(`${z}_i`), "sweet_potion", x0 + 8.5, groundY - 4);
       addItem(uid(`${z}_i`), "star_coin", x0 + 12, groundY - 8);
       addItem(uid(`${z}_i`), "red_apple", x0 + 15, groundY - 8);
       addDeco(uid(`${z}_d`), "rock", x0 + 18, groundY);
@@ -958,6 +971,7 @@ function buildStageFromBlueprint(bp: StageBlueprint): NormalizedStage {
 
       addMob(uid(`${z}_m`), m1, x0 + 8, groundY, x0 + 2, x0 + 13);
       addItem(uid(`${z}_i`), "star_coin", x0 + 4, groundY - 2);
+      addItem(uid(`${z}_i`), "red_apple", x0 + 6.5, groundY - 2);
       addItem(uid(`${z}_i`), "star_coin", x0 + 8, groundY - 5);
       addItem(uid(`${z}_i`), "star_coin", x0 + 9, groundY - 6);
       addItem(uid(`${z}_i`), "star_coin", x0 + 10, groundY - 5);
@@ -998,6 +1012,49 @@ function buildStageFromBlueprint(bp: StageBlueprint): NormalizedStage {
   addItem("iso_c3", "star_coin", isoX + 10, isoFloorY - 3);
   addDeco("iso_f1", "flower_red", isoX + 5.5, isoFloorY - 6);
   addDeco("iso_f2", "flower_yellow", isoX + 12, isoFloorY - 6);
+
+  // Materialize rarer pooled spawns for red_apple and sweet_potion using their stage candidate pools.
+  // Each active item spawns at a random candidate position and relocates on every respawn.
+  if (appleCandidates.length > 0) {
+    const activeApples = Math.min(
+      Math.max(1, appleCandidates.length - 1),
+      Math.max(2, Math.floor(appleCandidates.length * 0.45))
+    );
+    for (let i = 0; i < activeApples; i++) {
+      const idx = Math.floor((i * appleCandidates.length) / activeApples);
+      const pos = appleCandidates[idx]!;
+      upsertEntity(stage.layers.itemSpawns, {
+        id: `${pfx}_apple_pool_${i + 1}`,
+        templateId: "red_apple",
+        x: pos.x,
+        y: pos.y,
+        candidatePositions: appleCandidates.map((c) => ({ x: c.x, y: c.y }))
+      });
+    }
+  }
+
+  if (potionCandidates.length > 0) {
+    const activePotions = Math.min(
+      Math.max(1, potionCandidates.length - 1),
+      Math.max(2, Math.floor(potionCandidates.length * 0.45))
+    );
+    for (let i = 0; i < activePotions; i++) {
+      // Preserve `${pfx}_iso_po` as the first pooled potion ID for backward compatibility.
+      const id = i === 0 ? `${pfx}_iso_po` : `${pfx}_potion_pool_${i + 1}`;
+      const idx =
+        i === 0
+          ? potionCandidates.length - 1
+          : Math.floor(((i - 1) * (potionCandidates.length - 1)) / Math.max(1, activePotions - 1));
+      const pos = potionCandidates[idx]!;
+      upsertEntity(stage.layers.itemSpawns, {
+        id,
+        templateId: "sweet_potion",
+        x: pos.x,
+        y: pos.y,
+        candidatePositions: potionCandidates.map((c) => ({ x: c.x, y: c.y }))
+      });
+    }
+  }
 
   return stage;
 }

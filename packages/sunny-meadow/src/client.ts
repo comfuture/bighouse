@@ -76,12 +76,13 @@ import {
   type LocalPlayerRender
 } from "./renderer";
 import { ALL_STAGES, getStageById } from "./stages/index";
-import { computeDeterministicHit, deathPenaltyOf } from "./server";
+import { computeDeterministicHit, deathPenaltyOf, isConsecutiveSameSpotPickup } from "./server";
 import { registerBighouseUi, type BighouseGameChatElement } from "@bighouse/ui";
 import "./style.css";
 import type {
   ActiveStatusEffect,
   InventorySlot,
+  LastItemPickupRecord,
   MobTemplate,
   RemotePlayerView,
   ServerItemState,
@@ -146,6 +147,19 @@ const ACTION_KEYS: Record<string, string[]> = {
 };
 
 const PREVENT_KEYS = new Set(["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Space"]);
+const GAMEPLAY_KEY_CODES = new Set<string>([
+  ...Object.values(ACTION_KEYS).flat(),
+  "Digit0",
+  "Digit1",
+  "Digit2",
+  "Digit3",
+  "Digit4",
+  "Digit5",
+  "Digit6",
+  "Digit7",
+  "Digit8",
+  "Digit9"
+]);
 
 export function mountGame(container: HTMLElement, initialContext: GameClientContext): MountedGameClient {
   let ctx = initialContext;
@@ -470,6 +484,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
     slowTimer: 0,
     statuses: {},
     idleRegenActive: false,
+    idleRestMode: false,
     attackAnimTimer: 0,
     attackAnimDuration: 0.22,
     animTimer: 0,
@@ -491,9 +506,12 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
   let ladderGrabCooldown = 0;
   let runDustTimer = 0;
   let idleRegenState: IdleRegenState = { idleTimer: 0, tickTimer: 0 };
+  let localLastItemPickup: LastItemPickupRecord | undefined = undefined;
+  const blockedPickupHintAt = new Map<string, number>();
   const resetIdleRegen = () => {
     idleRegenState = { idleTimer: 0, tickTimer: 0 };
     localPlayer.idleRegenActive = false;
+    localPlayer.idleRestMode = false;
   };
   let lastSafeX = 160;
   let lastSafeY = 660;
@@ -539,6 +557,8 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
   function leaveDeath(): void {
     if (!dead) return;
     dead = false;
+    localLastItemPickup = undefined;
+    blockedPickupHintAt.clear();
     window.clearTimeout(reviveRetryTimer);
     stageFrame.classList.remove("is-dead");
     if (deathDialog.open) deathDialog.close();
@@ -809,6 +829,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
       expiresAt: Date.now() + 2500
     };
     localPlayer.equippedWeaponId = wid;
+    resetIdleRegen();
     actions.sendAction({ type: "switchWeapon", payload: { weaponId: wid, switchSeq: weaponSwitchSeq } });
   }
 
@@ -1123,6 +1144,8 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
     pendingItemPickups.clear();
     optimisticMobLocks.clear();
     optimisticItemLocks.clear();
+    localLastItemPickup = undefined;
+    blockedPickupHintAt.clear();
 
     if (spawnX !== undefined && spawnY !== undefined) {
       localPlayer.x = spawnX;
@@ -1207,6 +1230,11 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
       }
     }
     if (typeof priv.highestStageNumber === "number") highestStageNumber = priv.highestStageNumber;
+    if (priv.lastItemPickup && typeof priv.lastItemPickup === "object") {
+      localLastItemPickup = { ...priv.lastItemPickup };
+    } else if (optimisticItemLocks.size === 0) {
+      localLastItemPickup = undefined;
+    }
     const targetStageId = priv.stageId || pub.stageId || "stage-1";
     if (priv.dead === true) {
       const pen = deathPenaltyOf({
@@ -1302,6 +1330,10 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
       for (const [id, si] of Object.entries(pub.items)) {
         const item = itemsById.get(id);
         if (!item) continue;
+        if (typeof si.x === "number" && typeof si.y === "number") {
+          item.x = si.x;
+          item.y = si.y;
+        }
         const lockUntil = optimisticItemLocks.get(id);
         if (lockUntil && nowLocal < lockUntil && si.available) {
           continue;
@@ -1824,11 +1856,30 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
     }
 
     if (ev.type === "sunny.itemsRespawned") {
-      const ids = (p.itemIds as string[]) ?? [];
-      for (const id of ids) {
-        optimisticItemLocks.delete(id);
-        const item = itemsById.get(id);
-        if (item) item.available = true;
+      const detailed = Array.isArray(p.items)
+        ? (p.items as Array<{ id?: string; x?: number; y?: number }>)
+        : [];
+      if (detailed.length > 0) {
+        for (const entry of detailed) {
+          const id = typeof entry.id === "string" ? entry.id : "";
+          if (!id) continue;
+          optimisticItemLocks.delete(id);
+          const item = itemsById.get(id);
+          if (item) {
+            if (typeof entry.x === "number" && typeof entry.y === "number") {
+              item.x = entry.x;
+              item.y = entry.y;
+            }
+            item.available = true;
+          }
+        }
+      } else {
+        const ids = (p.itemIds as string[]) ?? [];
+        for (const id of ids) {
+          optimisticItemLocks.delete(id);
+          const item = itemsById.get(id);
+          if (item) item.available = true;
+        }
       }
       return;
     }
@@ -2690,7 +2741,9 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
     if (PREVENT_KEYS.has(e.code)) e.preventDefault();
     void audio.unlock();
     keysDown.add(e.code);
-    resetIdleRegen();
+    if (GAMEPLAY_KEY_CODES.has(e.code) && !localPlayer.idleRestMode) {
+      resetIdleRegen();
+    }
 
     // Quick weapon selection 1..9, 0 and rapid Q / E cycling (handled on keydown so fast taps never drop)
     if (e.code.startsWith("Digit") && !e.repeat) {
@@ -2794,11 +2847,19 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
 
   function stepLocalIdleRegen(dt: number): void {
     const p = localPlayer;
-    const hasInput =
-      keysDown.size > 0 ||
+    const wasRestMode = Boolean(p.idleRestMode);
+    const hasGameplayInput =
       virtualDown.size > 0 ||
       Object.values(curInput).some(Boolean) ||
       p.attackAnimTimer > 0;
+    const hasActiveMotion =
+      Math.abs(p.vx) > 8 ||
+      Math.abs(p.vy) > 8 ||
+      p.attackAnimTimer > 0 ||
+      (!p.grounded && !p.onLadder);
+    // Once in 10s rest mode, stay resting until active movement/combat resumes
+    // (mirroring server lastActiveInputAt validation).
+    const hasInput = wasRestMode ? hasActiveMotion : hasGameplayInput;
     const isResting =
       !downed() &&
       hurtStunTimer <= 0 &&
@@ -2817,6 +2878,13 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
     });
     idleRegenState = { idleTimer: res.idleTimer, tickTimer: res.tickTimer };
     p.idleRegenActive = res.active;
+    p.idleRestMode = !downed() && !p.inMenu && idleRegenState.idleTimer >= PLAYER_CONFIG.idleRegenDelaySec;
+
+    if (wasRestMode && !p.idleRestMode) {
+      // Immediately flush an active pose signal so the server exits rest mode before any collectItem action.
+      poseSendTimer = 999;
+      sendPeriodicSync(0);
+    }
 
     if (res.shouldHeal && p.hp < p.maxHp) {
       const healAmt = computeIdleRegenAmount(p.maxHp);
@@ -2902,6 +2970,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
       }
     }
     if (justPressed("potion") && p.potions > 0 && p.hp < p.maxHp) {
+      resetIdleRegen();
       // 0ms optimistic potion heal + server sync
       const clientPotionId = nextPredId("pot");
       predictedPotionIds.add(clientPotionId);
@@ -3962,72 +4031,116 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
       } else if (!item.available) {
         continue;
       }
+      if (Math.hypot(px - item.x, py - item.y) > 34) continue;
+
+      if (localPlayer.idleRestMode) {
+        const lastHint = blockedPickupHintAt.get(`idle:${item.id}`) ?? 0;
+        if (now - lastHint >= 4500) {
+          blockedPickupHintAt.set(`idle:${item.id}`, now);
+          spawnText(item.x, item.y - 16, "휴식 중 (이동 후 획득)", "info", "#BBDEFB");
+        }
+        continue;
+      }
+
+      if (
+        tpl.category !== "weapon" &&
+        isConsecutiveSameSpotPickup(localLastItemPickup, {
+          stageId: currentStageId,
+          itemId: item.id,
+          templateId: item.templateId,
+          x: item.x,
+          y: item.y
+        })
+      ) {
+        const lastHint = blockedPickupHintAt.get(`same:${item.id}`) ?? 0;
+        if (now - lastHint >= 3500) {
+          blockedPickupHintAt.set(`same:${item.id}`, now);
+          spawnText(item.x, item.y - 16, "다른 위치 활동 후 획득 가능", "info", "#FFE082");
+        }
+        continue;
+      }
+
       const lastTry = pendingItemPickups.get(item.id) ?? 0;
       if (now - lastTry < 1000) continue;
-      if (Math.hypot(px - item.x, py - item.y) <= 34) {
-        pendingItemPickups.set(item.id, now);
-        const clientPickupId = nextPredId("pick");
-        predictedPickupIds.add(clientPickupId);
-        if (predictedPickupIds.size > 120) {
-          const first = predictedPickupIds.values().next().value;
-          if (first) predictedPickupIds.delete(first);
-        }
 
-        if (tpl.category === "chest") {
-          // Rare Treasure Chest: play lid-open burst immediately while server awards stage-scaled coins & rare stone!
-          item.available = false;
-          item.openingTimer = 1.25;
-          optimisticItemLocks.set(item.id, now + 1500);
-          spawnSparkles(item.x, item.y - 6, "#FFD740", 14);
-          actions.sendAction({
-            type: "collectItem",
-            payload: { itemId: item.id, clientPickupId }
-          });
-          continue;
-        }
+      pendingItemPickups.set(item.id, now);
+      const clientPickupId = nextPredId("pick");
+      predictedPickupIds.add(clientPickupId);
+      if (predictedPickupIds.size > 120) {
+        const first = predictedPickupIds.values().next().value;
+        if (first) predictedPickupIds.delete(first);
+      }
 
-        // Immediate 0ms optimistic pickup feedback & state update!
-        localPlayer.score += tpl.score;
-        if (tpl.category === "weapon" && tpl.weaponId) {
-          if (!localPlayer.unlockedWeapons.includes(tpl.weaponId)) {
-            localPlayer.unlockedWeapons = [...localPlayer.unlockedWeapons, tpl.weaponId].sort(
-              (a, b) =>
-                WEAPON_ORDER.indexOf(a as (typeof WEAPON_ORDER)[number]) -
-                WEAPON_ORDER.indexOf(b as (typeof WEAPON_ORDER)[number])
-            );
-          }
-          localPlayer.equippedWeaponId = tpl.weaponId;
-          pendingWeaponSwitch = { weaponId: tpl.weaponId, seq: 0, expiresAt: now + 2500 };
-          spawnText(item.x, item.y - 24, `★ ${tpl.name} 획득!`, "crit");
-          spawnSparkles(item.x, item.y, tpl.glowColor, 16);
-          audio.playSfx(tpl.sfx, 0);
-        } else {
-          item.available = false;
-          optimisticItemLocks.set(item.id, now + 1500);
-          spawnSparkles(item.x, item.y, tpl.glowColor, 10);
-          audio.playSfx(tpl.sfx, 0.05);
-          if (tpl.category === "coin") {
-            localPlayer.coins += 1;
-          } else if (tpl.category === "heal") {
-            const healAmt = Math.max(tpl.healAmount ?? 30, Math.round(localPlayer.maxHp * 0.25));
-            localPlayer.hp = Math.min(localPlayer.maxHp, localPlayer.hp + healAmt);
-            spawnText(item.x, item.y - 12, `+${healAmt} HP`, "heal");
-          } else if (tpl.category === "potion") {
-            localPlayer.potions += tpl.potionCount ?? 1;
-            spawnText(item.x, item.y - 12, "포션 +1!", "info");
-          } else if (tpl.category === "max_hp") {
-            localPlayer.maxHp += tpl.maxHpBonus ?? 20;
-            localPlayer.hp = Math.min(localPlayer.maxHp, localPlayer.hp + (tpl.healAmount ?? 60));
-            spawnText(item.x, item.y - 16, `최대체력 +${tpl.maxHpBonus}!`, "heal");
-          }
-        }
-
-        // Send to server for cooperative multi-player reconciliation & D1 persistence
+      if (tpl.category === "chest") {
+        // Rare Treasure Chest: play lid-open burst immediately while server awards stage-scaled coins & rare stone!
+        item.available = false;
+        item.openingTimer = 1.25;
+        optimisticItemLocks.set(item.id, now + 1500);
+        localLastItemPickup = {
+          stageId: currentStageId,
+          itemId: item.id,
+          templateId: item.templateId,
+          x: item.x,
+          y: item.y,
+          at: now
+        };
+        spawnSparkles(item.x, item.y - 6, "#FFD740", 14);
         actions.sendAction({
           type: "collectItem",
           payload: { itemId: item.id, clientPickupId }
         });
+        continue;
       }
+
+      // Immediate 0ms optimistic pickup feedback & state update!
+      localPlayer.score += tpl.score;
+      if (tpl.category === "weapon" && tpl.weaponId) {
+        if (!localPlayer.unlockedWeapons.includes(tpl.weaponId)) {
+          localPlayer.unlockedWeapons = [...localPlayer.unlockedWeapons, tpl.weaponId].sort(
+            (a, b) =>
+              WEAPON_ORDER.indexOf(a as (typeof WEAPON_ORDER)[number]) -
+              WEAPON_ORDER.indexOf(b as (typeof WEAPON_ORDER)[number])
+          );
+        }
+        localPlayer.equippedWeaponId = tpl.weaponId;
+        pendingWeaponSwitch = { weaponId: tpl.weaponId, seq: 0, expiresAt: now + 2500 };
+        spawnText(item.x, item.y - 24, `★ ${tpl.name} 획득!`, "crit");
+        spawnSparkles(item.x, item.y, tpl.glowColor, 16);
+        audio.playSfx(tpl.sfx, 0);
+      } else {
+        item.available = false;
+        optimisticItemLocks.set(item.id, now + 1500);
+        localLastItemPickup = {
+          stageId: currentStageId,
+          itemId: item.id,
+          templateId: item.templateId,
+          x: item.x,
+          y: item.y,
+          at: now
+        };
+        spawnSparkles(item.x, item.y, tpl.glowColor, 10);
+        audio.playSfx(tpl.sfx, 0.05);
+        if (tpl.category === "coin") {
+          localPlayer.coins += 1;
+        } else if (tpl.category === "heal") {
+          const healAmt = Math.max(tpl.healAmount ?? 30, Math.round(localPlayer.maxHp * 0.25));
+          localPlayer.hp = Math.min(localPlayer.maxHp, localPlayer.hp + healAmt);
+          spawnText(item.x, item.y - 12, `+${healAmt} HP`, "heal");
+        } else if (tpl.category === "potion") {
+          localPlayer.potions += tpl.potionCount ?? 1;
+          spawnText(item.x, item.y - 12, "포션 +1!", "info");
+        } else if (tpl.category === "max_hp") {
+          localPlayer.maxHp += tpl.maxHpBonus ?? 20;
+          localPlayer.hp = Math.min(localPlayer.maxHp, localPlayer.hp + (tpl.healAmount ?? 60));
+          spawnText(item.x, item.y - 16, `최대체력 +${tpl.maxHpBonus}!`, "heal");
+        }
+      }
+
+      // Send to server for cooperative multi-player reconciliation & D1 persistence
+      actions.sendAction({
+        type: "collectItem",
+        payload: { itemId: item.id, clientPickupId }
+      });
     }
   }
 

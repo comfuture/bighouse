@@ -4,7 +4,7 @@
  */
 
 import { PLAYER_CONFIG, VIEWPORT } from "./catalogs";
-import type { NormalizedStage } from "./types";
+import type { ItemTemplate, NormalizedStage } from "./types";
 
 export const MAX_LEVEL = 60;
 export const SPAWN_PROTECTION_MS = 2000;
@@ -106,10 +106,22 @@ export function computeMobRespawnMs(
 
 /**
  * Dynamic item respawn interval scaled by active players in the stage.
+ * Rare treasure chests scale conservatively and enforce a high minimum cooldown (180s)
+ * so they remain genuinely scarce even in crowded rooms.
  */
-export function computeItemRespawnMs(baseRespawnSec: number, activePlayersInStage: number): number {
+export function computeItemRespawnMs(
+  baseRespawnSec: number,
+  activePlayersInStage: number,
+  category?: ItemTemplate["category"]
+): number {
   if (baseRespawnSec <= 0) return 0;
   const n = Math.max(1, activePlayersInStage);
+  if (category === "chest" || baseRespawnSec >= 180) {
+    const rareSpeedup = 1 + 0.15 * Math.log2(n);
+    const minSec = Math.min(baseRespawnSec, 180);
+    const effectiveSec = baseRespawnSec / rareSpeedup;
+    return Math.round(Math.max(minSec, Math.min(baseRespawnSec, effectiveSec)) * 1000);
+  }
   const crowdSpeedup = 1 + 0.5 * Math.log2(n) + 0.05 * Math.min(60, n - 1);
   const effectiveSec = baseRespawnSec / crowdSpeedup;
   return Math.round(Math.max(3.5, Math.min(baseRespawnSec, effectiveSec)) * 1000);

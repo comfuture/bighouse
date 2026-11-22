@@ -310,6 +310,8 @@ export type ItemSpawnEntity = {
   templateId: string;
   x: number;
   y: number;
+  /** Optional pool of tile-coordinate candidate positions for randomized respawn relocation. */
+  candidatePositions?: Array<{ x: number; y: number }>;
 };
 
 export type DecorationEntity = {
@@ -376,6 +378,15 @@ export type PersistedPlayerProfile = {
   savedAt: number;
 };
 
+export type LastItemPickupRecord = {
+  stageId: string;
+  itemId: string;
+  templateId: string;
+  x: number;
+  y: number;
+  at: number;
+};
+
 export type WorldPlayerState = {
   playerId: string;
   displayName: string;
@@ -405,10 +416,14 @@ export type WorldPlayerState = {
   weaponUpgrades?: Record<string, WeaponUpgradeState>;
   highestStageNumber: number;
   lastUpdatedAt: number;
-  /** Server timestamp of last active input/combat (used to validate 10s idle HP regen). */
+  /** Server timestamp of last active input/combat or damage (used to validate 10s idle HP regen). */
   lastActivityAt?: number;
+  /** Server timestamp of last player-initiated active input/combat (used to gate item pickup during 10s rest mode). */
+  lastActiveInputAt?: number;
   /** Server timestamp of last idle HP regen tick (rate-limits gentle regen interval). */
   lastIdleRegenAt?: number;
+  /** Most recent non-weapon item pickup, used to prevent consecutive same-spot same-item camping. */
+  lastItemPickup?: LastItemPickupRecord;
   /** Server timestamp of last shop/upgrade transaction (anti-abuse rate limiting). */
   lastEconomyActionAt?: number;
   /** Monotonic upgrade attempt counter for deterministic server-side upgrade rolls. */
@@ -461,6 +476,11 @@ export type ServerItemState = {
   templateId: string;
   available: boolean;
   respawnAt: number;
+  /** Live pixel coordinates when this item spawns from a candidate-position pool. */
+  x?: number;
+  y?: number;
+  /** Index into ItemSpawnEntity.candidatePositions for the item's current spawn location. */
+  candidateIndex?: number;
   /** Timestamp when item was first collected (enables grace-window simultaneous pickup) */
   collectedAt?: number;
   /** Players who already collected this item in the current respawn cycle */

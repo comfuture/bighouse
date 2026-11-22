@@ -376,6 +376,14 @@ export function validateNormalizedStage(stage: NormalizedStage): {
   }
   for (const it of items) {
     if (!ITEM_CATALOG[it.templateId]) errors.push(`${stage.meta.id}: unknown item template ${it.templateId}`);
+    if (it.candidatePositions) {
+      for (let ci = 0; ci < it.candidatePositions.length; ci++) {
+        const cp = it.candidatePositions[ci]!;
+        if (cp.x < 0 || cp.x >= widthTiles || cp.y < 0 || cp.y >= heightTiles) {
+          errors.push(`${stage.meta.id}: item ${it.id} candidate[${ci}] out of bounds`);
+        }
+      }
+    }
   }
   for (const link of stage.links.portalPairs) {
     if (!stage.layers.portals.byId[link.fromPortalId] || !stage.layers.portals.byId[link.toPortalId]) {
