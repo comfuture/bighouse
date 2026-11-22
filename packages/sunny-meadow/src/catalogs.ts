@@ -893,7 +893,7 @@ export const ITEM_CATALOG: Record<string, ItemTemplate> = {
     iconIndex: 0,
     glowColor: "#FF5252",
     sfx: "sfx_item_pickup",
-    respawnSec: 16
+    respawnSec: 36
   },
   sweet_potion: {
     id: "sweet_potion",
@@ -904,7 +904,7 @@ export const ITEM_CATALOG: Record<string, ItemTemplate> = {
     iconIndex: 1,
     glowColor: "#FF4081",
     sfx: "sfx_item_pickup",
-    respawnSec: 24
+    respawnSec: 54
   },
   golden_heart: {
     id: "golden_heart",
@@ -1035,7 +1035,7 @@ export const ITEM_CATALOG: Record<string, ItemTemplate> = {
     iconIndex: 0,
     glowColor: "#FFD740",
     sfx: "sfx_potion",
-    respawnSec: 65
+    respawnSec: 300
   }
 };
 

@@ -58,6 +58,8 @@ import {
 import { ALL_STAGES, getStageById, STAGES_BY_ID } from "./stages/index";
 import type {
   DeathPenalty,
+  ItemSpawnEntity,
+  LastItemPickupRecord,
   PersistedPlayerProfile,
   RemotePlayerView,
   ServerItemState,
@@ -75,6 +77,31 @@ const MAX_NEARBY_REMOTE_PLAYERS = 48;
 const INTEREST_HORIZ_RANGE_PX = 2400; // ~2.5 screens in each direction
 export const ITEM_COOP_GRACE_MS = 1200;
 export const MOB_KILL_GRACE_MS = 1200;
+export const IDLE_REST_DELAY_MS = PLAYER_CONFIG.idleRegenDelaySec * 1000;
+export const SAME_SPOT_PICKUP_RADIUS_PX = 48;
+
+export function isPlayerInIdleRestMode(
+  ps: Pick<WorldPlayerState, "lastActiveInputAt" | "lastActivityAt" | "lastUpdatedAt">,
+  now: number
+): boolean {
+  const lastInput =
+    typeof ps.lastActiveInputAt === "number"
+      ? ps.lastActiveInputAt
+      : typeof ps.lastActivityAt === "number"
+        ? ps.lastActivityAt
+        : ps.lastUpdatedAt;
+  return now - lastInput >= IDLE_REST_DELAY_MS;
+}
+
+export function isConsecutiveSameSpotPickup(
+  last: LastItemPickupRecord | undefined,
+  next: { stageId: string; itemId: string; templateId: string; x: number; y: number }
+): boolean {
+  if (!last) return false;
+  if (last.stageId !== next.stageId) return false;
+  if (last.templateId !== next.templateId) return false;
+  return Math.hypot(next.x - last.x, next.y - last.y) <= SAME_SPOT_PICKUP_RADIUS_PX;
+}
 
 /**
  * Deterministic damage formula shared between client optimistic prediction
@@ -141,18 +168,93 @@ function createInitialMobState(
   };
 }
 
-function createInitialItemState(itemId: string, templateId: string): ServerItemState {
+function computeItemPixelPos(
+  stage: ReturnType<typeof getStageById>,
+  spawn: ItemSpawnEntity | undefined,
+  item: Pick<ServerItemState, "x" | "y">
+): { x: number; y: number } {
+  if (typeof item.x === "number" && typeof item.y === "number" && Number.isFinite(item.x) && Number.isFinite(item.y)) {
+    return { x: item.x, y: item.y };
+  }
+  const ts = stage.meta.tileSize;
   return {
-    id: itemId,
-    templateId,
+    x: ((spawn?.x ?? 0) + 0.5) * ts,
+    y: ((spawn?.y ?? 0) + 0.5) * ts
+  };
+}
+
+function pickPooledCandidate(
+  stage: ReturnType<typeof getStageById>,
+  itemsMap: Record<string, ServerItemState>,
+  itemId: string,
+  templateId: string,
+  candidates: Array<{ x: number; y: number }>,
+  prevCandidateIndex: number | undefined,
+  seed: string
+): { candidateIndex: number; x: number; y: number } {
+  const occupied = new Set<number>();
+  for (const other of Object.values(itemsMap)) {
+    if (other.id === itemId || other.templateId !== templateId) continue;
+    if (typeof other.candidateIndex === "number") {
+      occupied.add(other.candidateIndex);
+    }
+  }
+
+  const allIndices = candidates.map((_, idx) => idx);
+  let pool = allIndices.filter((idx) => !occupied.has(idx) && idx !== prevCandidateIndex);
+  if (pool.length === 0) {
+    pool = allIndices.filter((idx) => !occupied.has(idx));
+  }
+  if (pool.length === 0) {
+    pool = allIndices.filter((idx) => idx !== prevCandidateIndex);
+  }
+  if (pool.length === 0) {
+    pool = allIndices;
+  }
+
+  const roll = serverEntropyRoll(seed);
+  const chosenIdx = pool[Math.min(pool.length - 1, Math.floor(roll * pool.length))]!;
+  const cp = candidates[chosenIdx]!;
+  const ts = stage.meta.tileSize;
+  return {
+    candidateIndex: chosenIdx,
+    x: (cp.x + 0.5) * ts,
+    y: (cp.y + 0.5) * ts
+  };
+}
+
+function createInitialItemState(
+  stage: ReturnType<typeof getStageById>,
+  spawn: ItemSpawnEntity,
+  itemsMap: Record<string, ServerItemState>,
+  seed: string
+): ServerItemState {
+  const base: ServerItemState = {
+    id: spawn.id,
+    templateId: spawn.templateId,
     available: true,
     respawnAt: 0,
     collectedAt: 0,
     collectedBy: []
   };
+  if (spawn.candidatePositions && spawn.candidatePositions.length > 1) {
+    const picked = pickPooledCandidate(
+      stage,
+      itemsMap,
+      spawn.id,
+      spawn.templateId,
+      spawn.candidatePositions,
+      undefined,
+      seed
+    );
+    base.candidateIndex = picked.candidateIndex;
+    base.x = picked.x;
+    base.y = picked.y;
+  }
+  return base;
 }
 
-function buildInitialWorldState(): SunnyMeadowWorldState {
+function buildInitialWorldState(seedNow = 0): SunnyMeadowWorldState {
   const stages: Record<string, ServerStageRuntime> = {};
   for (const stage of ALL_STAGES) {
     const mobs: Record<string, ServerMobState> = {};
@@ -162,7 +264,7 @@ function buildInitialWorldState(): SunnyMeadowWorldState {
     const items: Record<string, ServerItemState> = {};
     for (const itemId of stage.layers.itemSpawns.allIds) {
       const spawn = stage.layers.itemSpawns.byId[itemId]!;
-      items[itemId] = createInitialItemState(itemId, spawn.templateId);
+      items[itemId] = createInitialItemState(stage, spawn, items, `init:${seedNow}:${stage.meta.id}:${itemId}`);
     }
     stages[stage.meta.id] = { stageId: stage.meta.id, mobs, items };
   }
@@ -239,7 +341,41 @@ function reconcileWorldStages(world: SunnyMeadowWorldState): boolean {
       const spawn = stage.layers.itemSpawns.byId[itemId]!;
       const existing = stageRt.items[itemId];
       if (!existing || existing.templateId !== spawn.templateId) {
-        stageRt.items[itemId] = createInitialItemState(itemId, spawn.templateId);
+        stageRt.items[itemId] = createInitialItemState(
+          stage,
+          spawn,
+          stageRt.items,
+          `reconcile:${stageId}:${itemId}`
+        );
+        mutated = true;
+      } else if (spawn.candidatePositions && spawn.candidatePositions.length > 1) {
+        const idxValid =
+          typeof existing.candidateIndex === "number" &&
+          existing.candidateIndex >= 0 &&
+          existing.candidateIndex < spawn.candidatePositions.length;
+        if (!idxValid || typeof existing.x !== "number" || typeof existing.y !== "number") {
+          const picked = pickPooledCandidate(
+            stage,
+            stageRt.items,
+            itemId,
+            spawn.templateId,
+            spawn.candidatePositions,
+            undefined,
+            `reconcile-pool:${stageId}:${itemId}`
+          );
+          existing.candidateIndex = picked.candidateIndex;
+          existing.x = picked.x;
+          existing.y = picked.y;
+          mutated = true;
+        }
+      } else if (
+        typeof existing.x === "number" ||
+        typeof existing.y === "number" ||
+        typeof existing.candidateIndex === "number"
+      ) {
+        delete existing.x;
+        delete existing.y;
+        delete existing.candidateIndex;
         mutated = true;
       }
     }
@@ -331,6 +467,7 @@ function processDueRespawns(world: SunnyMeadowWorldState, now: number): GameEven
       spawnProtectUntil: number;
     }> = [];
     const respawnedItems: string[] = [];
+    const respawnedItemDetails: Array<{ id: string; x?: number; y?: number }> = [];
 
     for (const mob of Object.values(stageRt.mobs)) {
       if (!mob.alive && mob.respawnAt > 0 && mob.respawnAt <= now) {
@@ -368,11 +505,30 @@ function processDueRespawns(world: SunnyMeadowWorldState, now: number): GameEven
 
     for (const item of Object.values(stageRt.items)) {
       if (!item.available && item.respawnAt > 0 && item.respawnAt <= now) {
+        const spawn = stage.layers.itemSpawns.byId[item.id];
+        if (spawn?.candidatePositions && spawn.candidatePositions.length > 1) {
+          const picked = pickPooledCandidate(
+            stage,
+            stageRt.items,
+            item.id,
+            item.templateId,
+            spawn.candidatePositions,
+            item.candidateIndex,
+            `item-respawn:${stageRt.stageId}:${item.id}:${now}:${item.candidateIndex ?? -1}`
+          );
+          item.candidateIndex = picked.candidateIndex;
+          item.x = picked.x;
+          item.y = picked.y;
+        }
         item.available = true;
         item.respawnAt = 0;
         item.collectedAt = 0;
         item.collectedBy = [];
         respawnedItems.push(item.id);
+        respawnedItemDetails.push({
+          id: item.id,
+          ...(typeof item.x === "number" && typeof item.y === "number" ? { x: item.x, y: item.y } : {})
+        });
       }
     }
 
@@ -395,7 +551,8 @@ function processDueRespawns(world: SunnyMeadowWorldState, now: number): GameEven
           "sunny.itemsRespawned",
           {
             stageId: stageRt.stageId,
-            itemIds: respawnedItems
+            itemIds: respawnedItems,
+            items: respawnedItemDetails
           },
           now
         )
@@ -510,7 +667,8 @@ function createFreshPlayerState(
     weaponUpgrades: normalizeWeaponUpgrades(saved?.weaponUpgrades),
     highestStageNumber,
     lastUpdatedAt: now,
-    lastActivityAt: now
+    lastActivityAt: now,
+    lastActiveInputAt: now
   };
 }
 
@@ -730,6 +888,14 @@ function checkAction(context: GameContext, action: ClientGameAction): ActionChec
       if (!item) return { ok: false, code: "item_not_here", message: "Unknown item", stale: true };
       const tpl = ITEM_CATALOG[item.templateId];
       if (!tpl) return { ok: false, code: "invalid_action", message: "Unknown item template" };
+      if (isPlayerInIdleRestMode(ps, context.now)) {
+        return {
+          ok: false,
+          code: "idle_rest_mode",
+          message: "휴식 모드 중에는 아이템을 획득할 수 없습니다.",
+          stale: true
+        };
+      }
       if (tpl.category !== "weapon" && !item.available) {
         // Cooperative simultaneous item pickup grace window applies only to ordinary
         // consumables (coins, apples, potions). Important rare upgrades (golden heart
@@ -741,6 +907,27 @@ function checkAction(context: GameContext, action: ClientGameAction): ActionChec
         const withinGrace = allowRaceDuplicate && collectedAt > 0 && context.now - collectedAt <= ITEM_COOP_GRACE_MS;
         if (!withinGrace || collectedBy.includes(action.playerId)) {
           return { ok: false, code: "item_taken", message: "Item is respawning", stale: true };
+        }
+      }
+      if (tpl.category !== "weapon") {
+        const stage = getStageById(ps.stageId);
+        const spawn = stage.layers.itemSpawns.byId[itemId];
+        const pos = computeItemPixelPos(stage, spawn, item);
+        if (
+          isConsecutiveSameSpotPickup(ps.lastItemPickup, {
+            stageId: ps.stageId,
+            itemId,
+            templateId: item.templateId,
+            x: pos.x,
+            y: pos.y
+          })
+        ) {
+          return {
+            ok: false,
+            code: "consecutive_same_spot_pickup",
+            message: "같은 위치에서 같은 아이템을 연속으로 획득할 수 없습니다.",
+            stale: true
+          };
         }
       }
       return { ok: true };
@@ -1228,13 +1415,24 @@ function applyCheckedAction(context: GameContext, action: ClientGameAction): Act
         )
       );
     } else {
+      const stage = getStageById(ps.stageId);
+      const spawn = stage.layers.itemSpawns.byId[itemId];
+      const pos = computeItemPixelPos(stage, spawn, item);
+      ps.lastItemPickup = {
+        stageId: ps.stageId,
+        itemId,
+        templateId: item.templateId,
+        x: pos.x,
+        y: pos.y,
+        at: now
+      };
       item.collectedBy = item.collectedBy ?? [];
       const isFirstCollector = item.available;
       if (isFirstCollector) {
         item.available = false;
         item.collectedAt = now;
         const activeCount = countPlayersInStage(world, ps.stageId);
-        item.respawnAt = now + computeItemRespawnMs(tpl.respawnSec, activeCount);
+        item.respawnAt = now + computeItemRespawnMs(tpl.respawnSec, activeCount, tpl.category);
       }
       if (!item.collectedBy.includes(ps.playerId)) {
         item.collectedBy.push(ps.playerId);
@@ -1405,6 +1603,7 @@ function applyCheckedAction(context: GameContext, action: ClientGameAction): Act
     applyRevival(ps);
     ps.x = pos.x;
     ps.y = pos.y;
+    delete ps.lastItemPickup;
     events.push(
       makeEvent(
         "sunny.playerRespawned",
@@ -1426,6 +1625,7 @@ function applyCheckedAction(context: GameContext, action: ClientGameAction): Act
     ps.vy = 0;
     ps.hp = Math.max(ps.hp, Math.round(ps.maxHp * 0.6));
     ps.highestStageNumber = Math.max(ps.highestStageNumber, targetStage.meta.stageNumber);
+    delete ps.lastItemPickup;
     world.playerStageMap[ps.playerId] = ps.stageId;
 
     if (prevStageId !== ps.stageId) {
@@ -1694,9 +1894,13 @@ function applyCheckedAction(context: GameContext, action: ClientGameAction): Act
   if (
     action.type !== "idleRegen" &&
     action.type !== "checkpoint" &&
+    action.type !== "collectItem" &&
     !(action.type === "attackMob" && action.payload.hitKind === "dot")
   ) {
     ps.lastActivityAt = now;
+    if (action.type !== "playerHurt" && action.type !== "setMenuMode") {
+      ps.lastActiveInputAt = now;
+    }
   }
   ps.lastUpdatedAt = now;
   state.playerStates[action.playerId] = ps as unknown as JsonObject;
@@ -1704,8 +1908,8 @@ function applyCheckedAction(context: GameContext, action: ClientGameAction): Act
 }
 
 export const sunnyMeadowDefinition = defineGameDefinition(gameMetadata, {
-  initialStageState(): JsonObject {
-    return buildInitialWorldState() as unknown as JsonObject;
+  initialStageState(context): JsonObject {
+    return buildInitialWorldState(context?.now ?? 0) as unknown as JsonObject;
   },
 
   initialPlayerState(player, context): JsonObject {
@@ -1914,7 +2118,7 @@ export const sunnyMeadowDefinition = defineGameDefinition(gameMetadata, {
         facing,
         animState,
         lastUpdatedAt: context.now,
-        ...(movedOrActive ? { lastActivityAt: context.now } : {})
+        ...(movedOrActive ? { lastActivityAt: context.now, lastActiveInputAt: context.now } : {})
       },
       ...(stageMutated ? { stageState: world as unknown as JsonObject } : {})
     };
@@ -2046,7 +2250,15 @@ export const sunnyMeadowDefinition = defineGameDefinition(gameMetadata, {
           ];
         })
       ),
-      items: Object.fromEntries(Object.entries(stageRt.items).map(([id, item]) => [id, { available: item.available }])),
+      items: Object.fromEntries(
+        Object.entries(stageRt.items).map(([id, item]) => [
+          id,
+          {
+            available: item.available,
+            ...(typeof item.x === "number" && typeof item.y === "number" ? { x: item.x, y: item.y } : {})
+          }
+        ])
+      ),
       nearbyPlayers
     } as unknown as JsonObject;
   },

@@ -249,6 +249,7 @@ export type LocalPlayerRender = {
   slowTimer: number;
   statuses: Partial<Record<StatusEffectKind, ActiveStatusEffect>>;
   idleRegenActive: boolean;
+  idleRestMode?: boolean;
   attackAnimTimer: number;
   attackAnimDuration: number;
   animTimer: number;
@@ -2355,7 +2356,7 @@ export class SunnyRenderer {
             (s): s is ActiveStatusEffect => Boolean(s && s.remaining > 0)
           )
         : [];
-      if (activeList.length > 0 || p.idleRegenActive) {
+      if (activeList.length > 0 || p.idleRegenActive || p.idleRestMode) {
         let px = 14;
         const py = 98;
         ctx.font = 'bold 11px "Pretendard", sans-serif';
@@ -2372,6 +2373,19 @@ export class SunnyRenderer {
           ctx.fill();
           ctx.stroke();
           ctx.fillStyle = "#69F0AE";
+          ctx.fillText(label, px + 8, py + 10);
+          px += pillW + 6;
+        } else if (p.idleRestMode) {
+          const label = "💤 휴식 중";
+          const pillW = ctx.measureText(label).width + 16;
+          ctx.fillStyle = "rgba(28, 36, 52, 0.84)";
+          ctx.strokeStyle = "#90CAF9";
+          ctx.lineWidth = 1.8;
+          ctx.beginPath();
+          ctx.roundRect(px, py, pillW, 20, 9);
+          ctx.fill();
+          ctx.stroke();
+          ctx.fillStyle = "#BBDEFB";
           ctx.fillText(label, px + 8, py + 10);
           px += pillW + 6;
         }
