@@ -103,6 +103,49 @@
   touch-action: manipulation;
 }
 
+.sm-hud-hotspot {
+  position: absolute;
+  appearance: none;
+  border: none;
+  background: transparent;
+  padding: 0;
+  margin: 0;
+  cursor: pointer;
+  border-radius: 12px;
+  touch-action: manipulation;
+  z-index: 2;
+}
+
+.sm-hud-hotspot:focus-visible {
+  outline: 2.5px solid #ffd740;
+  outline-offset: 2px;
+}
+
+.sm-hud-hotspot-status {
+  left: 1.25%;
+  top: 1.74%;
+  width: 31.67%;
+  height: 14.24%;
+}
+
+.sm-hud-hotspot-shop {
+  right: 1.25%;
+  top: 7.64%;
+  width: 23.54%;
+  height: 5.56%;
+}
+
+@media (hover: none) and (pointer: coarse), (max-width: 720px) {
+  .sm-hud-hotspot-shop {
+    min-height: 32px;
+    top: 6.2%;
+  }
+}
+
+.sm-stage-frame.is-dead .sm-hud-hotspot {
+  pointer-events: none;
+}
+
 .sm-footer {
   width: min(100%, 992px);
   display: flex;
@@ -1025,13 +1068,21 @@
   position: absolute;
   left: -2px;
   top: -2px;
-  font-size: 0.58rem;
+  font-size: 0.56rem;
   font-weight: 900;
   line-height: 1.2;
   padding: 0 3px;
   border-radius: 4px;
   color: #fff;
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+}
+
+.sm-tiered-icon.is-sm .sm-tier-badge {
+  left: -3px;
+  top: -3px;
+  font-size: 0.48rem;
+  line-height: 1.15;
+  padding: 0 2px;
 }
 
 .sm-tier-badge.is-t2 {

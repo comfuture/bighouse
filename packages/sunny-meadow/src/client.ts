@@ -20,6 +20,7 @@ import {
 } from "./catalogs";
 import { SunnyAudioManager } from "./audio";
 import {
+  canAddItemToInventory,
   canDismantleItem,
   computeDismantleYield,
   computeEffectiveCombatStats,
@@ -32,12 +33,13 @@ import {
   MAX_WEAPON_UPGRADE_LEVEL,
   normalizeInventory,
   normalizeWeaponUpgrades,
+  removeItemAtSlot,
+  removeItemFromInventory,
   SHOP_OFFERS,
   SHOP_OFFERS_BY_ID,
   SMELTING_RECIPES,
   SMELTING_RECIPES_BY_ID,
-  STONE_POWDER_ITEM_ID,
-  UPGRADE_STONE_TIER_LABELS
+  STONE_POWDER_ITEM_ID
 } from "./economy";
 import { gameMetadata } from "./client-metadata";
 import {
@@ -176,6 +178,8 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
     </header>
     <section class="sm-stage-frame" data-el="stage-frame" aria-label="햇살 초원 모험 게임 화면">
       <canvas class="sm-canvas" width="960" height="576" data-el="canvas"></canvas>
+      <button type="button" class="sm-hud-hotspot sm-hud-hotspot-status" data-act="hud-inventory" aria-label="인벤토리 열기 (I)"></button>
+      <button type="button" class="sm-hud-hotspot sm-hud-hotspot-shop" data-act="hud-shop" aria-label="상점 열기 (B)"></button>
     </section>
     <div class="sm-touch-pad" aria-label="터치 조작 패드">
       <div class="sm-touch-group">
@@ -583,7 +587,57 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
   let selectedSmeltRecipeId: string = "smelt_red_t2";
   let coinHover = false;
   let statusHover = false;
+  let lastInventoryRenderKey = "";
+  let lastShopRenderKey = "";
   const hudClickController = createHudClickController();
+
+  function getInventoryRenderKey(): string {
+    return JSON.stringify([
+      localPlayer.level,
+      Math.ceil(localPlayer.hp),
+      localPlayer.maxHp,
+      localPlayer.xp,
+      localPlayer.xpToNext,
+      localPlayer.baseAtk,
+      localPlayer.baseDex,
+      localPlayer.potions,
+      localPlayer.coins,
+      localPlayer.score,
+      localPlayer.mobsDefeated,
+      localPlayer.equippedWeaponId,
+      localPlayer.unlockedWeapons,
+      localPlayer.weaponUpgrades,
+      localInventory,
+      invRightTab,
+      selectedInvSlot,
+      selectedUpgradeWeaponId,
+      selectedSmeltTier,
+      selectedSmeltRecipeId
+    ]);
+  }
+
+  function getShopRenderKey(): string {
+    return JSON.stringify([
+      localPlayer.coins,
+      localInventory,
+      selectedShopInvSlot,
+      selectedShopOfferId
+    ]);
+  }
+
+  function renderInventoryDialogIfChanged(force = false): void {
+    const key = getInventoryRenderKey();
+    if (!force && key === lastInventoryRenderKey) return;
+    lastInventoryRenderKey = key;
+    renderInventoryDialog();
+  }
+
+  function renderShopDialogIfChanged(force = false): void {
+    const key = getShopRenderKey();
+    if (!force && key === lastShopRenderKey) return;
+    lastShopRenderKey = key;
+    renderShopDialog();
+  }
 
   const menuModeSync = createMenuModeSync();
 
@@ -659,7 +713,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
     const base = makeSpriteIcon(spec.sheet, spec.iconIndex, sizePx);
     if (spec.tier && spec.tier > 1) {
       const wrap = document.createElement("span");
-      wrap.className = `sm-tiered-icon is-t${spec.tier}`;
+      wrap.className = `sm-tiered-icon is-t${spec.tier}${sizePx <= 24 ? " is-sm" : ""}`;
       wrap.style.width = `${sizePx}px`;
       wrap.style.height = `${sizePx}px`;
       const badge = document.createElement("span");
@@ -1328,8 +1382,8 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
 
     chat.messages = snap.chatMessages;
     if (mapDialog.open) renderStageMapDialog();
-    if (inventoryDialog.open) renderInventoryDialog();
-    if (shopDialog.open) renderShopDialog();
+    if (inventoryDialog.open) renderInventoryDialogIfChanged();
+    if (shopDialog.open) renderShopDialogIfChanged();
   }
 
   function handleServerEvent(ev: GameEvent, serverTime: number): void {
@@ -1404,8 +1458,8 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
         setFeedback(shopFeedbackEl, `${itemName} ×${qty} 판매 (+${delta.toLocaleString()})`, "success");
         audio.playSfx("sfx_item_pickup", 0.03);
       }
-      if (shopDialog.open) renderShopDialog();
-      if (inventoryDialog.open) renderInventoryDialog();
+      if (shopDialog.open) renderShopDialogIfChanged();
+      if (inventoryDialog.open) renderInventoryDialogIfChanged();
       return;
     }
 
@@ -1422,7 +1476,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
         setFeedback(invFeedbackEl, `강화 실패 · 보정 +${Math.min(25, failStreak * 5)}%`, "error");
         audio.playSfx("sfx_land", 0.04);
       }
-      if (inventoryDialog.open) renderInventoryDialog();
+      if (inventoryDialog.open) renderInventoryDialogIfChanged();
       return;
     }
 
@@ -1432,8 +1486,8 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
       const powder = Number(p.powderGained ?? 0);
       setFeedback(invFeedbackEl, `${itemName} ×${qty} 분해 → 가루 +${powder}`, "success");
       audio.playSfx("sfx_item_pickup", 0.03);
-      if (inventoryDialog.open) renderInventoryDialog();
-      if (shopDialog.open) renderShopDialog();
+      if (inventoryDialog.open) renderInventoryDialogIfChanged();
+      if (shopDialog.open) renderShopDialogIfChanged();
       return;
     }
 
@@ -1442,8 +1496,8 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
       const qty = Number(p.quantity ?? 1);
       setFeedback(invFeedbackEl, `★ ${itemName} ×${qty} 제련 완료`, "success");
       audio.playSfx("sfx_level_up", 0.04);
-      if (inventoryDialog.open) renderInventoryDialog();
-      if (shopDialog.open) renderShopDialog();
+      if (inventoryDialog.open) renderInventoryDialogIfChanged();
+      if (shopDialog.open) renderShopDialogIfChanged();
       return;
     }
 
@@ -2085,8 +2139,8 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
 
     const buildUpgradeCard = (stat: WeaponUpgradeStat) => {
       const prev = computeUpgradePreview(selW, stat, selUpg);
+      const stoneSpec = INVENTORY_ITEMS[prev.stoneId]!;
       const ownedStones = countItemInInventory(localInventory, prev.stoneId);
-      const tierLabel = UPGRADE_STONE_TIER_LABELS[prev.stoneTier];
       const card = document.createElement("div");
       card.className = "sm-upgrade-card";
 
@@ -2119,7 +2173,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
       head.className = "sm-upgrade-head";
       const headLeft = document.createElement("span");
       headLeft.className = "sm-inline-icon";
-      headLeft.append(makeInventoryItemIcon(prev.stoneId, 20));
+      headLeft.append(makeInventoryItemIcon(prev.stoneId, 24));
       const t = document.createElement("strong");
       t.textContent = statLabel;
       headLeft.append(t);
@@ -2133,7 +2187,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
       if (!prev.atCap) {
         const stoneCost = document.createElement("span");
         stoneCost.className = ownedStones >= prev.stonesRequired ? "is-ok" : "is-short";
-        stoneCost.textContent = `${tierLabel} 강화석 ${ownedStones}/${prev.stonesRequired}`;
+        stoneCost.textContent = `${stoneSpec.name} ${ownedStones}/${prev.stonesRequired}`;
         const coinCost = document.createElement("span");
         coinCost.className = localPlayer.coins >= prev.coinCost ? "is-ok" : "is-short";
         coinCost.textContent = `🪙 ${prev.coinCost.toLocaleString()}`;
@@ -2209,8 +2263,12 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
           const b = document.createElement("button");
           b.type = "button";
           b.className = "sm-btn sm-btn-compact";
-          b.textContent = `${label} (+${computeDismantleYield(curSlot.itemId, q)} 가루)`;
+          const powderOut = computeDismantleYield(curSlot.itemId, q);
+          const afterRemove = removeItemAtSlot(localInventory, selectedInvSlot, q).inventory;
+          b.disabled = !canAddItemToInventory(afterRemove, STONE_POWDER_ITEM_ID, powderOut);
+          b.textContent = `${label} (+${powderOut} 가루)`;
           b.addEventListener("click", () => {
+            if (b.disabled) return;
             actions.sendAction({ type: "dismantleItem", payload: { slotIndex: selectedInvSlot, quantity: q } });
           });
           return b;
@@ -2307,15 +2365,19 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
       b.className = "sm-btn sm-btn-primary sm-btn-compact";
       const pCost = curRecipe.powderCost * qty;
       const cCost = curRecipe.coinCost * qty;
-      b.disabled = ownedPowder < pCost || localPlayer.coins < cCost;
+      const afterPowder = removeItemFromInventory(localInventory, STONE_POWDER_ITEM_ID, pCost).inventory;
+      const hasRoom = canAddItemToInventory(afterPowder, curRecipe.outputItemId, qty);
+      b.disabled = ownedPowder < pCost || localPlayer.coins < cCost || !hasRoom;
       b.textContent = `${qty}개 제련 (가루 ${pCost} · 🪙 ${cCost.toLocaleString()})`;
       b.addEventListener("click", () => {
+        if (b.disabled) return;
         actions.sendAction({ type: "smeltStone", payload: { recipeId: curRecipe.id, quantity: qty } });
       });
       return b;
     };
     smeltBtns.append(makeSmeltBtn(1), makeSmeltBtn(5));
     invSmeltDetailEl.append(smeltTop, smeltBtns);
+    lastInventoryRenderKey = getInventoryRenderKey();
   }
 
   function renderShopDialog(): void {
@@ -2362,7 +2424,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
         return b;
       };
       btns.append(makeSellBtn("1개", 1));
-      if (sellSlot.quantity >= 5) btns.append(makeSellBtn("5개", 5));
+      if (sellSlot.quantity > 5) btns.append(makeSellBtn("5개", 5));
       if (sellSlot.quantity > 1) btns.append(makeSellBtn("전체", sellSlot.quantity));
 
       shopSellDetailEl.append(row, btns);
@@ -2417,15 +2479,18 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
       b.type = "button";
       b.className = "sm-btn sm-btn-primary sm-btn-compact";
       const cost = selOffer.buyPrice * qty;
-      b.disabled = localPlayer.coins < cost;
+      const hasRoom = selOffer.delivery !== "inventory" || canAddItemToInventory(localInventory, selOffer.itemId, qty);
+      b.disabled = localPlayer.coins < cost || !hasRoom;
       b.textContent = `${qty}개 구매 (-${cost.toLocaleString()})`;
       b.addEventListener("click", () => {
+        if (b.disabled) return;
         actions.sendAction({ type: "shopBuy", payload: { offerId: selOffer.id, quantity: qty } });
       });
       return b;
     };
     buyBtns.append(makeBuyBtn(1), makeBuyBtn(5));
     shopBuyDetailEl.append(buyRow, buyBtns);
+    lastShopRenderKey = getShopRenderKey();
   }
 
   function openInventoryModal(): void {
@@ -2435,7 +2500,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
     setFeedback(invFeedbackEl, "");
     selectedUpgradeWeaponId = localPlayer.equippedWeaponId;
     if (selectedInvSlot < 0) selectedInvSlot = localInventory.findIndex((s) => s !== null);
-    renderInventoryDialog();
+    renderInventoryDialogIfChanged(true);
     if (!inventoryDialog.open) inventoryDialog.showModal();
     syncChatAvailability();
     syncMenuMode();
@@ -2447,7 +2512,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
     if (inventoryDialog.open) inventoryDialog.close();
     setFeedback(shopFeedbackEl, "");
     if (selectedShopInvSlot < 0) selectedShopInvSlot = localInventory.findIndex((s) => s !== null);
-    renderShopDialog();
+    renderShopDialogIfChanged(true);
     if (!shopDialog.open) shopDialog.showModal();
     syncChatAvailability();
     syncMenuMode();
@@ -2503,7 +2568,44 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
     actions.leaveRoom();
   });
 
-  // Separated Canvas HUD Entry Points:
+  // Accessible & touch-friendly HUD hotspots layered directly over the top-left Status Card
+  // (Inventory) and top-right Coin Pill (Shop), keeping entry points cleanly separated.
+  const hudInvBtn = root.querySelector<HTMLButtonElement>('[data-act="hud-inventory"]');
+  const hudShopBtn = root.querySelector<HTMLButtonElement>('[data-act="hud-shop"]');
+  hudInvBtn?.addEventListener("pointerenter", () => {
+    if (!downed()) statusHover = true;
+  });
+  hudInvBtn?.addEventListener("pointerleave", () => {
+    statusHover = false;
+  });
+  hudInvBtn?.addEventListener("focus", () => {
+    if (!downed()) statusHover = true;
+  });
+  hudInvBtn?.addEventListener("blur", () => {
+    statusHover = false;
+  });
+  hudInvBtn?.addEventListener("click", () => {
+    statusHover = false;
+    openInventoryModal();
+  });
+  hudShopBtn?.addEventListener("pointerenter", () => {
+    if (!downed()) coinHover = true;
+  });
+  hudShopBtn?.addEventListener("pointerleave", () => {
+    coinHover = false;
+  });
+  hudShopBtn?.addEventListener("focus", () => {
+    if (!downed()) coinHover = true;
+  });
+  hudShopBtn?.addEventListener("blur", () => {
+    coinHover = false;
+  });
+  hudShopBtn?.addEventListener("click", () => {
+    coinHover = false;
+    openShopModal();
+  });
+
+  // Separated Canvas HUD Entry Points (fallback when clicking canvas directly):
   // - Top-Left Character Status Card -> Inventory
   // - Top-Right Coin Pill -> Shop
   // Activated on `click` (not `pointerdown`) so `closedby="any"` dialogs are never
@@ -2523,7 +2625,6 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
     statusHover = false;
     coinHover = false;
     canvas.style.cursor = "";
-    hudClickController.onPointerCancel();
   };
   const onCanvasPointerCancel = () => {
     statusHover = false;
@@ -2562,12 +2663,13 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
 
   // Keyboard listeners
   const onKeyDown = (e: KeyboardEvent) => {
-    if (!e.repeat && e.code === "KeyI" && inventoryDialog.open) {
+    const hasModifier = e.ctrlKey || e.metaKey || e.altKey;
+    if (!hasModifier && !e.repeat && e.code === "KeyI" && inventoryDialog.open) {
       e.preventDefault();
       inventoryDialog.close();
       return;
     }
-    if (!e.repeat && e.code === "KeyB" && shopDialog.open) {
+    if (!hasModifier && !e.repeat && e.code === "KeyB" && shopDialog.open) {
       e.preventDefault();
       shopDialog.close();
       return;
@@ -2575,12 +2677,12 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
     if (chatOpen || mapDialog.open || helpDialog.open || deathDialog.open || inventoryDialog.open || shopDialog.open) {
       return;
     }
-    if (!e.repeat && e.code === "KeyI") {
+    if (!hasModifier && !e.repeat && e.code === "KeyI") {
       e.preventDefault();
       openInventoryModal();
       return;
     }
-    if (!e.repeat && e.code === "KeyB") {
+    if (!hasModifier && !e.repeat && e.code === "KeyB") {
       e.preventDefault();
       openShopModal();
       return;

@@ -11,7 +11,7 @@ export type HudRect = {
 export const HUD_STATUS_HITBOX: HudRect = {
   x: 12,
   y: 10,
-  w: 286,
+  w: 304,
   h: 82
 } as const;
 
@@ -51,6 +51,13 @@ export function clientPointToCanvasLogical(
  * Coordinates canvas HUD press/click activation without opening modal dialogs on `pointerdown`.
  * Opening a `closedby="any"` dialog during `pointerdown` causes the matching `pointerup`
  * outside the centered modal box to light-dismiss it immediately upon release.
+ *
+ * State semantics:
+ * - `null`: no pointerdown observed yet (allows direct programmatic/accessibility `click`).
+ * - `"none"`: pointerdown started outside a HUD target, via non-primary button, or was cancelled;
+ *   rejects the subsequent `click` so cross-region drags or cancelled gestures never misfire.
+ * - `"inventory" | "shop"`: pointerdown started inside that HUD target; activates only if `click`
+ *   completes inside the same target.
  */
 export function createHudClickController() {
   let pressedTarget: HudActionTarget | "none" | null = null;
@@ -58,13 +65,13 @@ export function createHudClickController() {
   return {
     onPointerDown(target: HudActionTarget | null, button = 0): void {
       if (button !== 0) {
-        pressedTarget = null;
+        pressedTarget = "none";
         return;
       }
       pressedTarget = target ?? "none";
     },
     onPointerCancel(): void {
-      pressedTarget = null;
+      pressedTarget = "none";
     },
     onClick(target: HudActionTarget | null): HudActionTarget | null {
       const armed = pressedTarget;

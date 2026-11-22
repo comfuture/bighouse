@@ -828,10 +828,14 @@ function checkAction(context: GameContext, action: ClientGameAction): ActionChec
       if (ps.lastEconomyActionAt && context.now - ps.lastEconomyActionAt < ECONOMY_ACTION_COOLDOWN_MS) {
         return { ok: false, code: "economy_cooldown", message: "잠시 후 다시 시도해주세요.", stale: true };
       }
-      const slotIndex = Math.floor(Number(action.payload.slotIndex));
+      const rawSlot = action.payload.slotIndex;
+      if (typeof rawSlot !== "number" || !Number.isInteger(rawSlot)) {
+        return { ok: false, code: "invalid_slot", message: "잘못된 인벤토리 칸입니다." };
+      }
+      const slotIndex = rawSlot;
       const qty = Math.floor(Number(action.payload.quantity ?? 1));
       const inv = normalizeInventory(ps.inventory);
-      if (!Number.isFinite(slotIndex) || slotIndex < 0 || slotIndex >= inv.length) {
+      if (slotIndex < 0 || slotIndex >= inv.length) {
         return { ok: false, code: "invalid_slot", message: "잘못된 인벤토리 칸입니다." };
       }
       const slot = inv[slotIndex];
@@ -840,7 +844,7 @@ function checkAction(context: GameContext, action: ClientGameAction): ActionChec
       }
       const spec = INVENTORY_ITEMS[slot.itemId];
       if (!spec || spec.sellPrice <= 0) {
-        return { ok: false, code: "unsellable_item", message: "판매할 수 없는 아이템입니다." };
+        return { ok: false, code: "unsellable_item", message: "판매할 수 없는 아이템입니다.", stale: true };
       }
       return { ok: true };
     }
@@ -872,10 +876,14 @@ function checkAction(context: GameContext, action: ClientGameAction): ActionChec
       if (ps.lastEconomyActionAt && context.now - ps.lastEconomyActionAt < ECONOMY_ACTION_COOLDOWN_MS) {
         return { ok: false, code: "economy_cooldown", message: "잠시 후 다시 시도해주세요.", stale: true };
       }
-      const slotIndex = Math.floor(Number(action.payload.slotIndex));
+      const rawSlot = action.payload.slotIndex;
+      if (typeof rawSlot !== "number" || !Number.isInteger(rawSlot)) {
+        return { ok: false, code: "invalid_slot", message: "잘못된 인벤토리 칸입니다." };
+      }
+      const slotIndex = rawSlot;
       const qty = Math.floor(Number(action.payload.quantity ?? 1));
       const inv = normalizeInventory(ps.inventory);
-      if (!Number.isFinite(slotIndex) || slotIndex < 0 || slotIndex >= inv.length) {
+      if (slotIndex < 0 || slotIndex >= inv.length) {
         return { ok: false, code: "invalid_slot", message: "잘못된 인벤토리 칸입니다." };
       }
       const slot = inv[slotIndex];
@@ -883,7 +891,7 @@ function checkAction(context: GameContext, action: ClientGameAction): ActionChec
         return { ok: false, code: "invalid_quantity", message: "분해할 강화석이 부족합니다.", stale: true };
       }
       if (!canDismantleItem(slot.itemId)) {
-        return { ok: false, code: "undismantleable_item", message: "분해할 수 없는 아이템입니다." };
+        return { ok: false, code: "undismantleable_item", message: "분해할 수 없는 아이템입니다.", stale: true };
       }
       const powderYield = computeDismantleYield(slot.itemId, qty);
       const afterRemove = removeItemAtSlot(inv, slotIndex, qty).inventory;

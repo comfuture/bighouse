@@ -33,8 +33,11 @@ describe("@bighouse/sunny-meadow HUD hitboxes & click activation", () => {
     expect(clientPointToCanvasLogical(0, 0, { left: 0, top: 0, width: 0, height: 0 })).toBeNull();
   });
 
-  it("activates only on click (never on pointerdown) and rejects cross-region drags", () => {
+  it("activates only on matching primary click and rejects drags, cancellations, and non-primary buttons", () => {
     const ctrl = createHudClickController();
+
+    // Direct programmatic click (no prior pointerdown) activates cleanly
+    expect(ctrl.onClick("shop")).toBe("shop");
 
     // Pressing down on shop arms it; releasing & clicking on shop activates shop
     ctrl.onPointerDown("shop", 0);
@@ -52,13 +55,14 @@ describe("@bighouse/sunny-meadow HUD hitboxes & click activation", () => {
     ctrl.onPointerDown("shop", 0);
     expect(ctrl.onClick("inventory")).toBeNull();
 
-    // Cancelled pointer clears armed state, then programmatic click still works
+    // Cancelled pointer gesture rejects the trailing click, then a fresh click works
     ctrl.onPointerDown("shop", 0);
     ctrl.onPointerCancel();
+    expect(ctrl.onClick("shop")).toBeNull();
     expect(ctrl.onClick("shop")).toBe("shop");
 
-    // Non-primary mouse button does not arm
+    // Non-primary mouse button rejects activation rather than clearing the guard
     ctrl.onPointerDown("shop", 2);
-    expect(ctrl.onClick("shop")).toBe("shop");
+    expect(ctrl.onClick("shop")).toBeNull();
   });
 });
