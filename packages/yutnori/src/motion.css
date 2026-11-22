@@ -1,5 +1,6 @@
 .yut-board-wrap { position: relative; }
+.yut-fx-canvas { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 6; border-radius: inherit; }
 .yut-motion-layer { position: absolute; inset: 0; pointer-events: none; z-index: 12; }
-.yut-motion-sprite { position: absolute; top: 0; left: 0; display: block; color: #fff; font-size: 13px; font-weight: 700; will-change: transform, opacity; filter: drop-shadow(0 5px 6px #172c5a20); }
+.yut-motion-sprite { position: absolute; top: 0; left: 0; display: block; color: #fff; font-size: 13px; font-weight: 700; will-change: transform, opacity; filter: drop-shadow(0 6px 8px #33241538); }
 .yut-motion-hidden { visibility: hidden !important; }
-@media (prefers-reduced-motion: reduce) { .yut-motion-layer { display: none; } }
+@media (prefers-reduced-motion: reduce) { .yut-motion-layer, .yut-fx-canvas { display: none; } }
