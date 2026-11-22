@@ -2,7 +2,7 @@
   position: relative;
   width: 100%;
   height: 100%;
-  min-height: 100dvh;
+  min-height: 100%;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -174,7 +174,7 @@
   inset: 0;
   z-index: 3;
   pointer-events: none;
-  overflow: hidden;
+  overflow: visible;
   -webkit-user-select: none;
   user-select: none;
 }
@@ -193,7 +193,7 @@
 .sm-joypad-zone {
   position: absolute;
   left: 0;
-  top: 22%;
+  top: 26%;
   bottom: 0;
   width: 46%;
   pointer-events: auto;
@@ -205,8 +205,8 @@
 
 .sm-joypad-base {
   position: absolute;
-  left: max(76px, calc(58px + env(safe-area-inset-left, 0px)));
-  bottom: max(70px, calc(56px + env(safe-area-inset-bottom, 0px)));
+  left: 72px;
+  bottom: 68px;
   width: 108px;
   height: 108px;
   border-radius: 50%;
@@ -303,8 +303,8 @@
 
 .sm-action-pad {
   position: absolute;
-  right: max(14px, env(safe-area-inset-right, 0px));
-  bottom: max(12px, env(safe-area-inset-bottom, 0px));
+  right: 14px;
+  bottom: 12px;
   display: grid;
   grid-template-columns: auto auto;
   align-items: end;
@@ -438,14 +438,41 @@
   (orientation: portrait) and (max-width: 720px) {
   .sm-root {
     justify-content: flex-start;
-    padding: max(8px, env(safe-area-inset-top, 0px)) max(10px, env(safe-area-inset-right, 0px))
-      max(10px, env(safe-area-inset-bottom, 0px)) max(10px, env(safe-area-inset-left, 0px));
+    height: 100%;
+    min-height: 0;
+    gap: 6px;
+    padding: max(6px, env(safe-area-inset-top, 0px)) max(8px, env(safe-area-inset-right, 0px))
+      max(8px, env(safe-area-inset-bottom, 0px)) max(8px, env(safe-area-inset-left, 0px));
+    overflow: hidden;
+  }
+
+  .sm-topbar {
+    padding: 5px 8px;
+    gap: 5px;
+    border-radius: 11px;
+  }
+
+  .sm-title {
+    display: none;
+  }
+
+  .sm-btn {
+    font-size: 0.72rem;
+    padding: 3px 7px;
   }
 
   .sm-play-shell {
     flex: 1 1 auto;
+    min-height: 0;
     width: 100%;
-    gap: 10px;
+    gap: 8px;
+  }
+
+  .sm-stage-frame {
+    flex: 0 0 auto;
+    width: 100%;
+    height: auto;
+    border-radius: 14px;
   }
 
   .sm-mobile-controls {
@@ -453,8 +480,8 @@
     inset: auto;
     width: 100%;
     flex: 1 1 auto;
-    min-height: 210px;
-    border-radius: 18px;
+    min-height: clamp(148px, 26svh, 220px);
+    border-radius: 16px;
     background: linear-gradient(180deg, rgba(255, 250, 236, 0.34), rgba(203, 238, 255, 0.22));
     border: 1.5px solid rgba(141, 91, 52, 0.22);
   }
@@ -465,21 +492,21 @@
   }
 
   .sm-joypad-base {
-    left: 86px;
-    bottom: 92px;
+    left: 84px;
+    bottom: 84px;
   }
 
   .sm-action-pad {
-    right: 16px;
-    bottom: 24px;
+    right: 14px;
+    bottom: 18px;
   }
 }
 
-/* Compact landscape mobile & fullscreen: maximize game stage and overlay translucent controls edge-to-edge */
+/* Compact landscape mobile: maximize 5:3 game stage and overlay translucent controls edge-to-edge */
 @media (orientation: landscape) and (max-height: 540px) {
   .sm-root {
-    height: 100dvh;
-    min-height: 100dvh;
+    height: 100%;
+    min-height: 0;
     padding: max(4px, env(safe-area-inset-top, 0px)) max(6px, env(safe-area-inset-right, 0px))
       max(4px, env(safe-area-inset-bottom, 0px)) max(6px, env(safe-area-inset-left, 0px));
     gap: 4px;
@@ -514,21 +541,23 @@
     max-width: none;
     height: 100%;
     justify-content: center;
+    container-type: size;
   }
 
   .sm-stage-frame {
-    width: auto;
-    height: 100%;
+    width: min(100cqw, calc(100cqh * 960 / 576));
+    height: auto;
     max-width: 100%;
     max-height: 100%;
+    aspect-ratio: 960 / 576;
     border-radius: 12px;
     border-width: 2px;
   }
 }
 
 :fullscreen .sm-root {
-  height: 100dvh;
-  min-height: 100dvh;
+  height: 100%;
+  min-height: 0;
   padding: max(4px, env(safe-area-inset-top, 0px)) max(6px, env(safe-area-inset-right, 0px))
     max(4px, env(safe-area-inset-bottom, 0px)) max(6px, env(safe-area-inset-left, 0px));
   gap: 4px;
@@ -546,35 +575,39 @@
   display: none;
 }
 
-:fullscreen .sm-play-shell {
-  flex: 1 1 auto;
-  min-height: 0;
-  width: 100%;
-  max-width: none;
-  height: 100%;
-  justify-content: center;
-}
+@media (orientation: landscape) {
+  :fullscreen .sm-play-shell {
+    flex: 1 1 auto;
+    min-height: 0;
+    width: 100%;
+    max-width: none;
+    height: 100%;
+    justify-content: center;
+    container-type: size;
+  }
 
-:fullscreen .sm-stage-frame {
-  width: auto;
-  height: 100%;
-  max-width: 100%;
-  max-height: 100%;
-  border-radius: 12px;
-}
+  :fullscreen .sm-stage-frame {
+    width: min(100cqw, calc(100cqh * 960 / 576));
+    height: auto;
+    max-width: 100%;
+    max-height: 100%;
+    aspect-ratio: 960 / 576;
+    border-radius: 12px;
+  }
 
-:fullscreen .sm-mobile-controls {
-  position: absolute;
-  inset: 0;
-  min-height: 0;
-  background: transparent;
-  border: none;
-  border-radius: 0;
-}
+  :fullscreen .sm-mobile-controls {
+    position: absolute;
+    inset: 0;
+    min-height: 0;
+    background: transparent;
+    border: none;
+    border-radius: 0;
+  }
 
-:fullscreen .sm-joypad-zone {
-  top: 22%;
-  width: 46%;
+  :fullscreen .sm-joypad-zone {
+    top: 26%;
+    width: 46%;
+  }
 }
 
 .sm-dialog {
