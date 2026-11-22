@@ -2,19 +2,10 @@ import "./style.css";
 import type { GameClientContext, GameClientSnapshot, MountedGameClient } from "@bighouse/game-sdk/client";
 import { triggerPlacementFeedback, triggerSelectionFeedback } from "@bighouse/game-sdk/feedback";
 import { createGameUi, type GameResultDialogState } from "@bighouse/ui";
+import { getPieceSpriteFrame, type ChessPieceKey } from "./animation";
+import { ChessAudioManager } from "./audio";
 import { moveDestinationHints, type ChessSquare } from "./move-hints";
-import bB from "./assets/pieces/bB.svg?url";
-import bK from "./assets/pieces/bK.svg?url";
-import bN from "./assets/pieces/bN.svg?url";
-import bP from "./assets/pieces/bP.svg?url";
-import bQ from "./assets/pieces/bQ.svg?url";
-import bR from "./assets/pieces/bR.svg?url";
-import wB from "./assets/pieces/wB.svg?url";
-import wK from "./assets/pieces/wK.svg?url";
-import wN from "./assets/pieces/wN.svg?url";
-import wP from "./assets/pieces/wP.svg?url";
-import wQ from "./assets/pieces/wQ.svg?url";
-import wR from "./assets/pieces/wR.svg?url";
+import { ChessFxRenderer, squareToGridPoint } from "./renderer";
 export { gameMetadata } from "./client-metadata";
 
 type ChessColor = "w" | "b";
@@ -61,21 +52,6 @@ type ChessClient = {
   leaveFinishedGame(): void;
 };
 
-const pieceUrls: Record<string, string> = {
-  bk: bK,
-  bq: bQ,
-  br: bR,
-  bb: bB,
-  bn: bN,
-  bp: bP,
-  wk: wK,
-  wq: wQ,
-  wr: wR,
-  wb: wB,
-  wn: wN,
-  wp: wP
-};
-
 export function mountGame(container: HTMLElement, context: GameClientContext): MountedGameClient {
   const instance = createChessGame(container, toChessClient(context));
   const gameUi = createGameUi(container, context, context);
@@ -100,26 +76,34 @@ export function createChessGame(container: HTMLElement, client: ChessClient) {
   let pendingPromotion: { from: ChessSquare; to: ChessSquare } | undefined;
   let seenLastMoveKey = moveKey(client.publicView);
   let pendingMoveAnimationKey: string | undefined;
+  let seenResultKey = resultKey(client.publicView);
   let checkWasActive = false;
   let checkOverlayTimer: ReturnType<typeof setTimeout> | undefined;
+  let checkSfxTimer: ReturnType<typeof setTimeout> | undefined;
+  let lastLowTimeSecond = -1;
+
+  const audio = new ChessAudioManager();
   const surface = document.createElement("div");
   surface.className = "game-contained-surface chess-game";
   container.replaceChildren(surface);
   surface.innerHTML = `
     <div class="chess-header">
       <div class="chess-status" data-role="status"></div>
-      <div class="chess-turn-notice is-hidden" data-role="turn-notice" aria-live="polite">
-        <span class="chess-turn-dot" aria-hidden="true"></span>
-        <span>Your move</span>
-        <span class="chess-turn-color" data-role="turn-color"></span>
+      <div class="chess-header-actions">
+        <div class="chess-turn-notice is-hidden" data-role="turn-notice" aria-live="polite">
+          <span class="chess-turn-dot" aria-hidden="true"></span>
+          <span>Your move</span>
+          <span class="chess-turn-color" data-role="turn-color"></span>
+        </div>
+        <button type="button" class="chess-mute-toggle" data-role="mute-toggle"></button>
       </div>
     </div>
     <div class="chess-clocks" aria-label="Chess clocks">
-      <div class="chess-clock" data-role="clock-white">
+      <div class="chess-clock chess-clock-white" data-role="clock-white">
         <span class="chess-clock-label">White</span>
         <span class="chess-clock-time" data-role="clock-white-time">15:00</span>
       </div>
-      <div class="chess-clock" data-role="clock-black">
+      <div class="chess-clock chess-clock-black" data-role="clock-black">
         <span class="chess-clock-label">Black</span>
         <span class="chess-clock-time" data-role="clock-black-time">15:00</span>
       </div>
@@ -143,6 +127,7 @@ export function createChessGame(container: HTMLElement, client: ChessClient) {
   const status = requireElement<HTMLElement>(surface, "[data-role='status']");
   const turnNotice = requireElement<HTMLElement>(surface, "[data-role='turn-notice']");
   const turnColor = requireElement<HTMLElement>(surface, "[data-role='turn-color']");
+  const muteToggle = requireElement<HTMLButtonElement>(surface, "[data-role='mute-toggle']");
   const boardFrame = requireElement<HTMLElement>(surface, "[data-role='board-frame']");
   const checkOverlay = requireElement<HTMLElement>(surface, "[data-role='check-overlay']");
   const board = requireElement<HTMLElement>(surface, "[data-role='board']");
@@ -154,15 +139,37 @@ export function createChessGame(container: HTMLElement, client: ChessClient) {
   const blackClockTime = requireElement<HTMLElement>(surface, "[data-role='clock-black-time']");
   const promotionModal = requireElement<HTMLElement>(surface, "[data-role='promotion-modal']");
   const promotionPanel = requireElement<HTMLElement>(surface, "[data-role='promotion-panel']");
-  let moveGhostCleanupTimer: ReturnType<typeof setTimeout> | undefined;
+
+  const fxRenderer = new ChessFxRenderer(boardFrame, board);
+
+  const unlockAudioOnGesture = (): void => {
+    void audio.unlock();
+  };
+  surface.addEventListener("pointerdown", unlockAudioOnGesture, { passive: true });
+  surface.addEventListener("keydown", unlockAudioOnGesture, { passive: true });
+
+  function syncMuteToggleButton(): void {
+    muteToggle.textContent = audio.muted ? "🔇 음소거" : "🔊 사운드";
+    muteToggle.classList.toggle("is-muted", audio.muted);
+    muteToggle.ariaLabel = audio.muted ? "사운드 켜기" : "사운드 끄기";
+  }
+
+  muteToggle.addEventListener("click", () => {
+    void audio.unlock();
+    audio.toggleMute();
+    syncMuteToggleButton();
+  });
+  syncMuteToggleButton();
+
   const clockTimer = setInterval(() => {
-    renderClocks();
+    renderClocks(serverNow(), true);
   }, 1_000);
 
   function render(): void {
     const { publicView, privateView, playerId } = state;
     const active = publicView.roomPhase === undefined || publicView.roomPhase === "active";
     const myTurn = active && publicView.currentPlayerId === playerId && !publicView.result;
+    const blackPerspective = privateView.color === "black";
     const colorLabel = privateView.color ?? "spectator";
     const destinations = selected && myTurn ? moveDestinationHints(publicView.fen, selected) : undefined;
     const scrollSnapshot = captureScrollSnapshot(history);
@@ -170,17 +177,26 @@ export function createChessGame(container: HTMLElement, client: ChessClient) {
     turnNotice.classList.toggle("is-hidden", !myTurn);
     turnColor.textContent = colorLabel;
     boardFrame.classList.toggle("is-my-turn", myTurn);
-    board.classList.toggle("is-black-perspective", privateView.color === "black");
-    renderClocks();
+    board.classList.toggle("is-black-perspective", blackPerspective);
+    renderClocks(serverNow(), false);
     updateCheckOverlay(publicView.check);
-    clearMoveGhost();
+    clearMoveAnimationState();
     board.innerHTML = "";
 
-    for (const square of orderedSquares(privateView.color === "black")) {
+    let checkedKingSquare: ChessSquare | null = null;
+    const squares = orderedSquares(blackPerspective);
+
+    for (let index = 0; index < squares.length; index += 1) {
+      const square = squares[index]!;
+      const colIdx = index % 8;
+      const rowIdx = Math.floor(index / 8);
       const piece = pieceAt(publicView.board, square);
       const legalDestination = destinations?.legal.has(square) === true && selected !== square;
       const unsafeDestination = destinations?.unsafe.has(square) === true && selected !== square;
       const checkedKing = publicView.check && piece?.type === "k" && piece.color === publicView.turn;
+      if (checkedKing) {
+        checkedKingSquare = square;
+      }
       const cell = document.createElement("button");
       const light = squareColor(square) === "light";
       cell.type = "button";
@@ -190,29 +206,47 @@ export function createChessGame(container: HTMLElement, client: ChessClient) {
         light ? "is-light" : "is-dark",
         selected === square ? "is-selected" : "",
         legalDestination ? "is-legal-destination" : "",
+        legalDestination && piece ? "is-capture-destination" : "",
         unsafeDestination ? "is-unsafe-destination" : "",
         checkedKing ? "is-in-check" : "",
         publicView.lastMove?.from === square || publicView.lastMove?.to === square ? "is-last" : ""
-      ].join(" ");
+      ]
+        .filter(Boolean)
+        .join(" ");
       cell.dataset.gameElastic = "off";
       cell.disabled = !active || Boolean(publicView.result);
       cell.ariaLabel = `${piece ? `${pieceName(piece)} on ${square}` : `empty ${square}`}${legalDestination ? ", legal move" : ""}${unsafeDestination ? ", unsafe move would leave king in check" : ""}`;
       cell.addEventListener("mousedown", (event) => event.preventDefault());
       cell.addEventListener("click", (event) => {
         event.preventDefault();
+        void audio.unlock();
         const keyboardActivated = event.detail === 0;
         handleSquareClick(square, piece);
         if (keyboardActivated) board.querySelector<HTMLButtonElement>(`[data-square="${square}"]`)?.focus();
       });
+
+      if (colIdx === 0) {
+        const rankBadge = document.createElement("span");
+        rankBadge.className = "chess-coord chess-coord-rank";
+        rankBadge.setAttribute("aria-hidden", "true");
+        rankBadge.textContent = square[1]!;
+        cell.append(rankBadge);
+      }
+      if (rowIdx === 7) {
+        const fileBadge = document.createElement("span");
+        fileBadge.className = "chess-coord chess-coord-file";
+        fileBadge.setAttribute("aria-hidden", "true");
+        fileBadge.textContent = square[0]!;
+        cell.append(fileBadge);
+      }
+
       if (piece) {
-        const img = document.createElement("img");
-        img.src = pieceUrls[`${piece.color}${piece.type}`]!;
-        img.alt = pieceName(piece);
-        img.draggable = false;
-        cell.append(img);
+        cell.append(createPieceSpriteElement(piece, pieceName(piece)));
       }
       board.append(cell);
     }
+
+    fxRenderer.setCheckSquare(checkedKingSquare, blackPerspective);
 
     history.innerHTML = "";
     for (let index = 0; index < publicView.history.length; index += 2) {
@@ -223,7 +257,8 @@ export function createChessGame(container: HTMLElement, client: ChessClient) {
       item.textContent = `${moveNumber}. ${whiteMove} ${blackMove}`.trim();
       history.append(item);
     }
-    renderMoveGhost(publicView);
+
+    triggerMoveFxAndAudio(publicView);
     renderPromotion();
     cancelAnimationFrame(scrollFrame);
     scrollFrame = restoreScrollSnapshot(history, scrollSnapshot);
@@ -235,6 +270,7 @@ export function createChessGame(container: HTMLElement, client: ChessClient) {
     if (!selected) {
       if (piece?.color === myColor) {
         triggerSelectionFeedback();
+        audio.playSfx("sfx_select", 0.05);
         selected = square;
         render();
       }
@@ -242,12 +278,14 @@ export function createChessGame(container: HTMLElement, client: ChessClient) {
     }
     if (selected === square) {
       triggerSelectionFeedback();
+      audio.playSfx("sfx_select", 0.05);
       selected = undefined;
       render();
       return;
     }
     if (piece?.color === myColor) {
       triggerSelectionFeedback();
+      audio.playSfx("sfx_select", 0.05);
       selected = square;
       render();
       return;
@@ -258,6 +296,7 @@ export function createChessGame(container: HTMLElement, client: ChessClient) {
     const movingPiece = pieceAt(state.publicView.board, selected);
     if (movingPiece?.type === "p" && (square.endsWith("8") || square.endsWith("1"))) {
       triggerSelectionFeedback();
+      audio.playSfx("sfx_select", 0.03);
       pendingPromotion = { from: selected, to: square };
       selected = undefined;
       render();
@@ -290,12 +329,10 @@ export function createChessGame(container: HTMLElement, client: ChessClient) {
       button.type = "button";
       button.className = "chess-promotion-choice";
       button.ariaLabel = `Promote to ${pieceName({ color, type: piece, square: pendingPromotion.to })}`;
-      const img = document.createElement("img");
-      img.src = pieceUrls[`${color}${piece}`]!;
-      img.alt = "";
-      img.draggable = false;
-      button.append(img);
+      const sprite = createPieceSpriteElement({ color, type: piece, square: pendingPromotion.to });
+      button.append(sprite);
       button.addEventListener("click", () => {
+        void audio.unlock();
         const move = pendingPromotion;
         pendingPromotion = undefined;
         if (move) {
@@ -330,67 +367,131 @@ export function createChessGame(container: HTMLElement, client: ChessClient) {
     }, 1_150);
   }
 
-  function renderMoveGhost(publicView: ChessPublicView): void {
+  function triggerMoveFxAndAudio(publicView: ChessPublicView): void {
     const move = publicView.lastMove;
     if (!move || !pendingMoveAnimationKey || moveKey(publicView) !== pendingMoveAnimationKey) return;
     const piece = pieceAt(publicView.board, move.to);
     if (!piece) return;
-    const toCell = board.querySelector<HTMLElement>(`[data-square="${move.to}"]`);
-    const targetImg = toCell?.querySelector<HTMLImageElement>("img");
-    if (!targetImg) return;
 
+    const san = move.san ?? "";
+    const isCapture = san.includes("x");
+    const isCastle = san.startsWith("O-O");
+    const isPromotion = san.includes("=");
+    const isCheck = san.includes("+") || san.includes("#") || publicView.check;
+
+    // Trigger tactile move SFX immediately
+    if (isPromotion) {
+      if (isCapture) audio.playSfx("sfx_capture", 0.04);
+      audio.playSfx("sfx_promote", 0);
+    } else if (isCastle) {
+      audio.playSfx("sfx_castle", 0.03);
+    } else if (isCapture) {
+      audio.playSfx("sfx_capture", 0.05);
+    } else {
+      audio.playSfx("sfx_move", 0.05);
+    }
+
+    if (isCheck && !publicView.result) {
+      if (checkSfxTimer) clearTimeout(checkSfxTimer);
+      checkSfxTimer = setTimeout(() => {
+        audio.playSfx("sfx_check", 0);
+        checkSfxTimer = undefined;
+      }, 95);
+    }
+
+    // Trigger DPR-scaled Canvas parabolic travel + VFX animation
     const blackPerspective = state.privateView.color === "black";
-    const fromPosition = displayPosition(move.from, blackPerspective);
-    const toPosition = displayPosition(move.to, blackPerspective);
-    const ghost = document.createElement("img");
-    ghost.className = "chess-move-ghost-piece";
-    ghost.src = pieceUrls[`${piece.color}${piece.type}`]!;
-    ghost.alt = "";
-    ghost.draggable = false;
-    ghost.style.left = `${toPosition.column * 12.5}%`;
-    ghost.style.top = `${toPosition.row * 12.5}%`;
-    ghost.style.width = "12.5%";
-    ghost.style.height = "12.5%";
-    ghost.style.setProperty("--chess-move-x", `${(fromPosition.column - toPosition.column) * 100}%`);
-    ghost.style.setProperty("--chess-move-y", `${(fromPosition.row - toPosition.row) * 100}%`);
-    targetImg.classList.add("is-move-target-hidden");
-    moveGhostLayer.append(ghost);
+    const toCell = board.querySelector<HTMLElement>(`[data-square="${move.to}"]`);
+    const targetSprite = toCell?.querySelector<HTMLElement>(".chess-piece-sprite");
+    if (!targetSprite) return;
 
-    const finish = (): void => {
-      ghost.remove();
-      targetImg.classList.remove("is-move-target-hidden");
-      if (moveGhostCleanupTimer) {
-        clearTimeout(moveGhostCleanupTimer);
-        moveGhostCleanupTimer = undefined;
+    const rookMove = isCastle ? castlingRookSquares(move.from, move.to, piece.color) : undefined;
+    const rookTargetSprite = rookMove
+      ? board.querySelector<HTMLElement>(`[data-square="${rookMove.to}"] .chess-piece-sprite`)
+      : null;
+
+    targetSprite.classList.add("is-move-target-hidden");
+    rookTargetSprite?.classList.add("is-move-target-hidden");
+
+    const pieceKey = `${piece.color}${piece.type}` as ChessPieceKey;
+    const capturedColor: "w" | "b" = piece.color === "w" ? "b" : "w";
+
+    fxRenderer.triggerMoveAnimation({
+      pieceKey,
+      from: squareToGridPoint(move.from, blackPerspective),
+      to: squareToGridPoint(move.to, blackPerspective),
+      isKnight: piece.type === "n",
+      isCapture,
+      capturedColor,
+      isPromotion,
+      rookTransfer: rookMove
+        ? {
+            pieceKey: `${piece.color}r` as ChessPieceKey,
+            from: squareToGridPoint(rookMove.from, blackPerspective),
+            to: squareToGridPoint(rookMove.to, blackPerspective)
+          }
+        : undefined,
+      onComplete: () => {
+        targetSprite.classList.remove("is-move-target-hidden");
+        rookTargetSprite?.classList.remove("is-move-target-hidden");
       }
-    };
-    ghost.addEventListener("animationend", finish, { once: true });
-    moveGhostCleanupTimer = setTimeout(finish, 360);
+    });
   }
 
-  function clearMoveGhost(): void {
-    if (moveGhostCleanupTimer) {
-      clearTimeout(moveGhostCleanupTimer);
-      moveGhostCleanupTimer = undefined;
-    }
+  function clearMoveAnimationState(): void {
+    fxRenderer.cancelActiveTravels();
     board.querySelectorAll(".is-move-target-hidden").forEach((element) => {
       element.classList.remove("is-move-target-hidden");
     });
     moveGhostLayer.innerHTML = "";
   }
 
-  function renderClocks(now = serverNow()): void {
-    renderClock("white", whiteClock, whiteClockTime, now);
-    renderClock("black", blackClock, blackClockTime, now);
+  function triggerResultFxAndAudio(publicView: ChessPublicView): void {
+    const nextResultKey = resultKey(publicView);
+    if (!nextResultKey || nextResultKey === seenResultKey) return;
+    seenResultKey = nextResultKey;
+
+    if (publicView.winnerPlayerId) {
+      const isSpectator = !state.privateView.color;
+      if (isSpectator || publicView.winnerPlayerId === state.playerId) {
+        audio.playSfx("sfx_win", 0);
+        fxRenderer.triggerVictoryCelebration();
+      } else {
+        audio.playSfx("sfx_lose", 0);
+      }
+    } else {
+      audio.playSfx("sfx_draw", 0);
+    }
   }
 
-  function renderClock(color: "white" | "black", containerEl: HTMLElement, timeEl: HTMLElement, now: number): void {
+  function renderClocks(now = serverNow(), emitLowTimeTick = false): void {
+    const whiteRemaining = renderClock("white", whiteClock, whiteClockTime, now);
+    const blackRemaining = renderClock("black", blackClock, blackClockTime, now);
+
+    if (!emitLowTimeTick) return;
+    const active = state.publicView.roomPhase === "active" && !state.publicView.result;
+    if (!active) {
+      lastLowTimeSecond = -1;
+      return;
+    }
+    const activeRemaining = state.publicView.turn === "w" ? whiteRemaining : blackRemaining;
+    const sec = Math.ceil(activeRemaining / 1_000);
+    if (activeRemaining > 0 && activeRemaining <= 30_000 && sec !== lastLowTimeSecond) {
+      lastLowTimeSecond = sec;
+      audio.playSfx("sfx_low_time", 0.02);
+    } else if (activeRemaining > 30_000) {
+      lastLowTimeSecond = -1;
+    }
+  }
+
+  function renderClock(color: "white" | "black", containerEl: HTMLElement, timeEl: HTMLElement, now: number): number {
     const remaining = clockRemainingMs(state.publicView, color, now);
     const active = state.publicView.roomPhase === "active" && !state.publicView.result && colorForTurn(state.publicView.turn) === color;
     containerEl.classList.toggle("is-active", active);
     containerEl.classList.toggle("is-low", remaining <= 60_000);
     timeEl.textContent = formatClock(remaining);
     containerEl.ariaLabel = `${color} ${formatClock(remaining)}${active ? " running" : ""}`;
+    return remaining;
   }
 
   function serverNow(): number {
@@ -410,7 +511,7 @@ export function createChessGame(container: HTMLElement, client: ChessClient) {
       }
       state.opponentName = input.opponentName;
       if (sameVersion) {
-        renderClocks();
+        renderClocks(serverNow(), false);
         return;
       }
       state.playerId = input.playerId;
@@ -424,6 +525,7 @@ export function createChessGame(container: HTMLElement, client: ChessClient) {
       pendingPromotion = undefined;
       render();
       pendingMoveAnimationKey = undefined;
+      triggerResultFxAndAudio(input.publicView);
     },
     destroy() {
       clearInterval(clockTimer);
@@ -431,10 +533,50 @@ export function createChessGame(container: HTMLElement, client: ChessClient) {
       if (checkOverlayTimer) {
         clearTimeout(checkOverlayTimer);
       }
-      clearMoveGhost();
+      if (checkSfxTimer) {
+        clearTimeout(checkSfxTimer);
+      }
+      surface.removeEventListener("pointerdown", unlockAudioOnGesture);
+      surface.removeEventListener("keydown", unlockAudioOnGesture);
+      clearMoveAnimationState();
+      fxRenderer.destroy();
+      audio.destroy();
       surface.remove();
     }
   };
+}
+
+function createPieceSpriteElement(piece: ChessPieceView, accessibleLabel?: string): HTMLSpanElement {
+  const key = `${piece.color}${piece.type}` as ChessPieceKey;
+  const frame = getPieceSpriteFrame(key);
+  const el = document.createElement("span");
+  el.className = `chess-piece-sprite chess-piece-${key}`;
+  el.dataset.piece = key;
+  el.style.setProperty("--sprite-col", String(frame.col));
+  el.style.setProperty("--sprite-row", String(frame.row));
+  if (accessibleLabel) {
+    el.setAttribute("role", "img");
+    el.setAttribute("aria-label", accessibleLabel);
+  } else {
+    el.setAttribute("aria-hidden", "true");
+  }
+  return el;
+}
+
+function castlingRookSquares(
+  kingFrom: ChessSquare,
+  kingTo: ChessSquare,
+  color: ChessColor
+): { from: ChessSquare; to: ChessSquare } | undefined {
+  if (color === "w" && kingFrom === "e1") {
+    if (kingTo === "g1") return { from: "h1", to: "f1" };
+    if (kingTo === "c1") return { from: "a1", to: "d1" };
+  }
+  if (color === "b" && kingFrom === "e8") {
+    if (kingTo === "g8") return { from: "h8", to: "f8" };
+    if (kingTo === "c8") return { from: "a8", to: "d8" };
+  }
+  return undefined;
 }
 
 function toChessClient(context: GameClientContext): ChessClient {
@@ -549,12 +691,9 @@ function moveKey(publicView: ChessPublicView): string | undefined {
   return move ? `${publicView.moveCount}:${move.playerId}:${move.from}:${move.to}:${move.san}` : undefined;
 }
 
-function displayPosition(square: ChessSquare, blackPerspective: boolean): { column: number; row: number } {
-  const file = square.charCodeAt(0) - "a".charCodeAt(0);
-  const rank = Number(square[1]) - 1;
-  return blackPerspective
-    ? { column: 7 - file, row: rank }
-    : { column: file, row: 7 - rank };
+function resultKey(publicView: ChessPublicView): string | undefined {
+  if (!publicView.result) return undefined;
+  return `${publicView.result}:${publicView.winnerPlayerId ?? "draw"}:${publicView.drawReason ?? ""}`;
 }
 
 function pieceName(piece: ChessPieceView): string {
