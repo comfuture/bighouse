@@ -43,19 +43,12 @@ import {
   computeEffectiveCombatStats,
   getWeaponUpgrade
 } from "./economy";
+import { HUD_COIN_HITBOX, HUD_STATUS_HITBOX } from "./hud-interactions";
 import type { CompiledStage, RuntimeDecoration, RuntimePlatform, RuntimePortal } from "./map-schema";
 import { computeXpEfficiency } from "./progression";
 import type { ActiveStatusEffect, RemotePlayerView, StageTheme, StatusEffectKind, WeaponUpgradeState } from "./types";
 
-export { economySheetUrl, itemsSheetUrl, heroUrl };
-
-/** Logical canvas hitbox of the clickable Coin badge in the top-right HUD (opens Shop). */
-export const HUD_COIN_HITBOX = {
-  x: VIEWPORT.width - 238,
-  y: 44,
-  w: 226,
-  h: 32
-} as const;
+export { economySheetUrl, itemsSheetUrl, heroUrl, HUD_COIN_HITBOX, HUD_STATUS_HITBOX };
 
 const IMAGE_URLS: Record<string, string> = {
   bg_sky: bgSkyUrl,
@@ -282,6 +275,7 @@ export type RenderScene = {
   hitEffects: ClientHitEffect[];
   particles: ClientParticle[];
   coinHover?: boolean;
+  statusHover?: boolean;
   stagePlayerCount: number;
   totalPlayersOnline: number;
 };
@@ -2266,12 +2260,13 @@ export class SunnyRenderer {
     const wObj = WEAPON_CATALOG[p.equippedWeaponId] ?? WEAPON_CATALOG.wooden_sword!;
 
     ctx.save();
-    // --- Top-Left: Avatar, Level, HP, EXP, Potions ---
-    ctx.fillStyle = "rgba(42, 26, 14, 0.80)";
-    ctx.strokeStyle = "rgba(255, 224, 130, 0.65)";
-    ctx.lineWidth = 2;
+    // --- Top-Left: Clickable Character Status Card (opens Inventory) ---
+    const sb = HUD_STATUS_HITBOX;
+    ctx.fillStyle = scene.statusHover ? "rgba(68, 42, 18, 0.92)" : "rgba(42, 26, 14, 0.80)";
+    ctx.strokeStyle = scene.statusHover ? "#FFE57F" : "rgba(255, 224, 130, 0.65)";
+    ctx.lineWidth = scene.statusHover ? 2.4 : 2;
     ctx.beginPath();
-    ctx.roundRect(12, 10, 286, 82, 14);
+    ctx.roundRect(sb.x, sb.y, sb.w, sb.h, 14);
     ctx.fill();
     ctx.stroke();
 
@@ -2325,7 +2320,7 @@ export class SunnyRenderer {
     ctx.font = 'bold 10px "Pretendard", sans-serif';
     ctx.fillText(`EXP ${p.xp.toLocaleString()} / ${p.xpToNext.toLocaleString()}`, barX + barW * 0.5, 46);
 
-    // ATK / DEX + Potions row (reflecting weapon enhancements!)
+    // ATK / DEX + Potions + Inventory trigger chip
     const eqUpgrade = getWeaponUpgrade(p.weaponUpgrades, wObj.id);
     const combatStats = computeEffectiveCombatStats(wObj, p.baseAtk, p.baseDex, eqUpgrade);
     ctx.textAlign = "left";
@@ -2333,12 +2328,24 @@ export class SunnyRenderer {
     ctx.fillStyle = "#FFE082";
     ctx.fillText(`ATK ${combatStats.totalAtk}`, barX, 71);
     ctx.fillStyle = "#A5D6A7";
-    ctx.fillText(`DEX ${combatStats.totalDex}`, barX + 56, 71);
+    ctx.fillText(`DEX ${combatStats.totalDex}`, barX + 52, 71);
     if (sheet) {
-      ctx.drawImage(sheet, 96, 0, 96, 96, barX + 106, 57, 22, 22);
+      ctx.drawImage(sheet, 96, 0, 96, 96, barX + 100, 59, 20, 20);
     }
     ctx.fillStyle = p.potions > 0 ? "#FFCDD2" : "#9E9E9E";
-    ctx.fillText(`×${p.potions} [F]`, barX + 130, 71);
+    ctx.fillText(`×${p.potions}`, barX + 121, 71);
+
+    const invChipW = 54;
+    const invChipX = sb.x + sb.w - invChipW - 8;
+    const invChipY = 61;
+    ctx.fillStyle = scene.statusHover ? "#FFD740" : "rgba(255, 215, 64, 0.20)";
+    ctx.beginPath();
+    ctx.roundRect(invChipX, invChipY, invChipW, 19, 8);
+    ctx.fill();
+    ctx.textAlign = "center";
+    ctx.font = '800 10px "Pretendard", sans-serif';
+    ctx.fillStyle = scene.statusHover ? "#4A2C14" : "#FFF8E1";
+    ctx.fillText("가방 ▸", invChipX + invChipW * 0.5, invChipY + 10);
 
     // Active Player Status Pills & Idle Regen Badge directly beneath top-left HUD card
     {
@@ -2428,7 +2435,7 @@ export class SunnyRenderer {
     ctx.font = 'bold 10.5px "Pretendard", sans-serif';
     ctx.fillStyle = "#B2EBF2";
     ctx.fillText(
-      `권장 Lv.${scene.stage.meta.recommendedMinLevel}~${scene.stage.meta.recommendedMaxLevel} · 이 스테이지 ${scene.stagePlayerCount}명 / 전체 ${scene.totalPlayersOnline}명`,
+      `Lv.${scene.stage.meta.recommendedMinLevel}~${scene.stage.meta.recommendedMaxLevel} · ${scene.stagePlayerCount}명 / 전체 ${scene.totalPlayersOnline}명`,
       W * 0.5,
       54
     );
@@ -2442,7 +2449,7 @@ export class SunnyRenderer {
       ctx.fill();
       ctx.fillStyle = "#FFF59D";
       ctx.font = 'bold 11px "Pretendard", sans-serif';
-      ctx.fillText("⚠ 경험치 효율 낮음 — 다음 스테이지로 이동하세요!", W * 0.5, 83);
+      ctx.fillText("⚠ 경험치 감소 · 다음 스테이지 권장", W * 0.5, 83);
     }
 
     // --- Top-Right: Clearly Separated Points Pill & Clickable Coin Shop Pill with Icons ---
@@ -2568,7 +2575,7 @@ export class SunnyRenderer {
     }
     const traitText = traits.length > 0 ? ` · ★ ${traits.join(" + ")}` : "";
     const upgTag = combatStats.totalLevel > 0 ? ` +${combatStats.totalLevel}` : "";
-    const wInfo = `${wObj.name}${upgTag} (총 ATK ${combatStats.totalAtk} · DEX ${combatStats.totalDex})${traitText} · Q/E 교체 · [I] 인벤토리`;
+    const wInfo = `${wObj.name}${upgTag} · ATK ${combatStats.totalAtk} · DEX ${combatStats.totalDex}${traitText}`;
     ctx.strokeText(wInfo, W * 0.5, barTop - 10);
     ctx.fillStyle = "#FFF8E1";
     ctx.fillText(wInfo, W * 0.5, barTop - 10);
