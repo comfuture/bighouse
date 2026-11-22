@@ -5,6 +5,8 @@ import {
   evaluatePieceHopPose,
   evaluateSpecialNodePulse,
   getPieceSheetFrame,
+  planMoveFeedback,
+  planSequenceFeedback,
   spawnCaptureBurst,
   spawnFinishConfetti,
   spawnHopTrail,
@@ -12,6 +14,7 @@ import {
   spawnVictoryShower,
   stepParticles
 } from "../src/animation";
+import type { MoveSequence, YutMove } from "../src/types";
 
 describe("yutnori sprite sheet and pose evaluators", () => {
   it("defines the 4x2 illustrated mal pieces sprite sheet at 128x128 per cell", () => {
@@ -111,5 +114,83 @@ describe("yutnori board FX particles", () => {
     const shortLived = burst.map((p) => ({ ...p, life: 0.04 }));
     // Large dt is clamped to 0.05s, which expires particles with life 0.04s
     expect(stepParticles(shortLived, 5.0)).toHaveLength(0);
+  });
+});
+
+describe("move feedback timeline synchronization", () => {
+  const firstMove: YutMove = {
+    matchId: "m1",
+    turnId: 1,
+    playerId: "a",
+    startedAt: 1000,
+    rollId: "r1",
+    pieceId: "A1",
+    pieceIds: ["A1"],
+    pathId: "outer",
+    path: ["o1", "o2"],
+    destination: "o2",
+    capturedPieceIds: [],
+    stackedPieceIds: ["A2"],
+    completedPieceIds: []
+  };
+  const secondMove: YutMove = {
+    matchId: "m1",
+    turnId: 1,
+    playerId: "a",
+    startedAt: 1460,
+    rollId: "r2",
+    pieceId: "A1",
+    pieceIds: ["A1", "A2"],
+    pathId: "outer",
+    path: ["o3", "o4", "o5"],
+    destination: "o5",
+    capturedPieceIds: ["B1"],
+    stackedPieceIds: [],
+    completedPieceIds: []
+  };
+  const sequence: MoveSequence = {
+    sequenceId: "seq-1",
+    startedAt: 1000,
+    durationMs: 460 + 1190,
+    moves: [firstMove, secondMove]
+  };
+
+  it("skips completed moves and subtracts elapsed time from remaining hop and arrival delays on late sequences", () => {
+    // Received 140ms into secondMove (firstMove ended at 1460ms)
+    const events = planSequenceFeedback(sequence, 1600);
+    expect(events).toEqual([
+      { delayMs: 40, kind: "hop-sfx", nodeId: "o4", pieceId: "A1" },
+      { delayMs: 40, kind: "hop", nodeId: "o4", pieceId: "A1" },
+      { delayMs: 220, kind: "hop", nodeId: "o5", pieceId: "A1" },
+      { delayMs: 400, kind: "capture", nodeId: "o5", pieceId: "A1" }
+    ]);
+    // No replayed stack or hops from the already-completed firstMove
+    expect(events.some((e) => e.kind === "stack" || e.nodeId === "o1" || e.nodeId === "o2")).toBe(false);
+  });
+
+  it("schedules only remaining arrival feedback when a move is already past its hop timestamps", () => {
+    // standalone firstMove: startedAt=1000, travelMs=360, hops at 1000 & 1180, arrival at 1360
+    expect(planMoveFeedback(firstMove, 1000, 1240)).toEqual([
+      { delayMs: 120, kind: "stack", nodeId: "o2", pieceId: "A1" }
+    ]);
+    // After arrival (1360), no arrival or hop feedback is replayed
+    expect(planMoveFeedback(firstMove, 1000, 1380)).toEqual([]);
+    // After the entire sequence finishes, nothing is scheduled
+    expect(planSequenceFeedback(sequence, sequence.startedAt + sequence.durationMs)).toEqual([]);
+  });
+
+  it("schedules full hops and arrival cues in order when a sequence arrives on time", () => {
+    const events = planSequenceFeedback(sequence, 1000);
+    expect(events).toEqual([
+      { delayMs: 0, kind: "hop-sfx", nodeId: "o1", pieceId: "A1" },
+      { delayMs: 0, kind: "hop", nodeId: "o1", pieceId: "A1" },
+      { delayMs: 180, kind: "hop", nodeId: "o2", pieceId: "A1" },
+      { delayMs: 360, kind: "stack", nodeId: "o2", pieceId: "A1" },
+      { delayMs: 460, kind: "hop-sfx", nodeId: "o3", pieceId: "A1" },
+      { delayMs: 460, kind: "hop", nodeId: "o3", pieceId: "A1" },
+      { delayMs: 640, kind: "hop", nodeId: "o4", pieceId: "A1" },
+      { delayMs: 820, kind: "hop", nodeId: "o5", pieceId: "A1" },
+      { delayMs: 1000, kind: "capture", nodeId: "o5", pieceId: "A1" }
+    ]);
   });
 });
