@@ -6,6 +6,7 @@ import { simulateMovePlan, mandatoryThrows, THROW_RESULT_HOLD_MS } from "./rules
 import { createThrowScene } from "./scene";
 import { createPieceMarkup } from "./pieces";
 import { createBoardMotion } from "./motion";
+import { planMoveFeedback, planSequenceFeedback, type MoveFeedbackEvent } from "./animation";
 import { createBoardFxCanvas } from "./fx-canvas";
 import { createThrowAudio } from "./audio";
 import { stickFaceMarkup } from "./stick-face";
@@ -159,30 +160,22 @@ export function mountGame(container: HTMLElement, context: GameClientContext): M
       next.pieces.find((entry) => entry.pieceId === pieceIdValue)?.teamId ??
       next.turn.teamId;
 
-    const emitForMove = (move: NonNullable<YutnoriPublicView["lastMove"]>, baseDelayMs: number): void => {
-      const team = teamOf(move.pieceId);
-      const travelMs = Math.min(1250, Math.max(360, move.path.length * 180));
-      scheduleFx(baseDelayMs, () => {
-        throwAudio.playHop();
-        boardFx.emitHopPath(move.path, team, travelMs);
-      });
-      const arrivalMs = baseDelayMs + travelMs;
-      if (move.capturedPieceIds.length) {
-        scheduleFx(arrivalMs, () => {
-          throwAudio.playCapture();
-          boardFx.emitCapture(move.destination, team);
-        });
-      }
-      if (move.stackedPieceIds.length) {
-        scheduleFx(arrivalMs, () => {
-          throwAudio.playStack();
-          boardFx.emitStack(move.destination, team);
-        });
-      }
-      if (move.completedPieceIds.length) {
-        scheduleFx(arrivalMs, () => {
-          throwAudio.playFinish();
-          boardFx.emitFinish("o0", team);
+    const runFeedbackEvents = (events: readonly MoveFeedbackEvent[]): void => {
+      for (const item of events) {
+        const team = teamOf(item.pieceId);
+        scheduleFx(item.delayMs, () => {
+          if (item.kind === "hop-sfx") throwAudio.playHop();
+          else if (item.kind === "hop") boardFx.emitHop(item.nodeId, team);
+          else if (item.kind === "capture") {
+            throwAudio.playCapture();
+            boardFx.emitCapture(item.nodeId, team);
+          } else if (item.kind === "stack") {
+            throwAudio.playStack();
+            boardFx.emitStack(item.nodeId, team);
+          } else if (item.kind === "finish") {
+            throwAudio.playFinish();
+            boardFx.emitFinish(item.nodeId, team);
+          }
         });
       }
     };
@@ -190,13 +183,8 @@ export function mountGame(container: HTMLElement, context: GameClientContext): M
     const sequence = next.lastMoveSequence;
     if (sequence && sequence.sequenceId !== previous.lastMoveSequence?.sequenceId && sequence.sequenceId !== lastFxSequenceId) {
       lastFxSequenceId = sequence.sequenceId;
-      const nowMs = serverNow();
-      if (nowMs < sequence.startedAt + sequence.durationMs) {
-        for (const move of sequence.moves) {
-          const startDelay = Math.max(0, (move.startedAt ?? sequence.startedAt) - nowMs);
-          emitForMove(move, startDelay);
-        }
-      }
+      clearFxTimers();
+      runFeedbackEvents(planSequenceFeedback(sequence, serverNow()));
       return;
     }
 
@@ -205,12 +193,9 @@ export function mountGame(container: HTMLElement, context: GameClientContext): M
       const key = `${move.matchId}:${move.turnId}:${move.rollId}`;
       if (key === lastFxMoveKey) return;
       lastFxMoveKey = key;
+      clearFxTimers();
       const nowMs = serverNow();
-      const elapsed = Math.max(0, nowMs - (move.startedAt ?? nowMs));
-      const travelMs = Math.min(1250, Math.max(360, move.path.length * 180));
-      if (elapsed < travelMs + 650) {
-        emitForMove(move, 0);
-      }
+      runFeedbackEvents(planMoveFeedback(move, nowMs, nowMs));
     }
   }
   const serverNow = (): number => Date.now() + clockOffset;

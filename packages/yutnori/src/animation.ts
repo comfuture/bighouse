@@ -3,7 +3,7 @@
  * for Yutnori's illustrated Korean folk-art board and mal tokens.
  */
 
-import type { TeamId } from "./types";
+import type { MoveSequence, TeamId, YutMove } from "./types";
 
 export type PieceSpriteVariant = "idle" | "hop" | "crown" | "effect";
 
@@ -528,4 +528,82 @@ export function stepParticles(
   }
 
   return alive;
+}
+
+export type MoveFeedbackKind = "hop" | "hop-sfx" | "capture" | "stack" | "finish";
+
+export type MoveFeedbackEvent = {
+  delayMs: number;
+  kind: MoveFeedbackKind;
+  nodeId: string;
+  pieceId: string;
+};
+
+/**
+ * Computes remaining hop and arrival feedback cues on the shared authoritative
+ * move timeline, matching `createBoardMotion.playSequence`:
+ * - Completed moves and past hop/arrival timestamps are skipped (never replayed).
+ * - In-progress moves subtract elapsed time from remaining hop and arrival delays.
+ */
+export function planMoveFeedback(
+  move: YutMove,
+  fallbackStartedAt: number,
+  nowMs: number
+): MoveFeedbackEvent[] {
+  if (!move.path.length) return [];
+  const startedAt = move.startedAt ?? fallbackStartedAt;
+  const travelMs = Math.min(1250, Math.max(360, move.path.length * 180));
+  const totalDuration = travelMs + (move.capturedPieceIds.length ? 650 : 100);
+  if (nowMs >= startedAt + totalDuration) return [];
+
+  const events: MoveFeedbackEvent[] = [];
+  const stepMs = Math.max(70, Math.round(travelMs / move.path.length));
+  let scheduledHopSfx = false;
+
+  for (let i = 0; i < move.path.length; i++) {
+    const hopDelay = startedAt + i * stepMs - nowMs;
+    if (hopDelay < 0) continue;
+    const nodeId = move.path[i]!;
+    if (!scheduledHopSfx) {
+      scheduledHopSfx = true;
+      events.push({ delayMs: hopDelay, kind: "hop-sfx", nodeId, pieceId: move.pieceId });
+    }
+    events.push({ delayMs: hopDelay, kind: "hop", nodeId, pieceId: move.pieceId });
+  }
+
+  const arrivalDelay = startedAt + travelMs - nowMs;
+  if (arrivalDelay >= 0) {
+    if (move.capturedPieceIds.length) {
+      events.push({ delayMs: arrivalDelay, kind: "capture", nodeId: move.destination, pieceId: move.pieceId });
+    }
+    if (move.stackedPieceIds.length) {
+      events.push({ delayMs: arrivalDelay, kind: "stack", nodeId: move.destination, pieceId: move.pieceId });
+    }
+    if (move.completedPieceIds.length) {
+      events.push({ delayMs: arrivalDelay, kind: "finish", nodeId: "o0", pieceId: move.pieceId });
+    }
+  }
+
+  return events;
+}
+
+/**
+ * Computes remaining feedback cues across a committed multi-move sequence,
+ * skipping moves and sub-events that have already elapsed on the shared clock.
+ */
+export function planSequenceFeedback(
+  sequence: MoveSequence,
+  nowMs: number
+): MoveFeedbackEvent[] {
+  if (nowMs >= sequence.startedAt + sequence.durationMs) return [];
+  const events: MoveFeedbackEvent[] = [];
+  let cursor = sequence.startedAt;
+  for (const move of sequence.moves) {
+    const startedAt = move.startedAt ?? cursor;
+    const travelMs = Math.min(1250, Math.max(360, move.path.length * 180));
+    const totalDuration = travelMs + (move.capturedPieceIds.length ? 650 : 100);
+    events.push(...planMoveFeedback(move, startedAt, nowMs));
+    cursor = startedAt + totalDuration;
+  }
+  return events;
 }
