@@ -137,7 +137,7 @@ export function resolveCardSpecialBadge(card: string): CardSpecialBadge | null {
   if (card === "BJ") return { sprite: "vfxAttack", label: "+5", kind: "attack" };
   const rank = rankOf(card);
   if (rank === "2") return { sprite: "vfxAttack", label: "+2", kind: "attack" };
-  if (rank === "A") return { sprite: "vfxAttack", label: "+3", kind: "attack" };
+  if (rank === "A") return { sprite: "vfxAttack", label: suitOf(card) === "S" ? "+5" : "+3", kind: "attack" };
   if (rank === "Q") return { sprite: "vfxReverse", label: "REV", kind: "reverse" };
   if (rank === "J") return { sprite: "vfxJump", label: "SKIP", kind: "jump" };
   if (rank === "K") return { sprite: "vfxSparkle", label: "+1", kind: "extra" };

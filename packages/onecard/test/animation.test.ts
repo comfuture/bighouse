@@ -47,6 +47,9 @@ describe("ONECARD_ART_SHEET_SPEC and sprite lookup", () => {
 
     expect(resolveCardSpecialBadge("2S")).toEqual({ sprite: "vfxAttack", label: "+2", kind: "attack" });
     expect(resolveCardSpecialBadge("AH")).toEqual({ sprite: "vfxAttack", label: "+3", kind: "attack" });
+    expect(resolveCardSpecialBadge("AC")).toEqual({ sprite: "vfxAttack", label: "+3", kind: "attack" });
+    expect(resolveCardSpecialBadge("AD")).toEqual({ sprite: "vfxAttack", label: "+3", kind: "attack" });
+    expect(resolveCardSpecialBadge("AS")).toEqual({ sprite: "vfxAttack", label: "+5", kind: "attack" });
     expect(resolveCardSpecialBadge("BJ")).toEqual({ sprite: "vfxAttack", label: "+5", kind: "attack" });
     expect(resolveCardSpecialBadge("CJ")).toEqual({ sprite: "vfxAttack", label: "+7", kind: "attack" });
     expect(resolveCardSpecialBadge("QD")).toEqual({ sprite: "vfxReverse", label: "REV", kind: "reverse" });
