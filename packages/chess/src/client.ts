@@ -448,7 +448,11 @@ export function createChessGame(container: HTMLElement, client: ChessClient) {
 
   function triggerResultFxAndAudio(publicView: ChessPublicView): void {
     const nextResultKey = resultKey(publicView);
-    if (!nextResultKey || nextResultKey === seenResultKey) return;
+    if (!nextResultKey) {
+      seenResultKey = undefined;
+      return;
+    }
+    if (nextResultKey === seenResultKey) return;
     seenResultKey = nextResultKey;
 
     if (publicView.winnerPlayerId) {
