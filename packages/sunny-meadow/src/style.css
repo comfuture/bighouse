@@ -870,3 +870,188 @@
   opacity: 0.45;
   cursor: not-allowed;
 }
+
+/* ==================== INVENTORY TABS, TIER BADGES & SMELTING ==================== */
+
+.sm-tab-group {
+  display: inline-flex;
+  gap: 4px;
+  padding: 2px;
+  border-radius: 10px;
+  background: rgba(217, 176, 115, 0.24);
+  inline-size: 100%;
+}
+
+.sm-tab-btn {
+  flex: 1 1 0;
+  appearance: none;
+  border: 1.5px solid transparent;
+  background: transparent;
+  color: #6b4e38;
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 800;
+  padding: 4px 8px;
+  border-radius: 8px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+}
+
+.sm-tab-btn:hover {
+  color: #3c2616;
+}
+
+.sm-tab-btn.is-active {
+  background: #fffdf7;
+  border-color: #d9b073;
+  color: #3c2616;
+  box-shadow: 0 1px 3px rgba(60, 38, 22, 0.12);
+}
+
+.sm-tab-count {
+  font-size: 0.68rem;
+  font-weight: 800;
+  color: #7a5a37;
+  background: rgba(217, 176, 115, 0.26);
+  padding: 0 6px;
+  border-radius: 999px;
+  font-variant-numeric: tabular-nums;
+}
+
+.sm-tab-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 1 1 auto;
+  min-inline-size: 0;
+}
+
+.sm-tab-pane.is-hidden {
+  display: none;
+}
+
+.sm-tier-tabs {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 5px;
+}
+
+.sm-tier-btn {
+  appearance: none;
+  border: 1.5px solid #dfbe87;
+  background: #fffdf7;
+  color: #5c402c;
+  font: inherit;
+  font-size: 0.76rem;
+  font-weight: 800;
+  padding: 5px 8px;
+  border-radius: 9px;
+  cursor: pointer;
+}
+
+.sm-tier-btn:hover {
+  background: #fff1cc;
+}
+
+.sm-tier-btn.is-active {
+  background: #4a2c14;
+  border-color: #4a2c14;
+  color: #ffd740;
+}
+
+.sm-smelt-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.sm-smelt-card {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px;
+  border-radius: 10px;
+  border: 2px solid #dfbe87;
+  background: #fffdf7;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  color: #3c2616;
+  min-inline-size: 0;
+}
+
+.sm-smelt-card:hover {
+  background: #fff1cc;
+}
+
+.sm-smelt-card.is-selected {
+  border-color: #ff6f00;
+  background: #ffe8ad;
+}
+
+.sm-smelt-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-inline-size: 0;
+}
+
+.sm-smelt-info strong {
+  font-size: 0.76rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sm-smelt-info span {
+  font-size: 0.7rem;
+  font-weight: 700;
+  color: #7a5a37;
+  font-variant-numeric: tabular-nums;
+}
+
+.sm-tiered-icon {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.sm-tier-badge {
+  position: absolute;
+  left: -2px;
+  top: -2px;
+  font-size: 0.58rem;
+  font-weight: 900;
+  line-height: 1.2;
+  padding: 0 3px;
+  border-radius: 4px;
+  color: #fff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+}
+
+.sm-tier-badge.is-t2 {
+  background: #1565c0;
+}
+
+.sm-tier-badge.is-t3 {
+  background: #6a1b9a;
+}
+
+.sm-powder-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  border-radius: 8px;
+  background: radial-gradient(circle at 35% 30%, #fff8e1 0%, #ce93d8 52%, #7b1fa2 100%);
+  color: #fffde7;
+  font-size: 1rem;
+  font-weight: 900;
+  text-shadow: 0 1px 2px rgba(74, 20, 140, 0.75);
+  box-shadow: inset 0 0 0 1.5px rgba(255, 248, 225, 0.65);
+}
