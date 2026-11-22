@@ -49,6 +49,7 @@ import {
   type HudActionTarget
 } from "./hud-interactions";
 import { createMenuModeSync } from "./menu-mode-sync";
+import { createMobileJoypadController, type JoypadDirections } from "./mobile-joypad";
 import { createWeaponSwitchSequence } from "./weapon-switch-sequence";
 import { compileStageForRuntime, type CompiledStage, type RuntimeLadder } from "./map-schema";
 import {
@@ -190,22 +191,37 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
         <button type="button" class="sm-btn" data-act="leave">🚪 나가기</button>
       </div>
     </header>
-    <section class="sm-stage-frame" data-el="stage-frame" aria-label="햇살 초원 모험 게임 화면">
-      <canvas class="sm-canvas" width="960" height="576" data-el="canvas"></canvas>
-      <button type="button" class="sm-hud-hotspot sm-hud-hotspot-status" data-act="hud-inventory" aria-label="인벤토리 열기 (I)"></button>
-      <button type="button" class="sm-hud-hotspot sm-hud-hotspot-shop" data-act="hud-shop" aria-label="상점 열기 (B)"></button>
-    </section>
-    <div class="sm-touch-pad" aria-label="터치 조작 패드">
-      <div class="sm-touch-group">
-        <button type="button" class="sm-touch-btn" data-touch="left">◀</button>
-        <button type="button" class="sm-touch-btn" data-touch="up">▲</button>
-        <button type="button" class="sm-touch-btn" data-touch="down">▼</button>
-        <button type="button" class="sm-touch-btn" data-touch="right">▶</button>
-      </div>
-      <div class="sm-touch-group">
-        <button type="button" class="sm-touch-btn" data-touch="potion">🧪</button>
-        <button type="button" class="sm-touch-btn" data-touch="attack">⚔️</button>
-        <button type="button" class="sm-touch-btn" data-touch="jump">JUMP</button>
+    <div class="sm-play-shell" data-el="play-shell">
+      <section class="sm-stage-frame" data-el="stage-frame" aria-label="햇살 초원 모험 게임 화면">
+        <canvas class="sm-canvas" width="960" height="576" data-el="canvas"></canvas>
+        <button type="button" class="sm-hud-hotspot sm-hud-hotspot-status" data-act="hud-inventory" aria-label="인벤토리 열기 (I)"></button>
+        <button type="button" class="sm-hud-hotspot sm-hud-hotspot-shop" data-act="hud-shop" aria-label="상점 열기 (B)"></button>
+      </section>
+      <div class="sm-mobile-controls" data-el="mobile-controls" aria-label="모바일 터치 조작">
+        <div class="sm-joypad-zone" data-el="joypad-zone" role="application" aria-label="이동 조이패드 (터치 후 드래그)">
+          <div class="sm-joypad-base" data-el="joypad-base" aria-hidden="true">
+            <span class="sm-joypad-dir sm-joypad-dir-up">▲</span>
+            <span class="sm-joypad-dir sm-joypad-dir-down">▼</span>
+            <span class="sm-joypad-dir sm-joypad-dir-left">◀</span>
+            <span class="sm-joypad-dir sm-joypad-dir-right">▶</span>
+            <div class="sm-joypad-knob" data-el="joypad-knob"></div>
+          </div>
+        </div>
+        <div class="sm-action-pad" aria-label="행동 버튼">
+          <button type="button" class="sm-action-btn sm-action-btn-sub sm-action-btn-potion" data-touch="potion" aria-label="포션 사용">
+            <span class="sm-action-icon" aria-hidden="true">🧪</span>
+            <span class="sm-action-badge" data-el="touch-potion-count">2</span>
+          </button>
+          <button type="button" class="sm-action-btn sm-action-btn-sub sm-action-btn-weapon" data-touch="weaponNext" aria-label="무기 교체">
+            <span class="sm-action-icon" aria-hidden="true">🔄</span>
+          </button>
+          <button type="button" class="sm-action-btn sm-action-btn-jump" data-touch="jump" aria-label="점프">
+            <span class="sm-action-label" aria-hidden="true">JUMP</span>
+          </button>
+          <button type="button" class="sm-action-btn sm-action-btn-attack" data-touch="attack" aria-label="공격">
+            <span class="sm-action-icon" aria-hidden="true">⚔️</span>
+          </button>
+        </div>
       </div>
     </div>
     <footer class="sm-footer">
@@ -331,8 +347,14 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
   `;
   container.appendChild(root);
 
+  const playShell = root.querySelector<HTMLElement>('[data-el="play-shell"]')!;
   const canvas = root.querySelector<HTMLCanvasElement>('[data-el="canvas"]')!;
   const stageFrame = root.querySelector<HTMLElement>('[data-el="stage-frame"]')!;
+  const joypadZone = root.querySelector<HTMLElement>('[data-el="joypad-zone"]')!;
+  const joypadBase = root.querySelector<HTMLElement>('[data-el="joypad-base"]')!;
+  const joypadKnob = root.querySelector<HTMLElement>('[data-el="joypad-knob"]')!;
+  const touchPotionCountEl = root.querySelector<HTMLElement>('[data-el="touch-potion-count"]')!;
+  const touchWeaponBtn = root.querySelector<HTMLButtonElement>('[data-touch="weaponNext"]')!;
   const stageBadge = root.querySelector<HTMLElement>('[data-el="stage-badge"]')!;
   const stageTitle = root.querySelector<HTMLElement>('[data-el="stage-title"]')!;
   const mapDialog = root.querySelector<HTMLDialogElement>('[data-el="map-dialog"]')!;
@@ -382,8 +404,22 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
     chatOpen = event.detail.open;
     // Typing must not move the character, and held keys must not stick.
     keysDown.clear();
-    virtualDown.clear();
+    resetMobileControls();
+    syncMobileOverlayVisibility();
   }) as EventListener);
+
+  function syncMobileOverlayVisibility(): void {
+    const hide =
+      downed() ||
+      chatOpen ||
+      mapDialog.open ||
+      helpDialog.open ||
+      deathDialog.open ||
+      inventoryDialog.open ||
+      shopDialog.open;
+    playShell.classList.toggle("is-overlay-hidden", hide);
+    if (hide) resetMobileControls();
+  }
 
   /** While a dialog is up its buttons own Enter, so the chat shortcut stands down. */
   function syncChatAvailability(): void {
@@ -394,6 +430,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
       inventoryDialog.open ||
       shopDialog.open
     );
+    syncMobileOverlayVisibility();
   }
   const muteBtn = root.querySelector<HTMLButtonElement>('[data-act="mute"]')!;
 
@@ -439,11 +476,52 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
   // Input state
   const keysDown = new Set<string>();
   const virtualDown = new Set<string>();
+  const joypadController = createMobileJoypadController();
+  const touchActionPointers = new Map<HTMLButtonElement, Set<number>>();
   const curInput: Record<string, boolean> = {};
   const prevInput: Record<string, boolean> = {};
   const justPressed = (act: string) => Boolean(curInput[act]) && !prevInput[act];
   const justReleased = (act: string) => !curInput[act] && Boolean(prevInput[act]);
   const isDown = (act: string) => Boolean(curInput[act]);
+
+  function applyJoypadDirections(dirs: JoypadDirections): void {
+    const keys: Array<keyof JoypadDirections> = ["left", "right", "up", "down"];
+    for (const dir of keys) {
+      if (dirs[dir]) virtualDown.add(dir);
+      else virtualDown.delete(dir);
+      joypadBase.classList.toggle(`is-dir-${dir}`, dirs[dir]);
+    }
+  }
+
+  function renderJoypadVisuals(snap: ReturnType<typeof joypadController.getState>): void {
+    joypadBase.classList.toggle("is-active", snap.active);
+    if (snap.active) {
+      joypadBase.style.left = `${snap.originX.toFixed(1)}px`;
+      joypadBase.style.top = `${snap.originY.toFixed(1)}px`;
+      joypadBase.style.bottom = "auto";
+    } else {
+      joypadBase.style.left = "";
+      joypadBase.style.top = "";
+      joypadBase.style.bottom = "";
+    }
+    joypadKnob.style.transform = `translate3d(${snap.knobX.toFixed(1)}px, ${snap.knobY.toFixed(1)}px, 0)`;
+    applyJoypadDirections(snap.directions);
+  }
+
+  function resetMobileControls(): void {
+    renderJoypadVisuals(joypadController.reset());
+    for (const [btn, ptrs] of touchActionPointers.entries()) {
+      ptrs.clear();
+      btn.classList.remove("is-pressed");
+    }
+    virtualDown.clear();
+  }
+
+  function syncMobileActionBadges(): void {
+    touchPotionCountEl.textContent = String(localPlayer.potions);
+    touchPotionCountEl.classList.toggle("is-empty", localPlayer.potions <= 0);
+    touchWeaponBtn.classList.toggle("is-dimmed", localPlayer.unlockedWeapons.length <= 1);
+  }
 
   // World runtime state
   let currentStageId = "";
@@ -541,7 +619,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
     localPlayer.slowTimer = 0;
     resetIdleRegen();
     keysDown.clear();
-    virtualDown.clear();
+    resetMobileControls();
     stageFrame.classList.add("is-dead");
     reviveBtn.disabled = false;
     if (chat.open) chat.open = false;
@@ -673,7 +751,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
         localPlayer.vx = 0;
         localPlayer.vy = 0;
         keysDown.clear();
-        virtualDown.clear();
+        resetMobileControls();
         resetIdleRegen();
       } else {
         localPlayer.invulnTimer = Math.max(localPlayer.invulnTimer, 0.85);
@@ -1209,6 +1287,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
       localPlayer.weaponUpgrades = normalizeWeaponUpgrades(priv.weaponUpgrades);
     }
     if (Array.isArray(priv.unlockedWeapons)) localPlayer.unlockedWeapons = [...priv.unlockedWeapons];
+    syncMobileActionBadges();
     const srvSeq = weaponSwitchSequence.observe(priv.weaponSwitchSeq);
     if (typeof priv.equippedWeaponId === "string") {
       if (pendingWeaponSwitch && nowClock < pendingWeaponSwitch.expiresAt) {
@@ -2766,29 +2845,86 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
   };
   const onBlur = () => {
     keysDown.clear();
-    virtualDown.clear();
+    resetMobileControls();
   };
   window.addEventListener("keydown", onKeyDown);
   window.addEventListener("keyup", onKeyUp);
   window.addEventListener("blur", onBlur);
 
-  // Touch buttons
+  // Floating left-hand draggable joypad (spawns under left thumb, knob clamped to maxRadius)
+  const onJoypadPointerDown = (e: PointerEvent) => {
+    if (downed() || localPlayer.inMenu || chatOpen) return;
+    if (e.pointerType === "mouse" && e.button !== 0) return;
+    e.preventDefault();
+    void audio.unlock();
+    const snap = joypadController.begin(e.pointerId, e.clientX, e.clientY, joypadZone.getBoundingClientRect());
+    if (snap.pointerId === e.pointerId) {
+      try {
+        joypadZone.setPointerCapture(e.pointerId);
+      } catch {
+        // Synthetic or detached pointer events may not support capture.
+      }
+      renderJoypadVisuals(snap);
+    }
+  };
+  const onJoypadPointerMove = (e: PointerEvent) => {
+    const snap = joypadController.move(e.pointerId, e.clientX, e.clientY);
+    if (!snap) return;
+    e.preventDefault();
+    renderJoypadVisuals(snap);
+    if (
+      (snap.directions.left || snap.directions.right || snap.directions.up || snap.directions.down) &&
+      !localPlayer.idleRestMode
+    ) {
+      resetIdleRegen();
+    }
+  };
+  const onJoypadPointerEnd = (e: PointerEvent) => {
+    const snap = joypadController.end(e.pointerId);
+    if (!snap) return;
+    e.preventDefault();
+    renderJoypadVisuals(snap);
+  };
+  joypadZone.addEventListener("pointerdown", onJoypadPointerDown);
+  joypadZone.addEventListener("pointermove", onJoypadPointerMove);
+  joypadZone.addEventListener("pointerup", onJoypadPointerEnd);
+  joypadZone.addEventListener("pointercancel", onJoypadPointerEnd);
+  joypadZone.addEventListener("lostpointercapture", onJoypadPointerEnd);
+
+  // Right-hand translucent multi-touch action buttons with pointer capture
   for (const btn of root.querySelectorAll<HTMLButtonElement>("[data-touch]")) {
     const act = btn.dataset.touch!;
-    const press = (e: Event) => {
+    const activePtrs = new Set<number>();
+    touchActionPointers.set(btn, activePtrs);
+    const press = (e: PointerEvent) => {
+      if (downed() || localPlayer.inMenu || chatOpen) return;
+      if (e.pointerType === "mouse" && e.button !== 0) return;
       e.preventDefault();
       void audio.unlock();
+      activePtrs.add(e.pointerId);
       virtualDown.add(act);
+      btn.classList.add("is-pressed");
+      if (!localPlayer.idleRestMode) resetIdleRegen();
+      try {
+        btn.setPointerCapture(e.pointerId);
+      } catch {
+        // Synthetic or detached pointer events may not support capture.
+      }
     };
-    const rel = (e: Event) => {
+    const rel = (e: PointerEvent) => {
+      if (!activePtrs.delete(e.pointerId)) return;
       e.preventDefault();
-      virtualDown.delete(act);
+      if (activePtrs.size === 0) {
+        virtualDown.delete(act);
+        btn.classList.remove("is-pressed");
+      }
     };
     btn.addEventListener("pointerdown", press);
     btn.addEventListener("pointerup", rel);
     btn.addEventListener("pointercancel", rel);
-    btn.addEventListener("pointerleave", rel);
+    btn.addEventListener("lostpointercapture", rel);
   }
+  syncMobileActionBadges();
 
   function pollInput(): void {
     for (const [act, codes] of Object.entries(ACTION_KEYS)) {
@@ -2980,6 +3116,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
       );
       const before = p.hp;
       p.potions = Math.max(0, p.potions - 1);
+      syncMobileActionBadges();
       p.hp = Math.min(p.maxHp, p.hp + healAmt);
       const actual = p.hp - before;
       if (actual > 0) {
@@ -4103,6 +4240,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
           );
         }
         localPlayer.equippedWeaponId = tpl.weaponId;
+        syncMobileActionBadges();
         pendingWeaponSwitch = { weaponId: tpl.weaponId, seq: 0, expiresAt: now + 2500 };
         spawnText(item.x, item.y - 24, `★ ${tpl.name} 획득!`, "crit");
         spawnSparkles(item.x, item.y, tpl.glowColor, 16);
@@ -4128,6 +4266,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
           spawnText(item.x, item.y - 12, `+${healAmt} HP`, "heal");
         } else if (tpl.category === "potion") {
           localPlayer.potions += tpl.potionCount ?? 1;
+          syncMobileActionBadges();
           spawnText(item.x, item.y - 12, "포션 +1!", "info");
         } else if (tpl.category === "max_hp") {
           localPlayer.maxHp += tpl.maxHpBonus ?? 20;
@@ -4334,6 +4473,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
     },
     destroy() {
       destroyed = true;
+      resetMobileControls();
       if (rafId !== null) cancelAnimationFrame(rafId);
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("keyup", onKeyUp);

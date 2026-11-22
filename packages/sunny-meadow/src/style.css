@@ -83,9 +83,17 @@
   background: #43a047;
 }
 
-.sm-stage-frame {
+.sm-play-shell {
   position: relative;
   width: min(100%, 992px);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.sm-stage-frame {
+  position: relative;
+  width: 100%;
   aspect-ratio: 960 / 576;
   border-radius: 18px;
   overflow: hidden;
@@ -113,7 +121,7 @@
   cursor: pointer;
   border-radius: 12px;
   touch-action: manipulation;
-  z-index: 2;
+  z-index: 4;
 }
 
 .sm-hud-hotspot:focus-visible {
@@ -160,37 +168,413 @@
   color: #5c402c;
 }
 
-.sm-touch-pad {
+.sm-mobile-controls {
   display: none;
-  width: min(100%, 992px);
-  justify-content: space-between;
-  align-items: center;
-  gap: 8px;
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  pointer-events: none;
+  overflow: hidden;
+  -webkit-user-select: none;
   user-select: none;
-  touch-action: manipulation;
+}
+
+.sm-play-shell.is-overlay-hidden .sm-mobile-controls {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.sm-play-shell.is-overlay-hidden .sm-joypad-zone,
+.sm-play-shell.is-overlay-hidden .sm-action-btn {
+  pointer-events: none;
+}
+
+.sm-joypad-zone {
+  position: absolute;
+  left: 0;
+  top: 22%;
+  bottom: 0;
+  width: 46%;
+  pointer-events: auto;
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.sm-joypad-base {
+  position: absolute;
+  left: max(76px, calc(58px + env(safe-area-inset-left, 0px)));
+  bottom: max(70px, calc(56px + env(safe-area-inset-bottom, 0px)));
+  width: 108px;
+  height: 108px;
+  border-radius: 50%;
+  transform: translate(-50%, 50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0.58;
+  background: radial-gradient(circle, rgba(28, 18, 10, 0.16) 0%, rgba(28, 18, 10, 0.38) 100%);
+  border: 2px solid rgba(255, 250, 236, 0.62);
+  box-shadow:
+    inset 0 0 12px rgba(255, 255, 255, 0.14),
+    0 4px 14px rgba(0, 0, 0, 0.22);
+  backdrop-filter: blur(3px);
+  pointer-events: none;
+  transition: opacity 120ms ease, border-color 120ms ease;
+}
+
+.sm-joypad-base.is-active {
+  transform: translate(-50%, -50%);
+  opacity: 0.92;
+  border-color: rgba(255, 224, 130, 0.86);
+  background: radial-gradient(circle, rgba(255, 248, 225, 0.22) 0%, rgba(36, 22, 10, 0.36) 100%);
+  box-shadow:
+    inset 0 0 18px rgba(255, 224, 130, 0.22),
+    0 6px 20px rgba(0, 0, 0, 0.3);
+}
+
+.sm-joypad-dir {
+  position: absolute;
+  font-size: 0.68rem;
+  line-height: 1;
+  color: rgba(255, 250, 236, 0.45);
+  transition: color 80ms ease, transform 80ms ease, text-shadow 80ms ease;
+}
+
+.sm-joypad-dir-up {
+  top: 7px;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.sm-joypad-dir-down {
+  bottom: 7px;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.sm-joypad-dir-left {
+  left: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+.sm-joypad-dir-right {
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+.sm-joypad-base.is-dir-up .sm-joypad-dir-up {
+  color: #ffd740;
+  transform: translateX(-50%) scale(1.25);
+  text-shadow: 0 0 8px rgba(255, 215, 64, 0.85);
+}
+
+.sm-joypad-base.is-dir-down .sm-joypad-dir-down {
+  color: #ffd740;
+  transform: translateX(-50%) scale(1.25);
+  text-shadow: 0 0 8px rgba(255, 215, 64, 0.85);
+}
+
+.sm-joypad-base.is-dir-left .sm-joypad-dir-left {
+  color: #ffd740;
+  transform: translateY(-50%) scale(1.25);
+  text-shadow: 0 0 8px rgba(255, 215, 64, 0.85);
+}
+
+.sm-joypad-base.is-dir-right .sm-joypad-dir-right {
+  color: #ffd740;
+  transform: translateY(-50%) scale(1.25);
+  text-shadow: 0 0 8px rgba(255, 215, 64, 0.85);
+}
+
+.sm-joypad-knob {
+  width: 46px;
+  height: 46px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, rgba(255, 253, 245, 0.9), rgba(255, 214, 120, 0.62));
+  border: 2px solid rgba(255, 255, 255, 0.86);
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.3);
+  will-change: transform;
+}
+
+.sm-action-pad {
+  position: absolute;
+  right: max(14px, env(safe-area-inset-right, 0px));
+  bottom: max(12px, env(safe-area-inset-bottom, 0px));
+  display: grid;
+  grid-template-columns: auto auto;
+  align-items: end;
+  justify-items: center;
+  gap: 10px 12px;
+  pointer-events: none;
+}
+
+.sm-action-btn {
+  position: relative;
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-inline-size: 46px;
+  min-block-size: 46px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.58);
+  background: rgba(255, 250, 236, 0.28);
+  color: #fff;
+  font: inherit;
+  font-weight: 900;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.24);
+  backdrop-filter: blur(4px);
+  pointer-events: auto;
+  cursor: pointer;
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  transition: transform 70ms ease, background-color 90ms ease, border-color 90ms ease;
+}
+
+.sm-action-btn-sub {
+  width: 46px;
+  height: 46px;
+  font-size: 1.1rem;
+}
+
+.sm-action-btn-potion {
+  background: rgba(194, 24, 91, 0.48);
+  border-color: rgba(255, 212, 228, 0.78);
+}
+
+.sm-action-btn-weapon {
+  background: rgba(25, 118, 210, 0.46);
+  border-color: rgba(204, 234, 255, 0.76);
+}
+
+.sm-action-btn-weapon.is-dimmed {
+  opacity: 0.48;
+}
+
+.sm-action-btn-jump {
+  width: 62px;
+  height: 62px;
+  background: rgba(46, 125, 50, 0.54);
+  border-width: 2.5px;
+  border-color: rgba(216, 255, 220, 0.84);
+  font-size: 0.78rem;
+  letter-spacing: 0.03em;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.65);
+}
+
+.sm-action-btn-attack {
+  width: 68px;
+  height: 68px;
+  background: rgba(216, 67, 21, 0.56);
+  border-width: 2.5px;
+  border-color: rgba(255, 232, 200, 0.88);
+  font-size: 1.48rem;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.45);
+}
+
+.sm-action-btn.is-pressed {
+  transform: scale(0.92);
+  border-color: #fff;
+  filter: brightness(1.18);
+}
+
+.sm-action-btn-jump.is-pressed {
+  background: rgba(67, 160, 71, 0.64);
+}
+
+.sm-action-btn-attack.is-pressed {
+  background: rgba(244, 81, 30, 0.68);
+}
+
+.sm-action-btn-potion.is-pressed {
+  background: rgba(236, 64, 122, 0.58);
+}
+
+.sm-action-btn-weapon.is-pressed {
+  background: rgba(66, 165, 245, 0.56);
+}
+
+.sm-action-badge {
+  position: absolute;
+  right: -2px;
+  bottom: -2px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: rgba(34, 20, 10, 0.86);
+  border: 1.5px solid rgba(255, 232, 195, 0.75);
+  color: #fff8e1;
+  font-size: 0.66rem;
+  font-weight: 900;
+  line-height: 15px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.sm-action-badge.is-empty {
+  opacity: 0.55;
 }
 
 @media (hover: none) and (pointer: coarse), (max-width: 720px) {
-  .sm-touch-pad {
-    display: flex;
+  .sm-mobile-controls {
+    display: block;
+  }
+
+  .sm-footer {
+    display: none;
   }
 }
 
-.sm-touch-group {
-  display: flex;
-  gap: 6px;
+/* Portrait phone layout: place spacious floating joypad & translucent action deck directly below canvas */
+@media (orientation: portrait) and (hover: none) and (pointer: coarse),
+  (orientation: portrait) and (max-width: 720px) {
+  .sm-root {
+    justify-content: flex-start;
+    padding: max(8px, env(safe-area-inset-top, 0px)) max(10px, env(safe-area-inset-right, 0px))
+      max(10px, env(safe-area-inset-bottom, 0px)) max(10px, env(safe-area-inset-left, 0px));
+  }
+
+  .sm-play-shell {
+    flex: 1 1 auto;
+    width: 100%;
+    gap: 10px;
+  }
+
+  .sm-mobile-controls {
+    position: relative;
+    inset: auto;
+    width: 100%;
+    flex: 1 1 auto;
+    min-height: 210px;
+    border-radius: 18px;
+    background: linear-gradient(180deg, rgba(255, 250, 236, 0.34), rgba(203, 238, 255, 0.22));
+    border: 1.5px solid rgba(141, 91, 52, 0.22);
+  }
+
+  .sm-joypad-zone {
+    top: 0;
+    width: 54%;
+  }
+
+  .sm-joypad-base {
+    left: 86px;
+    bottom: 92px;
+  }
+
+  .sm-action-pad {
+    right: 16px;
+    bottom: 24px;
+  }
 }
 
-.sm-touch-btn {
-  min-width: 46px;
-  height: 46px;
+/* Compact landscape mobile & fullscreen: maximize game stage and overlay translucent controls edge-to-edge */
+@media (orientation: landscape) and (max-height: 540px) {
+  .sm-root {
+    height: 100dvh;
+    min-height: 100dvh;
+    padding: max(4px, env(safe-area-inset-top, 0px)) max(6px, env(safe-area-inset-right, 0px))
+      max(4px, env(safe-area-inset-bottom, 0px)) max(6px, env(safe-area-inset-left, 0px));
+    gap: 4px;
+    overflow: hidden;
+  }
+
+  .sm-topbar {
+    width: 100%;
+    max-width: none;
+    padding: 4px 10px;
+    border-radius: 10px;
+    gap: 6px;
+  }
+
+  .sm-title {
+    display: none;
+  }
+
+  .sm-btn {
+    font-size: 0.72rem;
+    padding: 3px 8px;
+  }
+
+  .sm-footer {
+    display: none;
+  }
+
+  .sm-play-shell {
+    flex: 1 1 auto;
+    min-height: 0;
+    width: 100%;
+    max-width: none;
+    height: 100%;
+    justify-content: center;
+  }
+
+  .sm-stage-frame {
+    width: auto;
+    height: 100%;
+    max-width: 100%;
+    max-height: 100%;
+    border-radius: 12px;
+    border-width: 2px;
+  }
+}
+
+:fullscreen .sm-root {
+  height: 100dvh;
+  min-height: 100dvh;
+  padding: max(4px, env(safe-area-inset-top, 0px)) max(6px, env(safe-area-inset-right, 0px))
+    max(4px, env(safe-area-inset-bottom, 0px)) max(6px, env(safe-area-inset-left, 0px));
+  gap: 4px;
+  overflow: hidden;
+}
+
+:fullscreen .sm-topbar {
+  width: 100%;
+  max-width: none;
+  padding: 4px 10px;
+  border-radius: 10px;
+}
+
+:fullscreen .sm-footer {
+  display: none;
+}
+
+:fullscreen .sm-play-shell {
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  max-width: none;
+  height: 100%;
+  justify-content: center;
+}
+
+:fullscreen .sm-stage-frame {
+  width: auto;
+  height: 100%;
+  max-width: 100%;
+  max-height: 100%;
   border-radius: 12px;
-  border: 2px solid #8d5b34;
-  background: #fff8e6;
-  color: #3c2616;
-  font-size: 0.95rem;
-  font-weight: 800;
-  box-shadow: 0 3px 0 #8d5b34;
+}
+
+:fullscreen .sm-mobile-controls {
+  position: absolute;
+  inset: 0;
+  min-height: 0;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+}
+
+:fullscreen .sm-joypad-zone {
+  top: 22%;
+  width: 46%;
 }
 
 .sm-dialog {
