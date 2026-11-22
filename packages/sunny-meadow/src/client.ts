@@ -391,11 +391,11 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
   const deathCoins = root.querySelector<HTMLElement>('[data-el="death-coins"]')!;
   const reviveBtn = root.querySelector<HTMLButtonElement>('[data-act="revive"]')!;
 
-  // World chat is the shared in-game chat every other game uses: it sits over the
-  // scene, and Enter opens and closes it.
+  // World chat is the shared in-game chat every other game uses: append to `root`
+  // (outside stageFrame's content-visibility containment) so fixed z-index stays above overlays.
   registerBighouseUi();
   const chat = document.createElement("bighouse-game-chat") as BighouseGameChatElement;
-  stageFrame.append(chat);
+  root.append(chat);
   let chatOpen = false;
   chat.addEventListener("bighouse-chat-send", ((event: CustomEvent<{ body: string }>) => {
     actions.sendChat(event.detail.body);
@@ -476,8 +476,10 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
   // Input state
   const keysDown = new Set<string>();
   const virtualDown = new Set<string>();
+  const virtualTapQueue = new Set<string>();
   const joypadController = createMobileJoypadController();
   const touchActionPointers = new Map<HTMLButtonElement, Set<number>>();
+  const touchActionMap = new Map<HTMLButtonElement, string>();
   const curInput: Record<string, boolean> = {};
   const prevInput: Record<string, boolean> = {};
   const justPressed = (act: string) => Boolean(curInput[act]) && !prevInput[act];
@@ -515,6 +517,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
       btn.classList.remove("is-pressed");
     }
     virtualDown.clear();
+    virtualTapQueue.clear();
   }
 
   function syncMobileActionBadges(): void {
@@ -1326,6 +1329,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
     } else {
       leaveDeath();
     }
+    syncMobileOverlayVisibility();
     menuModeSync.observeServer(Boolean(priv.inMenu));
     reconcileMenuModeWithServer(false);
 
@@ -2021,8 +2025,9 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
     if (ev.type === "sunny.playerRespawned") {
       const pid = String(p.playerId ?? "");
       if (pid === ctx.playerId) {
-        leaveDeath();
         if (typeof p.hp === "number") localPlayer.hp = p.hp;
+        leaveDeath();
+        syncMobileOverlayVisibility();
         localPlayer.x = Number(p.x ?? compiledStage.spawn.x);
         localPlayer.y = Number(p.y ?? compiledStage.spawn.y - localPlayer.h);
         localPlayer.vx = 0;
@@ -2847,9 +2852,21 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
     keysDown.clear();
     resetMobileControls();
   };
+  const onVisibilityChange = () => {
+    if (document.hidden) {
+      keysDown.clear();
+      resetMobileControls();
+    }
+  };
+  const onViewportChange = () => {
+    resetMobileControls();
+  };
   window.addEventListener("keydown", onKeyDown);
   window.addEventListener("keyup", onKeyUp);
   window.addEventListener("blur", onBlur);
+  window.addEventListener("resize", onViewportChange);
+  document.addEventListener("visibilitychange", onVisibilityChange);
+  document.addEventListener("fullscreenchange", onViewportChange);
 
   // Floating left-hand draggable joypad (spawns under left thumb, knob clamped to maxRadius)
   const onJoypadPointerDown = (e: PointerEvent) => {
@@ -2862,7 +2879,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
       try {
         joypadZone.setPointerCapture(e.pointerId);
       } catch {
-        // Synthetic or detached pointer events may not support capture.
+        // Window fallback listeners below keep tracking active if capture is unavailable.
       }
       renderJoypadVisuals(snap);
     }
@@ -2891,33 +2908,76 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
   joypadZone.addEventListener("pointercancel", onJoypadPointerEnd);
   joypadZone.addEventListener("lostpointercapture", onJoypadPointerEnd);
 
-  // Right-hand translucent multi-touch action buttons with pointer capture
+  const releaseTouchButtonPointer = (btn: HTMLButtonElement, pointerId: number): boolean => {
+    const activePtrs = touchActionPointers.get(btn);
+    if (!activePtrs || !activePtrs.delete(pointerId)) return false;
+    const act = touchActionMap.get(btn);
+    if (activePtrs.size === 0) {
+      if (act) virtualDown.delete(act);
+      btn.classList.remove("is-pressed");
+    }
+    return true;
+  };
+
+  // Window-level fallback ensures joypad & action buttons never lock out if pointer capture fails or drops.
+  const onWindowPointerMove = (e: PointerEvent) => {
+    const state = joypadController.getState();
+    if (state.active && state.pointerId === e.pointerId) {
+      onJoypadPointerMove(e);
+    }
+  };
+  const onWindowPointerEnd = (e: PointerEvent) => {
+    const state = joypadController.getState();
+    if (state.active && state.pointerId === e.pointerId) {
+      const snap = joypadController.end(e.pointerId);
+      if (snap) renderJoypadVisuals(snap);
+    }
+    for (const btn of touchActionPointers.keys()) {
+      releaseTouchButtonPointer(btn, e.pointerId);
+    }
+  };
+  window.addEventListener("pointermove", onWindowPointerMove);
+  window.addEventListener("pointerup", onWindowPointerEnd);
+  window.addEventListener("pointercancel", onWindowPointerEnd);
+
+  // Right-hand translucent multi-touch action buttons with pointer capture & fast-tap latching
   for (const btn of root.querySelectorAll<HTMLButtonElement>("[data-touch]")) {
     const act = btn.dataset.touch!;
     const activePtrs = new Set<number>();
     touchActionPointers.set(btn, activePtrs);
+    touchActionMap.set(btn, act);
     const press = (e: PointerEvent) => {
       if (downed() || localPlayer.inMenu || chatOpen) return;
       if (e.pointerType === "mouse" && e.button !== 0) return;
       e.preventDefault();
       void audio.unlock();
       activePtrs.add(e.pointerId);
-      virtualDown.add(act);
       btn.classList.add("is-pressed");
       if (!localPlayer.idleRestMode) resetIdleRegen();
       try {
         btn.setPointerCapture(e.pointerId);
       } catch {
-        // Synthetic or detached pointer events may not support capture.
+        // Window fallback listeners release cleanly if capture is unavailable.
       }
+      if (act === "weaponNext" || act === "weaponPrev") {
+        // Trigger weapon cycling immediately on tap (like Q/E keydown) so quick taps never drop.
+        if (localPlayer.unlockedWeapons.length > 1) {
+          const delta = act === "weaponNext" ? 1 : -1;
+          const idx = localPlayer.unlockedWeapons.indexOf(localPlayer.equippedWeaponId);
+          const nextWid =
+            localPlayer.unlockedWeapons[
+              (idx + delta + localPlayer.unlockedWeapons.length) % localPlayer.unlockedWeapons.length
+            ]!;
+          selectWeaponLocal(nextWid);
+        }
+        return;
+      }
+      virtualDown.add(act);
+      virtualTapQueue.add(act);
     };
     const rel = (e: PointerEvent) => {
-      if (!activePtrs.delete(e.pointerId)) return;
+      if (!releaseTouchButtonPointer(btn, e.pointerId)) return;
       e.preventDefault();
-      if (activePtrs.size === 0) {
-        virtualDown.delete(act);
-        btn.classList.remove("is-pressed");
-      }
     };
     btn.addEventListener("pointerdown", press);
     btn.addEventListener("pointerup", rel);
@@ -2927,9 +2987,11 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
   syncMobileActionBadges();
 
   function pollInput(): void {
+    const consumeTaps = hitStopTimer <= 0;
     for (const [act, codes] of Object.entries(ACTION_KEYS)) {
       prevInput[act] = Boolean(curInput[act]);
-      let down = virtualDown.has(act);
+      let down = virtualDown.has(act) || (consumeTaps && virtualTapQueue.has(act));
+      if (consumeTaps) virtualTapQueue.delete(act);
       if (!down) {
         for (const c of codes) {
           if (keysDown.has(c)) {
@@ -4478,6 +4540,12 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("keyup", onKeyUp);
       window.removeEventListener("blur", onBlur);
+      window.removeEventListener("resize", onViewportChange);
+      window.removeEventListener("pointermove", onWindowPointerMove);
+      window.removeEventListener("pointerup", onWindowPointerEnd);
+      window.removeEventListener("pointercancel", onWindowPointerEnd);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      document.removeEventListener("fullscreenchange", onViewportChange);
       canvas.removeEventListener("pointermove", onCanvasPointerMove);
       canvas.removeEventListener("pointerleave", onCanvasPointerLeave);
       canvas.removeEventListener("pointercancel", onCanvasPointerCancel);

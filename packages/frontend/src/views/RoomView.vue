@@ -310,7 +310,12 @@ async function toggleFullscreen(): Promise<void> {
       await releaseOwnedFullscreen();
       return;
     }
-    if (isMobileDevice()) await lockLandscapeBestEffort();
+    if (document.fullscreenElement === document.documentElement && isMobileDevice()) {
+      await lockLandscapeBestEffort();
+      if (document.fullscreenElement !== document.documentElement) {
+        unlockScreenOrientation();
+      }
+    }
     if (!roomViewMounted || requestVersion !== fullscreenRequestVersion) {
       await releaseOwnedFullscreen();
     }
