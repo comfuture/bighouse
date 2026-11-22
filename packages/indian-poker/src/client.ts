@@ -2,6 +2,9 @@ import "./style.css";
 import type { GameClientContext, GameClientSnapshot, MountedGameClient } from "@bighouse/game-sdk/client";
 import { triggerCardSubmitFeedback, triggerSelectionFeedback } from "@bighouse/game-sdk/feedback";
 import { createGameUi, type GameResultDialogState } from "@bighouse/ui";
+import { resolveGamblerAnimState } from "./animation";
+import { IndianPokerAudioManager } from "./audio";
+import { IndianPokerCanvasRenderer } from "./renderer";
 export { gameMetadata } from "./client-metadata";
 
 // ─── View Types ──────────────────────────────────────────────────────────────
@@ -84,15 +87,18 @@ function describeCard(card: string): string {
   return `${card.slice(0, -1)} of ${SUIT_NAMES[suit] ?? suit}`;
 }
 
+type CardMotionKind = "none" | "deal" | "flip";
+
 /**
- * A forehead card. `card === null` renders the face-down back, which is what a
- * player sees of their own card before the round opens.
+ * A forehead card. `card === null` renders the ornate navy-and-gold card back,
+ * which is what a player sees of their own card before the round opens.
  */
-function renderCard(card: string | null, label: string): string {
+function renderCard(card: string | null, label: string, motion: CardMotionKind = "none"): string {
+  const motionClass = motion === "deal" ? " is-dealing" : motion === "flip" ? " is-flipping" : "";
   if (!card) {
     return `
-      <div class="ip-card is-face-down" role="img" aria-label="${label}: face down">
-        <span class="ip-card-back-mark">BH</span>
+      <div class="ip-card is-face-down${motionClass}" role="img" aria-label="${label}: face down">
+        <span class="ip-card-back-art" aria-hidden="true"></span>
       </div>
     `;
   }
@@ -100,20 +106,11 @@ function renderCard(card: string | null, label: string): string {
   const rank = card.slice(0, -1);
   const symbol = SUIT_SYMBOLS[suit] ?? suit;
   return `
-    <div class="ip-card ${isRedSuit(suit) ? "is-red" : "is-black"}" role="img" aria-label="${label}: ${describeCard(card)}">
+    <div class="ip-card ${isRedSuit(suit) ? "is-red" : "is-black"}${motionClass}" role="img" aria-label="${label}: ${describeCard(card)}">
+      <span class="ip-card-corner" aria-hidden="true">${rank}${symbol}</span>
       <span class="ip-card-rank">${rank}</span>
       <span class="ip-card-suit">${symbol}</span>
     </div>
-  `;
-}
-
-/** Head-and-shoulders silhouette used for both seats. */
-function silhouetteSvg(): string {
-  return `
-    <svg class="ip-figure" viewBox="0 0 120 100" aria-hidden="true" focusable="false">
-      <circle class="ip-figure-head" cx="60" cy="34" r="26" />
-      <path class="ip-figure-body" d="M8 100c0-26 23-38 52-38s52 12 52 38z" />
-    </svg>
   `;
 }
 
@@ -184,15 +181,25 @@ export function createIndianPokerGame(container: HTMLElement, client: IndianPoke
   let wager = 0;
   let toast: string | null = null;
   let toastTimer: number | undefined;
+  const delayedTimers = new Set<number>();
+
+  let lastOpponentCardRenderKey = "";
+  let lastMyCardRenderKey = "";
+  let pendingCardMotion: CardMotionKind = "none";
+
+  const audio = new IndianPokerAudioManager();
 
   const surface = document.createElement("div");
   surface.className = "game-contained-surface indian-poker-game";
   container.replaceChildren(surface);
   surface.innerHTML = `
-    <div class="ip-table">
+    <div class="ip-table" data-role="table">
+      <div class="ip-top-bar">
+        <button type="button" class="ip-mute-toggle" data-role="mute-toggle"></button>
+      </div>
+
       <section class="ip-seat is-opponent" data-role="opponent-seat">
-        <div class="ip-seat-figure">
-          ${silhouetteSvg()}
+        <div class="ip-seat-figure" data-role="opponent-figure">
           <div class="ip-forehead" data-role="opponent-card"></div>
         </div>
         <div class="ip-seat-meta">
@@ -204,7 +211,7 @@ export function createIndianPokerGame(container: HTMLElement, client: IndianPoke
 
       <section class="ip-pot-zone">
         <div class="ip-round-label" data-role="round-label"></div>
-        <div class="ip-pot">
+        <div class="ip-pot" data-role="pot">
           <span class="ip-pot-label">POT</span>
           <span class="ip-pot-amount" data-role="pot-amount">0</span>
         </div>
@@ -213,8 +220,7 @@ export function createIndianPokerGame(container: HTMLElement, client: IndianPoke
 
       <section class="ip-seat is-self" data-role="self-seat">
         <div class="ip-self-row">
-          <div class="ip-seat-figure">
-            ${silhouetteSvg()}
+          <div class="ip-seat-figure" data-role="self-figure">
             <div class="ip-forehead" data-role="my-card"></div>
           </div>
           <div class="ip-seat-meta">
@@ -292,16 +298,21 @@ export function createIndianPokerGame(container: HTMLElement, client: IndianPoke
   }
 
   const dom = {
+    table: pick("[data-role='table']"),
+    muteToggle: pick<HTMLButtonElement>("[data-role='mute-toggle']"),
     opponentSeat: pick("[data-role='opponent-seat']"),
+    opponentFigure: pick("[data-role='opponent-figure']"),
     opponentCard: pick("[data-role='opponent-card']"),
     opponentName: pick("[data-role='opponent-name']"),
     opponentChips: pick("[data-role='opponent-chips']"),
     opponentWager: pick("[data-role='opponent-wager']"),
     selfSeat: pick("[data-role='self-seat']"),
+    selfFigure: pick("[data-role='self-figure']"),
     myCard: pick("[data-role='my-card']"),
     myChips: pick("[data-role='my-chips']"),
     myWager: pick("[data-role='my-wager']"),
     roundLabel: pick("[data-role='round-label']"),
+    pot: pick("[data-role='pot']"),
     potAmount: pick("[data-role='pot-amount']"),
     toast: pick("[data-role='toast']"),
     status: pick("[data-role='status']"),
@@ -329,6 +340,47 @@ export function createIndianPokerGame(container: HTMLElement, client: IndianPoke
     revealMessage: pick("[data-role='reveal-message']"),
     nextRound: pick<HTMLButtonElement>("[data-role='action-next-round']")
   };
+
+  const renderer = new IndianPokerCanvasRenderer({
+    surface,
+    table: dom.table,
+    opponentFigure: dom.opponentFigure,
+    selfFigure: dom.selfFigure,
+    pot: dom.pot
+  });
+
+  function scheduleDelayed(fn: () => void, ms: number): void {
+    const id = window.setTimeout(() => {
+      delayedTimers.delete(id);
+      fn();
+    }, ms);
+    delayedTimers.add(id);
+  }
+
+  function unlockAudio(): void {
+    void audio.unlock();
+  }
+
+  const onFirstGesture = () => {
+    unlockAudio();
+  };
+  surface.addEventListener("pointerdown", onFirstGesture);
+  surface.addEventListener("keydown", onFirstGesture);
+
+  function renderMuteButton(): void {
+    const muted = audio.muted;
+    dom.muteToggle.textContent = muted ? "🔇 음소거" : "🔊 사운드";
+    dom.muteToggle.classList.toggle("is-muted", muted);
+    dom.muteToggle.setAttribute("aria-label", muted ? "사운드 켜기" : "사운드 음소거");
+  }
+
+  dom.muteToggle.addEventListener("click", () => {
+    const nowMuted = audio.toggleMute();
+    if (!nowMuted) {
+      unlockAudio();
+    }
+    renderMuteButton();
+  });
 
   // ─── Derived Reads ─────────────────────────────────────────────────────────
 
@@ -373,6 +425,7 @@ export function createIndianPokerGame(container: HTMLElement, client: IndianPoke
   // ─── Actions ───────────────────────────────────────────────────────────────
 
   function send(type: IndianPokerActionName, payload: Record<string, unknown> = {}): void {
+    unlockAudio();
     triggerCardSubmitFeedback();
     client.sendAction({ type, payload });
   }
@@ -384,20 +437,24 @@ export function createIndianPokerGame(container: HTMLElement, client: IndianPoke
   }
 
   dom.wagerDown.addEventListener("click", () => {
+    unlockAudio();
     triggerSelectionFeedback();
     setWager(wager - stepSize());
   });
   dom.wagerUp.addEventListener("click", () => {
+    unlockAudio();
     triggerSelectionFeedback();
     setWager(wager + stepSize());
   });
   dom.slider.addEventListener("input", () => {
+    unlockAudio();
     wager = Number(dom.slider.value);
     renderSizer();
   });
   dom.quick.addEventListener("click", (domEvent) => {
     const button = (domEvent.target as HTMLElement).closest<HTMLButtonElement>("[data-wager]");
     if (!button) return;
+    unlockAudio();
     triggerSelectionFeedback();
     setWager(Number(button.dataset.wager));
   });
@@ -425,10 +482,13 @@ export function createIndianPokerGame(container: HTMLElement, client: IndianPoke
     const opponent = opponentId();
     const waiting = view.roomPhase !== "active" || view.phase === "idle";
 
+    renderMuteButton();
+
     dom.roundLabel.textContent = waiting
       ? "Waiting for players"
       : `Round ${view.round} · Ante ${view.ante} · Deck ${view.deckCount}`;
-    dom.potAmount.textContent = String(view.revealed ? (view.roundResult?.pot ?? 0) : (view.pot ?? 0));
+    const displayPot = view.revealed ? (view.roundResult?.pot ?? 0) : (view.pot ?? 0);
+    dom.potAmount.textContent = String(displayPot);
 
     renderOpponent(opponent, waiting);
     renderSelf(waiting);
@@ -437,6 +497,59 @@ export function createIndianPokerGame(container: HTMLElement, client: IndianPoke
     renderActionRow();
     renderRevealPanel(opponent);
     renderToast();
+    syncCanvasScene(opponent, waiting, displayPot);
+
+    pendingCardMotion = "none";
+  }
+
+  function syncCanvasScene(opponent: string | undefined, waiting: boolean, displayPot: number): void {
+    const view = state.publicView;
+    const phase = waiting ? "idle" : view.phase;
+    const roundResult = view.roundResult;
+
+    const opponentState = resolveGamblerAnimState({
+      phase,
+      playerId: opponent,
+      currentPlayerId: view.currentPlayerId,
+      lastAggressorPlayerId: view.lastAggressorPlayerId,
+      toCall: opponent ? (view.toCall?.[opponent] ?? 0) : 0,
+      chips: opponent ? (view.chips?.[opponent] ?? 0) : 0,
+      pot: displayPot,
+      ante: view.ante,
+      roundWinnerPlayerId: roundResult?.winnerPlayerId,
+      foldedPlayerId: roundResult?.foldedPlayerId,
+      isTie: roundResult?.isTie,
+      matchWinnerPlayerId: view.winnerPlayerId
+    });
+
+    const selfState = resolveGamblerAnimState({
+      phase,
+      playerId: state.playerId,
+      currentPlayerId: view.currentPlayerId,
+      lastAggressorPlayerId: view.lastAggressorPlayerId,
+      toCall: myToCall(),
+      chips: myChips(),
+      pot: displayPot,
+      ante: view.ante,
+      roundWinnerPlayerId: roundResult?.winnerPlayerId,
+      foldedPlayerId: roundResult?.foldedPlayerId,
+      isTie: roundResult?.isTie,
+      matchWinnerPlayerId: view.winnerPlayerId
+    });
+
+    renderer.setSceneState({
+      phase,
+      pot: displayPot,
+      ante: view.ante ?? 5,
+      startingChips: view.startingChips ?? 100,
+      opponentPresent: Boolean(opponent),
+      opponentChips: opponent ? (view.chips?.[opponent] ?? 0) : 0,
+      opponentState,
+      opponentIsTurn: Boolean(opponent) && !waiting && view.currentPlayerId === opponent,
+      selfChips: myChips(),
+      selfState,
+      selfIsTurn: !waiting && isMyTurn()
+    });
   }
 
   function renderOpponent(opponent: string | undefined, waiting: boolean): void {
@@ -450,9 +563,14 @@ export function createIndianPokerGame(container: HTMLElement, client: IndianPoke
     dom.opponentWager.textContent = opponentBet > 0 && !waiting ? `wagered ${opponentBet}` : "";
 
     // The opponent's card is readable the whole time: that is the game.
-    dom.opponentCard.innerHTML = waiting
-      ? ""
-      : renderCard(state.privateView.opponentCard ?? null, "Opponent's forehead card");
+    const nextCard = waiting ? null : (state.privateView.opponentCard ?? null);
+    const renderKey = waiting ? "waiting" : `r${view.round}:${nextCard ?? "down"}`;
+    if (renderKey !== lastOpponentCardRenderKey) {
+      lastOpponentCardRenderKey = renderKey;
+      dom.opponentCard.innerHTML = waiting
+        ? ""
+        : renderCard(nextCard, "Opponent's forehead card", pendingCardMotion === "deal" ? "deal" : "none");
+    }
   }
 
   function renderSelf(waiting: boolean): void {
@@ -470,9 +588,18 @@ export function createIndianPokerGame(container: HTMLElement, client: IndianPoke
     // Your own card stays face down until the round opens, so all you can do is
     // read the other forehead.
     const revealedCard = state.privateView.myCardRevealed ? state.privateView.myCard : null;
-    dom.myCard.innerHTML = waiting
-      ? ""
-      : renderCard(typeof revealedCard === "string" && revealedCard !== "hidden" ? revealedCard : null, "Your forehead card");
+    const resolvedCard = typeof revealedCard === "string" && revealedCard !== "hidden" ? revealedCard : null;
+    const renderKey = waiting ? "waiting" : `r${view.round}:${resolvedCard ?? "down"}`;
+    if (renderKey !== lastMyCardRenderKey) {
+      const motion: CardMotionKind =
+        pendingCardMotion === "deal"
+          ? "deal"
+          : resolvedCard !== null && lastMyCardRenderKey.endsWith(":down")
+            ? "flip"
+            : "none";
+      lastMyCardRenderKey = renderKey;
+      dom.myCard.innerHTML = waiting ? "" : renderCard(resolvedCard, "Your forehead card", motion);
+    }
   }
 
   function renderStatus(waiting: boolean): void {
@@ -628,7 +755,7 @@ export function createIndianPokerGame(container: HTMLElement, client: IndianPoke
     return delta > 0 ? `+${delta}` : String(delta);
   }
 
-  // ─── Toast ─────────────────────────────────────────────────────────────────
+  // ─── Toast & Transition Audio / FX ─────────────────────────────────────────
 
   function renderToast(): void {
     dom.toast.classList.toggle("is-hidden", !toast);
@@ -658,13 +785,97 @@ export function createIndianPokerGame(container: HTMLElement, client: IndianPoke
     const staked = (after.bets?.[actor] ?? 0) - (before.bets?.[actor] ?? 0);
     const owed = before.toCall?.[actor] ?? 0;
 
-    if (after.phase === "reveal") {
+    if (after.phase === "reveal" || after.phase === "gameOver") {
       if (after.roundResult?.reason === "fold") return `${who} died`;
       return staked > 0 ? `${who} called ${staked}` : `${who} checked`;
     }
     if (staked <= 0) return `${who} checked`;
     if (owed > 0) return `${who} raised to ${after.bets?.[actor] ?? 0}`;
     return `${who} bet ${staked}`;
+  }
+
+  function triggerTransitionFx(before: IndianPokerPublicView, after: IndianPokerPublicView): void {
+    // 1. New round dealt onto foreheads
+    if (before.round !== after.round && after.round > 0) {
+      pendingCardMotion = "deal";
+      audio.playSfx("sfx_deal");
+      const ante = after.ante ?? 5;
+      renderer.spawnBetChips("self", ante);
+      renderer.spawnBetChips("opponent", ante);
+      return;
+    }
+
+    // 2. Betting actions & round resolution
+    const actor = before.currentPlayerId;
+    if (actor && before.phase === "betting" && after.round === before.round) {
+      const actorSide = actor === state.playerId ? "self" : "opponent";
+      const staked = Math.max(0, (after.bets?.[actor] ?? 0) - (before.bets?.[actor] ?? 0));
+      const owed = Math.max(0, before.toCall?.[actor] ?? 0);
+      const ante = Math.max(1, after.ante ?? 5);
+      const isAllIn = staked > 0 && (after.chips?.[actor] ?? 0) === 0;
+      const enteredResolution = after.phase === "reveal" || after.phase === "gameOver";
+      const result = after.roundResult;
+
+      if (enteredResolution && result?.reason === "fold") {
+        audio.playSfx("sfx_fold");
+      } else if (staked > 0) {
+        if (isAllIn) {
+          audio.playSfx("sfx_all_in", 0.02);
+        } else if ((owed > 0 && staked > owed) || staked >= ante * 3) {
+          audio.playSfx("sfx_chip_stack");
+        } else {
+          audio.playSfx("sfx_chip_single");
+        }
+        renderer.spawnBetChips(actorSide, staked, isAllIn);
+      } else {
+        audio.playSfx("sfx_check");
+      }
+
+      // Showdown or fold pot resolution + outcome fanfare
+      if (enteredResolution) {
+        const pot = result?.pot ?? Math.max(before.pot ?? 0, after.pot ?? 0);
+        if (result?.reason === "showdown") {
+          pendingCardMotion = "flip";
+          scheduleDelayed(() => {
+            audio.playSfx("sfx_reveal", 0.02);
+          }, 120);
+        }
+
+        if (result) {
+          const sweepTarget: "self" | "opponent" | "tie" = result.isTie
+            ? "tie"
+            : result.winnerPlayerId === state.playerId
+              ? "self"
+              : "opponent";
+          scheduleDelayed(() => {
+            renderer.spawnPotSweep(sweepTarget, pot);
+            if (after.phase === "gameOver") {
+              if (after.winnerPlayerId === state.playerId) {
+                audio.playSfx("sfx_match_win", 0.01);
+              } else {
+                audio.playSfx("sfx_round_lose", 0.02);
+              }
+            } else if (!result.isTie) {
+              if (result.winnerPlayerId === state.playerId) {
+                audio.playSfx("sfx_pot_win", 0.02);
+              } else {
+                audio.playSfx("sfx_round_lose", 0.02);
+              }
+            }
+          }, 260);
+        }
+      }
+      return;
+    }
+
+    // 3. Fallback match-end fanfare if entering gameOver from another phase
+    if (before.phase !== "gameOver" && after.phase === "gameOver") {
+      if (after.winnerPlayerId === state.playerId) {
+        audio.playSfx("sfx_match_win", 0.01);
+      } else {
+        audio.playSfx("sfx_round_lose", 0.02);
+      }
+    }
   }
 
   previousPublicView = state.publicView;
@@ -680,6 +891,7 @@ export function createIndianPokerGame(container: HTMLElement, client: IndianPoke
       state.privateView = input.privateView;
 
       if (before) {
+        triggerTransitionFx(before, state.publicView);
         if (before.round !== state.publicView.round && state.publicView.round > 0) {
           showToast(`Round ${state.publicView.round}: cards on foreheads`);
           wager = 0;
@@ -693,6 +905,14 @@ export function createIndianPokerGame(container: HTMLElement, client: IndianPoke
     },
     destroy() {
       if (toastTimer) window.clearTimeout(toastTimer);
+      for (const timerId of delayedTimers) {
+        window.clearTimeout(timerId);
+      }
+      delayedTimers.clear();
+      surface.removeEventListener("pointerdown", onFirstGesture);
+      surface.removeEventListener("keydown", onFirstGesture);
+      renderer.destroy();
+      audio.destroy();
       surface.remove();
     }
   };

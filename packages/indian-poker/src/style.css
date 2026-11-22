@@ -1,9 +1,11 @@
 .indian-poker-game {
-  --ip-felt: #14352a;
-  --ip-felt-edge: #0b2019;
+  --ip-felt: #13392b;
+  --ip-felt-edge: #091a14;
   --ip-gold: #e7c66b;
+  --ip-gold-bright: #f8de8c;
+  --ip-mahogany: #2a1710;
   --ip-ink: #f8fafc;
-  --ip-muted: #9fb8ac;
+  --ip-muted: #b7cbbd;
   --ip-danger: #ef4444;
   --ip-accent: #22c55e;
   /* Room chrome floats a control rail on the trailing edge, so keep the table
@@ -21,12 +23,20 @@
   overflow: hidden;
   overflow-anchor: none;
   border-radius: 20px;
+  border: 1px solid rgb(231 198 107 / 0.24);
   background:
+    radial-gradient(105% 75% at 50% 42%, rgb(14 48 36 / 0.28) 0%, rgb(8 24 18 / 0.62) 72%, rgb(6 14 11 / 0.84) 100%),
+    url("./assets/images/saloon_bg.png") center / cover no-repeat,
     radial-gradient(120% 70% at 50% 0%, #1d4a3a 0%, var(--ip-felt) 45%, var(--ip-felt-edge) 100%);
+  box-shadow:
+    0 0 0 1px rgb(24 12 8 / 0.7) inset,
+    0 20px 50px rgb(0 0 0 / 0.55);
   color: var(--ip-ink);
   font-variant-numeric: tabular-nums;
   user-select: none;
   container-type: inline-size;
+  content-visibility: auto;
+  contain-intrinsic-size: auto none auto 640px;
 }
 
 .ip-table {
@@ -42,65 +52,96 @@
   padding-inline-end: max(0.875rem, var(--ip-rail));
 }
 
-/* ─── Seats ──────────────────────────────────────────────────────────────── */
-
-.ip-seat {
-  display: grid;
-  justify-items: center;
-  gap: 0.5rem;
-}
-
-.ip-seat.is-opponent {
-  padding-block-start: 0.25rem;
-  border-block-end: 1px solid rgb(231 198 107 / 0.18);
-  padding-block-end: 0.625rem;
-}
-
-.ip-seat-figure {
-  position: relative;
-  inline-size: clamp(7rem, 34cqw, 10.5rem);
-  aspect-ratio: 6 / 5;
-}
-
-/* The opponent is deliberately a shadow: you read the card, not the face. */
-.ip-figure {
+.ip-fx-canvas {
+  position: absolute;
+  inset: 0;
   inline-size: 100%;
   block-size: 100%;
-  filter: drop-shadow(0 6px 18px rgb(0 0 0 / 0.45));
-}
-
-.ip-figure-head,
-.ip-figure-body {
-  fill: #050b09;
-  opacity: 0.82;
-}
-
-.ip-seat.is-self .ip-figure-head,
-.ip-seat.is-self .ip-figure-body {
-  fill: #071410;
-  opacity: 0.66;
-}
-
-.ip-seat.is-turn .ip-figure {
-  filter: drop-shadow(0 0 14px rgb(231 198 107 / 0.55));
-}
-
-.ip-seat.is-empty .ip-figure {
-  opacity: 0.35;
-}
-
-/* The card is taped to the forehead, so it overlaps the top of the head. */
-.ip-forehead {
-  position: absolute;
-  inset-block-start: 4%;
-  inset-inline-start: 50%;
-  translate: -50% 0;
-  rotate: -4deg;
+  pointer-events: none;
   z-index: 1;
 }
 
+/* ─── Top Table Bar & Mute Control ───────────────────────────────────────── */
+
+.ip-top-bar {
+  position: absolute;
+  inset-block-start: calc(0.625rem + var(--bh-game-ui-block-start, 10px));
+  inset-inline-start: 0.75rem;
+  inset-inline-end: max(0.75rem, var(--ip-rail));
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  pointer-events: none;
+}
+
+.ip-mute-toggle {
+  pointer-events: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  border: 1px solid rgb(231 198 107 / 0.36);
+  border-radius: 9999px;
+  background: rgb(16 28 23 / 0.78);
+  color: var(--ip-gold-bright);
+  font-size: 0.75rem;
+  font-weight: 700;
+  line-height: 1.2;
+  padding: 0.3125rem 0.6875rem;
+  box-shadow: 0 4px 12px rgb(0 0 0 / 0.35);
+  cursor: pointer;
+  touch-action: manipulation;
+  transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease;
+}
+
+.ip-mute-toggle:hover {
+  border-color: rgb(248 222 140 / 0.65);
+  background: rgb(28 46 38 / 0.9);
+}
+
+.ip-mute-toggle.is-muted {
+  border-color: rgb(255 255 255 / 0.22);
+  background: rgb(14 20 18 / 0.72);
+  color: var(--ip-muted);
+}
+
+/* ─── Seats ──────────────────────────────────────────────────────────────── */
+
+.ip-seat {
+  position: relative;
+  z-index: 2;
+  display: grid;
+  justify-items: center;
+  gap: 0.45rem;
+}
+
+.ip-seat.is-opponent {
+  padding-block-start: 0.375rem;
+  border-block-end: 1px solid rgb(231 198 107 / 0.22);
+  padding-block-end: 0.625rem;
+}
+
+/* The animated character bust is rendered cleanly on .ip-fx-canvas behind this box. */
+.ip-seat-figure {
+  position: relative;
+  inline-size: clamp(7.25rem, 35cqw, 10.75rem);
+  aspect-ratio: 6 / 5;
+  perspective: 520px;
+}
+
+/* The card sits snugly on the gambler's upper brow/hatband so eyes & expressions read clearly. */
+.ip-forehead {
+  position: absolute;
+  inset-block-start: -3%;
+  inset-inline-start: 50%;
+  translate: -50% 0;
+  rotate: -5deg;
+  z-index: 2;
+  transform-style: preserve-3d;
+}
+
 .ip-seat.is-self .ip-forehead {
-  rotate: 4deg;
+  rotate: 5deg;
 }
 
 .ip-seat-meta {
@@ -111,6 +152,7 @@
   gap: 0.25rem 0.5rem;
   font-size: 0.8125rem;
   line-height: 1.3;
+  text-shadow: 0 1px 4px rgb(0 0 0 / 0.65);
 }
 
 .ip-seat-name {
@@ -119,19 +161,21 @@
 }
 
 .ip-seat-chips {
+  border: 1px solid rgb(231 198 107 / 0.3);
   border-radius: 9999px;
-  background: rgb(231 198 107 / 0.16);
-  color: var(--ip-gold);
+  background: rgb(14 24 19 / 0.72);
+  color: var(--ip-gold-bright);
   font-weight: 700;
-  padding: 0.125rem 0.5rem;
+  padding: 0.125rem 0.55rem;
 }
 
 .ip-seat-wager {
   color: var(--ip-muted);
+  font-weight: 600;
 }
 
 .ip-seat.is-turn .ip-seat-name {
-  color: var(--ip-gold);
+  color: var(--ip-gold-bright);
 }
 
 .ip-self-row {
@@ -142,7 +186,7 @@
 }
 
 .ip-self-row .ip-seat-figure {
-  inline-size: clamp(5rem, 22cqw, 7.5rem);
+  inline-size: clamp(5.25rem, 23cqw, 7.75rem);
 }
 
 .ip-self-row .ip-seat-meta {
@@ -152,93 +196,176 @@
 /* ─── Cards ──────────────────────────────────────────────────────────────── */
 
 .ip-card {
+  position: relative;
   display: grid;
   place-items: center;
-  gap: 0.0625rem;
+  align-content: center;
+  gap: 0.04rem;
   inline-size: clamp(2.5rem, 11cqw, 3.5rem);
   aspect-ratio: 5 / 7;
-  border-radius: 0.375rem;
-  background: #fdfdfb;
+  border: 1.5px solid #c7a45a;
+  border-radius: 0.4375rem;
+  background: linear-gradient(160deg, #fffdf5 0%, #f8edd4 62%, #eedcb7 100%);
   box-shadow:
-    0 1px 0 rgb(255 255 255 / 0.6) inset,
-    0 6px 14px rgb(0 0 0 / 0.45);
+    0 1px 0 rgb(255 255 255 / 0.85) inset,
+    0 0 0 2px rgb(24 16 10 / 0.72),
+    0 7px 16px rgb(0 0 0 / 0.54);
   font-weight: 800;
   line-height: 1;
+  backface-visibility: hidden;
+  transform-origin: center center;
+}
+
+.ip-card:not(.is-face-down)::before {
+  content: "";
+  position: absolute;
+  inset: 3px;
+  border: 1px solid rgb(199 164 90 / 0.45);
+  border-radius: 0.25rem;
+  pointer-events: none;
 }
 
 .ip-card.is-red {
-  color: #dc2626;
+  color: #c81e24;
 }
 
 .ip-card.is-black {
-  color: #111827;
+  color: #171923;
+}
+
+.ip-card-corner {
+  position: absolute;
+  inset-block-start: 4px;
+  inset-inline-start: 5px;
+  font-size: clamp(0.45rem, 1.8cqw, 0.62rem);
+  font-weight: 800;
+  letter-spacing: -0.04em;
+  opacity: 0.85;
 }
 
 .ip-card-rank {
-  font-size: clamp(0.875rem, 4cqw, 1.25rem);
+  font-size: clamp(0.9rem, 4cqw, 1.3rem);
+  padding-block-start: 0.22rem;
 }
 
 .ip-card-suit {
-  font-size: clamp(0.75rem, 3.5cqw, 1.125rem);
+  font-size: clamp(0.75rem, 3.4cqw, 1.125rem);
 }
 
 .ip-card.is-face-down {
-  background:
-    repeating-linear-gradient(45deg, #1e3a8a 0 4px, #172554 4px 8px);
-  color: rgb(255 255 255 / 0.62);
+  overflow: hidden;
+  border-color: #d8b25c;
+  background: #132145;
+  padding: 0;
 }
 
-.ip-card-back-mark {
-  border: 1px solid rgb(255 255 255 / 0.35);
-  border-radius: 0.1875rem;
-  font-size: 0.5625rem;
-  letter-spacing: 0.06em;
-  padding: 0.0625rem 0.1875rem;
+.ip-card-back-art {
+  display: block;
+  inline-size: 100%;
+  block-size: 100%;
+  background-image: url("./assets/images/chips_cards_sheet.png");
+  background-size: 460% 108%;
+  background-position: 1.2% 50%;
+  background-repeat: no-repeat;
+}
+
+@keyframes ip-card-deal {
+  0% {
+    opacity: 0;
+    transform: translateY(-20px) scale(0.76) rotateY(72deg);
+  }
+  65% {
+    opacity: 1;
+    transform: translateY(2px) scale(1.04) rotateY(-8deg);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1) rotateY(0deg);
+  }
+}
+
+@keyframes ip-card-flip {
+  0% {
+    transform: scale(0.95) rotateY(90deg);
+    opacity: 0.4;
+  }
+  60% {
+    transform: scale(1.08) rotateY(-12deg);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(1) rotateY(0deg);
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .ip-card.is-dealing {
+    animation: ip-card-deal 380ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+
+  .ip-card.is-flipping {
+    animation: ip-card-flip 420ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
 }
 
 /* ─── Pot ────────────────────────────────────────────────────────────────── */
 
 .ip-pot-zone {
   position: relative;
+  z-index: 2;
   display: grid;
   justify-items: center;
   gap: 0.25rem;
 }
 
 .ip-round-label {
+  border-radius: 9999px;
+  background: rgb(8 20 15 / 0.56);
   color: var(--ip-muted);
   font-size: 0.6875rem;
+  font-weight: 600;
   letter-spacing: 0.08em;
   text-transform: uppercase;
+  padding: 0.125rem 0.625rem;
 }
 
 .ip-pot {
   display: flex;
   align-items: baseline;
   gap: 0.375rem;
-  border: 1px solid rgb(231 198 107 / 0.35);
+  border: 1px solid rgb(231 198 107 / 0.48);
   border-radius: 9999px;
-  background: rgb(0 0 0 / 0.28);
-  padding: 0.25rem 0.875rem;
+  background: linear-gradient(180deg, rgb(22 34 26 / 0.86) 0%, rgb(11 20 16 / 0.92) 100%);
+  box-shadow:
+    0 1px 0 rgb(255 232 163 / 0.22) inset,
+    0 6px 18px rgb(0 0 0 / 0.45);
+  padding: 0.25rem 0.95rem;
 }
 
 .ip-pot-label {
   color: var(--ip-gold);
   font-size: 0.625rem;
-  font-weight: 700;
+  font-weight: 800;
   letter-spacing: 0.12em;
 }
 
 .ip-pot-amount {
+  color: var(--ip-gold-bright);
   font-size: 1.375rem;
   font-weight: 800;
+  text-shadow: 0 1px 6px rgb(231 198 107 / 0.35);
 }
 
 .ip-toast {
+  border: 1px solid rgb(231 198 107 / 0.32);
   border-radius: 9999px;
-  background: rgb(0 0 0 / 0.55);
+  background: rgb(10 18 15 / 0.82);
+  color: #fef3c7;
   font-size: 0.75rem;
-  padding: 0.1875rem 0.625rem;
+  font-weight: 600;
+  padding: 0.1875rem 0.75rem;
+  box-shadow: 0 4px 12px rgb(0 0 0 / 0.35);
 }
 
 /* ─── Controls ───────────────────────────────────────────────────────────── */
@@ -247,16 +374,18 @@
   display: grid;
   gap: 0.5rem;
   inline-size: 100%;
-  border: 1px solid rgb(255 255 255 / 0.1);
-  border-radius: 0.75rem;
-  background: rgb(0 0 0 / 0.3);
+  border: 1px solid rgb(231 198 107 / 0.24);
+  border-radius: 0.875rem;
+  background: linear-gradient(180deg, rgb(12 24 19 / 0.82) 0%, rgb(8 17 13 / 0.9) 100%);
+  box-shadow: 0 10px 26px rgb(0 0 0 / 0.42);
   padding: 0.625rem;
+  backdrop-filter: blur(4px);
 }
 
 .ip-status {
   margin: 0;
   min-block-size: 1.125rem;
-  color: var(--ip-muted);
+  color: #dbe9df;
   font-size: 0.8125rem;
   text-align: center;
 }
@@ -287,7 +416,7 @@
 
 .ip-sizer-value {
   min-inline-size: 2.5rem;
-  color: var(--ip-gold);
+  color: var(--ip-gold-bright);
   font-size: 1rem;
   font-weight: 800;
   text-align: end;
@@ -296,12 +425,13 @@
 .ip-step {
   inline-size: 2rem;
   block-size: 2rem;
-  border: 1px solid rgb(255 255 255 / 0.18);
+  border: 1px solid rgb(231 198 107 / 0.26);
   border-radius: 0.5rem;
   background: rgb(255 255 255 / 0.08);
   color: var(--ip-ink);
   font-size: 1rem;
   font-weight: 700;
+  cursor: pointer;
   touch-action: manipulation;
 }
 
@@ -313,19 +443,22 @@
 
 .ip-quick-button {
   flex: 1 1 4rem;
-  border: 1px solid rgb(255 255 255 / 0.14);
+  border: 1px solid rgb(255 255 255 / 0.16);
   border-radius: 9999px;
-  background: transparent;
+  background: rgb(255 255 255 / 0.04);
   color: var(--ip-muted);
   font-size: 0.6875rem;
   font-weight: 600;
   padding: 0.25rem 0.5rem;
+  cursor: pointer;
   touch-action: manipulation;
+  transition: border-color 140ms ease, color 140ms ease, background-color 140ms ease;
 }
 
 .ip-quick-button.is-active {
   border-color: var(--ip-gold);
-  color: var(--ip-gold);
+  background: rgb(231 198 107 / 0.14);
+  color: var(--ip-gold-bright);
 }
 
 .ip-actions {
@@ -336,34 +469,42 @@
 
 .ip-action {
   flex: 1 1 4.5rem;
-  border: 1px solid rgb(255 255 255 / 0.18);
+  border: 1px solid rgb(255 255 255 / 0.2);
   border-radius: 0.5rem;
   background: #1f2937;
   color: var(--ip-ink);
   font-size: 0.8125rem;
   font-weight: 700;
   padding: 0.5rem 0.625rem;
+  cursor: pointer;
   touch-action: manipulation;
+  box-shadow: 0 2px 8px rgb(0 0 0 / 0.28);
+  transition: background-color 140ms ease, border-color 140ms ease, opacity 140ms ease;
 }
 
 .ip-action.is-primary {
-  border-color: var(--ip-accent);
-  background: #16a34a;
+  border-color: #4ade80;
+  background: linear-gradient(180deg, #1ea84f 0%, #15803d 100%);
 }
 
 .ip-action.is-double {
   border-color: var(--ip-gold);
-  background: #7c5e12;
+  background: linear-gradient(180deg, #9a7419 0%, #71530f 100%);
+}
+
+.ip-action.is-raise {
+  border-color: rgb(231 198 107 / 0.45);
+  background: linear-gradient(180deg, #2d4256 0%, #1d2d3d 100%);
 }
 
 .ip-action.is-die {
-  border-color: rgb(239 68 68 / 0.6);
-  background: #7f1d1d;
+  border-color: rgb(248 113 113 / 0.65);
+  background: linear-gradient(180deg, #991b1b 0%, #741515 100%);
 }
 
 .ip-action:disabled {
   cursor: not-allowed;
-  opacity: 0.6;
+  opacity: 0.58;
 }
 
 .ip-step:disabled {
@@ -384,7 +525,7 @@
   display: grid;
   place-items: end center;
   padding: 0.75rem;
-  background: linear-gradient(to top, rgb(3 10 8 / 0.92) 0%, rgb(3 10 8 / 0.72) 70%, transparent 100%);
+  background: linear-gradient(to top, rgb(3 10 8 / 0.94) 0%, rgb(3 10 8 / 0.76) 72%, transparent 100%);
 }
 
 .ip-reveal-panel {
@@ -392,11 +533,11 @@
   justify-items: center;
   gap: 0.5rem;
   inline-size: min(22rem, 100%);
-  border: 1px solid rgb(231 198 107 / 0.28);
-  border-radius: 0.75rem;
-  background: #0f1f1a;
+  border: 1px solid rgb(231 198 107 / 0.36);
+  border-radius: 0.875rem;
+  background: linear-gradient(180deg, #142820 0%, #0c1a15 100%);
   padding: 1rem;
-  box-shadow: 0 18px 48px rgb(0 0 0 / 0.5);
+  box-shadow: 0 18px 48px rgb(0 0 0 / 0.6);
   text-align: center;
 }
 
@@ -407,7 +548,7 @@
 }
 
 .ip-reveal-title.is-win {
-  color: var(--ip-gold);
+  color: var(--ip-gold-bright);
 }
 
 .ip-reveal-title.is-loss {
@@ -479,6 +620,10 @@
     padding-inline-end: max(1.25rem, var(--ip-rail));
   }
 
+  .ip-top-bar {
+    inset-inline-start: 1.25rem;
+  }
+
   .ip-controls {
     grid-template-columns: 1fr auto;
     grid-template-areas:
@@ -529,6 +674,11 @@
   .ip-pot-amount {
     font-size: 1.125rem;
   }
+
+  .ip-mute-toggle {
+    font-size: 0.6875rem;
+    padding: 0.25rem 0.55rem;
+  }
 }
 
 @media (orientation: landscape) and (max-height: 520px) {
@@ -570,11 +720,5 @@
   .ip-reveal-panel {
     gap: 0.375rem;
     padding: 0.625rem;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .ip-figure {
-    filter: none;
   }
 }
