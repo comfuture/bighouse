@@ -1,7 +1,16 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { GameClientContext } from "@bighouse/game-sdk/client";
-import { mountGame, selectedLegalMove, validSuggestions, validPlanSuggestions } from "../src/client";
+import {
+  hasBoardPiece,
+  hasOtherTeammate,
+  isQuickCommitTurn,
+  mountGame,
+  resolveAutoSelectedPiece,
+  selectedLegalMove,
+  validPlanSuggestions,
+  validSuggestions
+} from "../src/client";
 import { getLegalMoves } from "../src/board";
 import type { YutnoriPublicView } from "../src/types";
 vi.mock("../src/scene", () => ({ createThrowScene: () => ({ show: vi.fn(), destroy: vi.fn() }) }));
@@ -22,6 +31,20 @@ function fixture(playerId = "a"): GameClientContext {
     sendAction: vi.fn(), sendSignal: vi.fn(), setReady: vi.fn(), startGame: vi.fn(), restartGame: vi.fn(), addBot: vi.fn(), removeBot: vi.fn(), transferHost: vi.fn(), sendChat: vi.fn(), shareRoom: vi.fn(), leaveRoom: vi.fn(), requestPlayAgain: vi.fn(), leaveFinishedGame: vi.fn()
   };
 }
+function fixture1v1(playerId = "a"): GameClientContext {
+  const view: YutnoriPublicView = {
+    matchId: "match-1v1", rules: { backDo: true, finish: "pass-exit" },
+    teams: [{ teamId: "A", playerIds: ["a"], finishedCount: 0 }, { teamId: "B", playerIds: ["b"], finishedCount: 0 }],
+    pieces: (["A", "B"] as const).flatMap((teamId) => Array.from({ length: 4 }, (_, i) => ({ pieceId: `${teamId}${i + 1}`, teamId, nodeId: "reserve", stackId: `${teamId}${i + 1}`, routeId: "outer" as const, history: [] }))),
+    currentPlayerId: "a", turn: { turnId: 1, teamId: "A", controllerPlayerId: "a", throwsRemaining: 0, pending: [{ rollId: "r1", outcome: "do", steps: 1 }] }, legalMoves: [], serverNow: now
+  };
+  view.legalMoves = getLegalMoves(view);
+  return {
+    playerId, version: 1, uiRevision: 0, serverTime: now, phase: "active", publicView: view, privateView: {}, rematchRequests: [], chatMessages: [], events: [], connected: true,
+    room: { roomId: "room-1v1", gameId: "yutnori", mode: "duel-1v1", minPlayers: 2, maxPlayers: 2, supportsBots: false, players: ["a", "b"].map((id, seat) => ({ playerId: id, displayName: `이름 ${id}`, seat, connected: true, ready: true, joinedAt: now })) },
+    sendAction: vi.fn(), sendSignal: vi.fn(), setReady: vi.fn(), startGame: vi.fn(), restartGame: vi.fn(), addBot: vi.fn(), removeBot: vi.fn(), transferHost: vi.fn(), sendChat: vi.fn(), shareRoom: vi.fn(), leaveRoom: vi.fn(), requestPlayAgain: vi.fn(), leaveFinishedGame: vi.fn()
+  };
+}
 function mount(context: GameClientContext) {
   const container = document.createElement("div");
   document.body.append(container);
@@ -33,18 +56,20 @@ beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(now); sessionStorage.cle
 afterEach(() => { clients.splice(0).forEach((game) => game.destroy()); document.body.replaceChildren(); vi.useRealTimers(); vi.restoreAllMocks(); });
 
 describe("yutnori game client", () => {
-  it("renders all 29 nodes and requires explicit confirmation after choosing a piece and path", () => {
+  it("renders all 29 nodes, auto-selects a reserve piece, and commits immediately on a single roll", () => {
     const context = fixture();
     const { container, click } = mount(context);
     expect(container.querySelectorAll(".yut-node")).toHaveLength(29);
-    click('[data-piece="A1"]');
-    expect(context.sendAction).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-piece="A1"]')!.classList.contains("is-selected")).toBe(true);
+    expect(container.querySelector('[data-destination="o1"]')).not.toBeNull();
+    expect(container.querySelector('[data-command="plan-commit"]')).toBeNull();
+    expect(container.querySelector('[data-command="plan-undo"]')).toBeNull();
     click('[data-destination="o1"]');
-    expect(context.sendAction).not.toHaveBeenCalled();
-    expect(container.querySelector(".yut-path-preview")).not.toBeNull();
-    click('[data-command="plan-commit"]');
     expect(context.sendAction).toHaveBeenCalledWith({ type: "commitMoves", payload: { matchId: "match-1", turnId: 1, moves: [{ rollId: "r1", pieceId: "A1", pathId: "outer" }] } });
-    click('[data-command="plan-commit"]');
+    expect(container.querySelector(".yut-path-preview")).toBeNull();
+    expect(container.querySelector('[data-command="plan-commit"]')).toBeNull();
+    // Double-click guard while pending prevents duplicate commits.
+    container.querySelector<HTMLButtonElement>('[data-destination="o1"]')?.click();
     expect(context.sendAction).toHaveBeenCalledTimes(1);
   });
   it("recovers pending controls after a rejected action and disables them during disconnect", () => {
@@ -62,9 +87,12 @@ describe("yutnori game client", () => {
   });
   it("keeps the draft when an unrelated server error arrives, and drops it when the commit itself fails", () => {
     const context = fixture();
+    const view = context.publicView as unknown as YutnoriPublicView;
+    view.turn.pending = [{ rollId: "m", outcome: "mo", steps: 5 }, { rollId: "g", outcome: "gae", steps: 2 }];
+    view.legalMoves = getLegalMoves(view);
     const { game, container, click } = mount(context);
-    click('[data-piece="A1"]');
-    click('[data-destination="o1"]');
+    click('[data-destination="o5"]');
+    click('[data-destination="a2"]');
     expect(container.querySelector(".yut-path-preview")).not.toBeNull();
 
     // A rate-limited preview signal or a rejected chat line is reported the same way as a rejected move.
@@ -85,13 +113,26 @@ describe("yutnori game client", () => {
     expect(context.sendSignal).toHaveBeenCalledWith({ type: "suggestPlan", payload: { matchId: "match-1", turnId: 1, expectedVersion: 1, planRevision: 0, moves: [], proposal: [{ rollId: "r1", pieceId: "A1", pathId: "outer" }] } });
     expect(context.sendAction).not.toHaveBeenCalled();
   });
-  it("accepting a teammate suggestion previews it and still requires explicit confirmation", () => {
+  it("accepting a teammate suggestion commits immediately on a single-roll turn", () => {
     const context = fixture();
     context.events = [{ id: "e1", type: "yutnori.suggestion", visibility: "private", playerId: "a", createdAt: now, payload: { matchId: "match-1", turnId: 1, rollId: "r1", pieceId: "A1", pathId: "outer", playerId: "c" } }];
     const { container, click } = mount(context);
+    expect(container.querySelector('[data-suggestion="r1:A1:outer"]')!.textContent).toContain("바로 이동하기");
     click('[data-suggestion="r1:A1:outer"]');
+    expect(context.sendAction).toHaveBeenCalledExactlyOnceWith({ type: "commitMoves", payload: { matchId: "match-1", turnId: 1, moves: [{ rollId: "r1", pieceId: "A1", pathId: "outer" }] } });
+  });
+  it("accepting a teammate suggestion previews it and still requires explicit confirmation in multi-roll mode", () => {
+    const context = fixture();
+    const view = context.publicView as unknown as YutnoriPublicView;
+    view.turn.pending = [{ rollId: "m", outcome: "mo", steps: 5 }, { rollId: "g", outcome: "gae", steps: 2 }];
+    view.legalMoves = getLegalMoves(view);
+    context.events = [{ id: "e1", type: "yutnori.suggestion", visibility: "private", playerId: "a", createdAt: now, payload: { matchId: "match-1", turnId: 1, rollId: "m", pieceId: "A1", pathId: "outer", playerId: "c" } }];
+    const { container, click } = mount(context);
+    expect(container.querySelector('[data-suggestion="m:A1:outer"]')!.textContent).toContain("미리보기에 더하기");
+    click('[data-suggestion="m:A1:outer"]');
     expect(context.sendAction).not.toHaveBeenCalled();
     expect(container.querySelector(".yut-path-preview")).not.toBeNull();
+    click('[data-destination="a2"]');
     click('[data-command="plan-commit"]');
     expect(context.sendAction).toHaveBeenCalledTimes(1);
   });
@@ -171,13 +212,17 @@ describe("yutnori game client", () => {
     click('[data-command="throw"]');
     expect(context.sendAction).toHaveBeenCalledWith({ type: "throwYut", payload: {} });
   });
-  it("can undo a completed bank plan and does not send a game action", () => {
+  it("can undo a completed multi-roll plan and does not send a game action", () => {
     const context = fixture();
     const view = context.publicView as unknown as YutnoriPublicView;
-    view.turn.pending = [{ rollId: "y", outcome: "yut", steps: 4, disposition: "banked" }];
+    view.turn.pending = [{ rollId: "y", outcome: "yut", steps: 4, disposition: "banked" }, { rollId: "d", outcome: "do", steps: 1, disposition: "immediate" }];
     view.legalMoves = getLegalMoves(view);
     const { container, click } = mount(context);
-    click('[data-piece="A1"]'); click('[data-destination="o4"]');
+    click('[data-destination="o4"]');
+    click('[data-destination="o5"]');
+    expect(container.querySelector('[data-node="o5"] .has-piece')).not.toBeNull();
+    click('[data-command="plan-undo"]');
+    expect(container.querySelector('[data-node="o5"] .has-piece')).toBeNull();
     expect(container.querySelector('[data-node="o4"] .has-piece')).not.toBeNull();
     click('[data-command="plan-undo"]');
     expect(container.querySelector('[data-node="o4"] .has-piece')).toBeNull();
@@ -344,6 +389,11 @@ describe("yutnori game client", () => {
   it("keeps proposals applicable after an undone draft has been empty for over 30 seconds", () => {
     const context = fixture();
     const partner = fixture("c");
+    const pendingRolls = [{ rollId: "m", outcome: "mo" as const, steps: 5 }, { rollId: "g", outcome: "gae" as const, steps: 2 }];
+    (context.publicView as unknown as YutnoriPublicView).turn.pending = pendingRolls.map((roll) => ({ ...roll }));
+    (context.publicView as unknown as YutnoriPublicView).legalMoves = getLegalMoves(context.publicView as unknown as YutnoriPublicView);
+    (partner.publicView as unknown as YutnoriPublicView).turn.pending = pendingRolls.map((roll) => ({ ...roll }));
+    (partner.publicView as unknown as YutnoriPublicView).legalMoves = getLegalMoves(partner.publicView as unknown as YutnoriPublicView);
     const host = mount(context);
     const peer = mount(partner);
     vi.mocked(context.sendSignal!).mockImplementation((signal) => {
@@ -354,18 +404,19 @@ describe("yutnori game client", () => {
       context.events!.push({ id: crypto.randomUUID(), type: "yutnori.planSuggestion", visibility: "private", createdAt: Date.now(), payload: { ...signal.payload, playerId: "c" } });
       host.game.update({ ...context, serverTime: Date.now() });
     });
-    host.click('[data-piece="A1"]'); host.click('[data-destination="o1"]');
+    host.click('[data-piece="A1"]'); host.click('[data-destination="o5"]');
     vi.advanceTimersByTime(800);
     host.click('[data-command="plan-undo"]');
     vi.advanceTimersByTime(800);
     const clearedRevision = vi.mocked(context.sendSignal!).mock.lastCall![0].payload.revision;
     expect(clearedRevision).toBeGreaterThan(0);
     vi.advanceTimersByTime(31_000);
-    peer.click('[data-piece="A1"]'); peer.click('[data-destination="o1"]'); peer.click('[data-command="plan-propose"]');
-    expect(partner.sendSignal).toHaveBeenCalledWith({ type: "suggestPlan", payload: { matchId: "match-1", turnId: 1, expectedVersion: 1, planRevision: clearedRevision, moves: [], proposal: [{ rollId: "r1", pieceId: "A1", pathId: "outer" }] } });
+    peer.click('[data-piece="A1"]'); peer.click('[data-destination="o5"]'); peer.click('[data-destination="a2"]'); peer.click('[data-command="plan-propose"]');
+    const expectedProposal = [{ rollId: "m", pieceId: "A1", pathId: "outer" }, { rollId: "g", pieceId: "A1", pathId: "diagonalA" }];
+    expect(partner.sendSignal).toHaveBeenCalledWith({ type: "suggestPlan", payload: { matchId: "match-1", turnId: 1, expectedVersion: 1, planRevision: clearedRevision, moves: [], proposal: expectedProposal } });
     expect(host.container.querySelector('[data-apply-proposal="c"]')).not.toBeNull();
     host.click('[data-apply-proposal="c"]');
-    expect(context.sendAction).toHaveBeenCalledExactlyOnceWith({ type: "commitMoves", payload: { matchId: "match-1", turnId: 1, moves: [{ rollId: "r1", pieceId: "A1", pathId: "outer" }] } });
+    expect(context.sendAction).toHaveBeenCalledExactlyOnceWith({ type: "commitMoves", payload: { matchId: "match-1", turnId: 1, moves: expectedProposal } });
     expect(partner.sendAction).not.toHaveBeenCalled();
     host.game.update({ ...context, connected: false });
     vi.mocked(context.sendSignal!).mockClear();
@@ -426,13 +477,16 @@ describe("yutnori game client", () => {
     const context = fixture();
     const view = context.publicView as unknown as YutnoriPublicView;
     view.pieces[0]!.nodeId = "o3";
+    view.turn.pending = [{ rollId: "r1", outcome: "do", steps: 1 }, { rollId: "r2", outcome: "gae", steps: 2 }];
     view.legalMoves = getLegalMoves(view);
     const { container, click } = mount(context);
     expect(container.querySelector<HTMLElement>('[data-role="ghost-hint"]')!.hidden).toBe(true);
     click('[data-piece="A1"]'); click('[data-destination="o4"]');
     expect(container.querySelector(".yut-origin-ghost")!.getAttribute("aria-label")).toContain("A1 원래 자리");
     expect(view.pieces[0]!.nodeId).toBe("o3");
+    click('[data-destination="o6"]');
     expect(document.activeElement).toBe(container.querySelector('[data-command="plan-commit"]'));
+    click('[data-command="plan-undo"]');
     click('[data-command="plan-undo"]');
     expect(container.querySelector(".yut-origin-ghost")).toBeNull();
     expect(container.querySelector('[data-node="o3"] .has-piece')).not.toBeNull();
@@ -451,6 +505,9 @@ describe("yutnori game client", () => {
   });
   it("clears a drag and pending preview publication when the authoritative board changes", () => {
     const context = fixture();
+    const view = context.publicView as unknown as YutnoriPublicView;
+    view.turn.pending = [{ rollId: "m", outcome: "mo", steps: 5 }, { rollId: "g", outcome: "gae", steps: 2 }];
+    view.legalMoves = getLegalMoves(view);
     const { container, game, click } = mount(context);
     const piece = container.querySelector('[data-piece="A1"]')!;
     piece.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerId: 1, button: 0, clientX: 10, clientY: 10 }));
@@ -458,9 +515,9 @@ describe("yutnori game client", () => {
     expect(container.querySelector(".yut-drag-piece")).not.toBeNull();
     game.update({ ...context, version: 2 });
     expect(container.querySelector(".yut-drag-piece")).toBeNull();
-    click('[data-piece="A1"]'); click('[data-destination="o1"]');
+    click('[data-piece="A1"]'); click('[data-destination="o5"]');
     game.update({ ...context, version: 3 });
-    vi.advanceTimersByTime(600);
+    vi.advanceTimersByTime(900);
     expect(context.sendSignal).not.toHaveBeenCalled();
   });
 
@@ -523,9 +580,12 @@ describe("yutnori game client", () => {
   });
   it("invalidates proposal ghosts when the controller changes the draft", () => {
     const context = fixture();
-    context.events = [{ id: "p1", type: "yutnori.planSuggestion", visibility: "private", createdAt: now, payload: { matchId: "match-1", turnId: 1, expectedVersion: 1, planRevision: 0, moves: [], proposal: [{ rollId: "r1", pieceId: "A1", pathId: "outer" }], playerId: "c" } }];
+    const view = context.publicView as unknown as YutnoriPublicView;
+    view.turn.pending = [{ rollId: "m", outcome: "mo", steps: 5 }, { rollId: "g", outcome: "gae", steps: 2 }];
+    view.legalMoves = getLegalMoves(view);
+    context.events = [{ id: "p1", type: "yutnori.planSuggestion", visibility: "private", createdAt: now, payload: { matchId: "match-1", turnId: 1, expectedVersion: 1, planRevision: 0, moves: [], proposal: [{ rollId: "m", pieceId: "A1", pathId: "outer" }, { rollId: "g", pieceId: "A1", pathId: "diagonalA" }], playerId: "c" } }];
     const { container, click } = mount(context);
-    click('[data-piece="A2"]'); click('[data-destination="o1"]');
+    click('[data-piece="A2"]'); click('[data-destination="o5"]');
     expect(container.querySelector(".yut-proposal-ghost")).toBeNull();
     expect(container.querySelector("[data-apply-proposal]")).toBeNull();
     expect(context.sendAction).not.toHaveBeenCalled();
@@ -582,6 +642,256 @@ describe("yutnori game client", () => {
     expect(layout.compareDocumentPosition(teams) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(teams.compareDocumentPosition(footer) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(teams.querySelector<HTMLButtonElement>('[data-piece="A1"]')!.disabled).toBe(false);
+  });
+
+  describe("quick-mode UX helpers", () => {
+    it("detects whether the active team has any piece on the board", () => {
+      const view = fixture1v1().publicView as unknown as YutnoriPublicView;
+      expect(hasBoardPiece(view)).toBe(false);
+      // Opponent piece on the board does not count for Team A.
+      view.pieces[4]!.nodeId = "o2";
+      expect(hasBoardPiece(view)).toBe(false);
+      // Finished piece does not count as being on the board.
+      view.pieces[0]!.nodeId = "finished";
+      expect(hasBoardPiece(view)).toBe(false);
+      // Active team piece on a board node counts.
+      view.pieces[1]!.nodeId = "c";
+      expect(hasBoardPiece(view)).toBe(true);
+    });
+
+    it("auto-selects the first movable reserve piece only when selectable and no board pieces exist", () => {
+      const view = fixture1v1().publicView as unknown as YutnoriPublicView;
+      expect(resolveAutoSelectedPiece(view, undefined, false)).toBeUndefined();
+      expect(resolveAutoSelectedPiece(view, undefined, true)).toBe("A1");
+      // Preserves an explicit valid selection even with 0 pieces on board.
+      expect(resolveAutoSelectedPiece(view, "A2", true)).toBe("A2");
+      // Skips finished pieces to pick the first movable reserve piece.
+      view.pieces[0]!.nodeId = "finished";
+      view.legalMoves = getLegalMoves(view);
+      expect(resolveAutoSelectedPiece(view, undefined, true)).toBe("A2");
+      // Does not auto-select when at least one active-team piece is on the board.
+      view.pieces[1]!.nodeId = "o3";
+      view.legalMoves = getLegalMoves(view);
+      expect(resolveAutoSelectedPiece(view, undefined, true)).toBeUndefined();
+      expect(resolveAutoSelectedPiece(view, "A2", true)).toBe("A2");
+      // Does not select any piece when only an unusable backDo is pending.
+      view.pieces[1]!.nodeId = "reserve";
+      view.turn.pending = [{ rollId: "b", outcome: "backDo", steps: -1 }];
+      view.legalMoves = getLegalMoves(view);
+      expect(resolveAutoSelectedPiece(view, undefined, true)).toBeUndefined();
+    });
+
+    it("identifies quick-commit turns vs multi-roll or pending-throw turns", () => {
+      const view = fixture1v1().publicView as unknown as YutnoriPublicView;
+      expect(isQuickCommitTurn(view)).toBe(true);
+      view.turn.throwsRemaining = 1;
+      expect(isQuickCommitTurn(view)).toBe(false);
+      view.turn.throwsRemaining = 0;
+      view.turn.mandatoryThrows = 1;
+      expect(isQuickCommitTurn(view)).toBe(false);
+      view.turn.mandatoryThrows = 0;
+      view.turn.pending = [];
+      expect(isQuickCommitTurn(view)).toBe(false);
+      view.turn.pending = [{ rollId: "y", outcome: "yut", steps: 4 }, { rollId: "d", outcome: "do", steps: 1 }];
+      expect(isQuickCommitTurn(view)).toBe(false);
+    });
+
+    it("detects whether a player has at least one other teammate", () => {
+      const soloView = fixture1v1().publicView as unknown as YutnoriPublicView;
+      expect(hasOtherTeammate(soloView, "a")).toBe(false);
+      expect(hasOtherTeammate(soloView, "spectator")).toBe(false);
+      const teamView = fixture().publicView as unknown as YutnoriPublicView;
+      expect(hasOtherTeammate(teamView, "a")).toBe(true);
+      expect(hasOtherTeammate(teamView, "c")).toBe(true);
+      expect(hasOtherTeammate(teamView, "spectator")).toBe(false);
+    });
+  });
+
+  describe("1v1 mode quick-commit & hidden team UI", () => {
+    it("hides all team communication UI and never sends previewPlan signals in 1v1", () => {
+      const context = fixture1v1();
+      const view = context.publicView as unknown as YutnoriPublicView;
+      view.turn.pending = [{ rollId: "m", outcome: "mo", steps: 5 }, { rollId: "g", outcome: "gae", steps: 2 }];
+      view.legalMoves = getLegalMoves(view);
+      // Even if stray team events exist in snapshot history, 1v1 ignores them.
+      context.events = [
+        { id: "s1", type: "yutnori.suggestion", visibility: "private", playerId: "a", createdAt: now, payload: { matchId: "match-1v1", turnId: 1, rollId: "m", pieceId: "A1", pathId: "outer", playerId: "b" } },
+        { id: "p1", type: "yutnori.planSuggestion", visibility: "private", playerId: "a", createdAt: now, payload: { matchId: "match-1v1", turnId: 1, expectedVersion: 1, planRevision: 0, moves: [], proposal: [{ rollId: "m", pieceId: "A1", pathId: "outer" }, { rollId: "g", pieceId: "A1", pathId: "diagonalA" }], playerId: "b" } }
+      ];
+      const { container, click } = mount(context);
+      const suggestions = container.querySelector<HTMLElement>('[data-role="suggestions"]')!;
+      const planSuggestions = container.querySelector<HTMLElement>('[data-role="plan-suggestions"]')!;
+      const teamRule = container.querySelector<HTMLElement>('[data-role="team-rule"]')!;
+      expect(suggestions.hidden).toBe(true);
+      expect(suggestions.innerHTML).toBe("");
+      expect(planSuggestions.hidden).toBe(true);
+      expect(planSuggestions.innerHTML).toBe("");
+      expect(teamRule.hidden).toBe(true);
+      expect(container.querySelector(".yut-proposal-ghost")).toBeNull();
+      expect(container.querySelector('[data-role="mode-label"]')!.textContent).toBe("1:1 개인전");
+      expect(container.querySelector(".yut-team.team-A .yut-team-top")!.textContent).not.toContain("우리 팀");
+
+      click('[data-destination="o5"]');
+      vi.advanceTimersByTime(1_000);
+      expect(context.sendSignal).not.toHaveBeenCalled();
+    });
+
+    it("auto-selects A1 with 0 pieces on board and commits immediately on destination click without confirm chrome", () => {
+      const context = fixture1v1();
+      const { container, click } = mount(context);
+      expect(container.querySelector('[data-piece="A1"]')!.classList.contains("is-selected")).toBe(true);
+      expect(container.querySelector('[data-destination="o1"]')).not.toBeNull();
+      expect(container.querySelector('[data-role="board-hint"]')!.textContent).toBe("가고 싶은 곳을 바로 눌러요");
+      expect(container.querySelector(".yut-strategy-header")).toBeNull();
+      expect(container.querySelector('[data-command="plan-commit"]')).toBeNull();
+      expect(container.querySelector('[data-command="plan-undo"]')).toBeNull();
+
+      click('[data-destination="o1"]');
+      expect(context.sendAction).toHaveBeenCalledExactlyOnceWith({
+        type: "commitMoves",
+        payload: { matchId: "match-1v1", turnId: 1, moves: [{ rollId: "r1", pieceId: "A1", pathId: "outer" }] }
+      });
+      expect(container.querySelector(".yut-path-preview")).toBeNull();
+      expect(container.querySelector(".yut-origin-ghost")).toBeNull();
+      expect(container.textContent).not.toContain("아직 미리보기예요");
+    });
+
+    it("does not auto-select when at least one piece is already on the board, and still quick-commits on 1 roll", () => {
+      const context = fixture1v1();
+      const view = context.publicView as unknown as YutnoriPublicView;
+      view.pieces[0]!.nodeId = "o3";
+      view.legalMoves = getLegalMoves(view);
+      const { container, click } = mount(context);
+      expect(container.querySelector(".is-selected")).toBeNull();
+      expect(container.querySelectorAll("[data-destination]")).toHaveLength(0);
+      expect(container.querySelector('[data-role="board-hint"]')!.textContent).toBe("움직일 말을 먼저 눌러요");
+
+      click('[data-piece="A1"]');
+      expect(container.querySelector('[data-destination="o4"]')).not.toBeNull();
+      expect(container.querySelector('[data-role="board-hint"]')!.textContent).toBe("가고 싶은 곳을 바로 눌러요");
+      click('[data-destination="o4"]');
+      expect(context.sendAction).toHaveBeenCalledExactlyOnceWith({
+        type: "commitMoves",
+        payload: { matchId: "match-1v1", turnId: 1, moves: [{ rollId: "r1", pieceId: "A1", pathId: "outer" }] }
+      });
+      expect(container.querySelector('[data-command="plan-commit"]')).toBeNull();
+    });
+
+    it("commits an unusable single back-do discard immediately without auto-selecting a piece", () => {
+      const context = fixture1v1();
+      const view = context.publicView as unknown as YutnoriPublicView;
+      view.turn.pending = [{ rollId: "b", outcome: "backDo", steps: -1 }];
+      view.legalMoves = getLegalMoves(view);
+      const { container, click } = mount(context);
+      expect(container.querySelector(".is-selected")).toBeNull();
+      expect(container.querySelectorAll("[data-destination]")).toHaveLength(0);
+      expect(container.querySelector('[data-role="board-hint"]')!.textContent).toContain("넘기기를 눌러요");
+
+      click('[data-discard="b"]');
+      expect(context.sendAction).toHaveBeenCalledExactlyOnceWith({
+        type: "commitMoves",
+        payload: { matchId: "match-1v1", turnId: 1, moves: [{ rollId: "b", discard: true }] }
+      });
+      expect(container.querySelector('[data-command="plan-commit"]')).toBeNull();
+    });
+
+    it("enters multi-roll strategy ('말 쓰기') mode with auto-selected first reserve piece and atomic commit", () => {
+      const context = fixture1v1();
+      const view = context.publicView as unknown as YutnoriPublicView;
+      view.turn.pending = [{ rollId: "y", outcome: "yut", steps: 4, disposition: "banked" }, { rollId: "d", outcome: "do", steps: 1, disposition: "immediate" }];
+      view.legalMoves = getLegalMoves(view);
+      const { container, click } = mount(context);
+      expect(container.querySelector('[data-role="actions"]')!.classList.contains("is-strategy-mode")).toBe(true);
+      expect(container.querySelector(".yut-strategy-header")!.textContent).toContain("말 쓰기");
+      // 0 pieces on board -> A1 is auto-selected for the first move even in multi-roll mode!
+      expect(container.querySelector('[data-piece="A1"]')!.classList.contains("is-selected")).toBe(true);
+      expect(container.querySelector('[data-destination="o4"]')).not.toBeNull();
+      expect(container.querySelector('[data-destination="o1"]')).not.toBeNull();
+
+      click('[data-destination="o4"]');
+      expect(context.sendAction).not.toHaveBeenCalled();
+      expect(container.querySelector('[data-node="o4"] .has-piece')).not.toBeNull();
+      expect(container.querySelector('[data-role="board-hint"]')!.textContent).toContain("아직 미리보기예요");
+      expect(container.querySelector('[data-command="plan-undo"]')).not.toBeNull();
+      expect(container.querySelector<HTMLButtonElement>('[data-command="plan-commit"]')!.disabled).toBe(true);
+
+      click('[data-destination="o5"]');
+      expect(context.sendAction).not.toHaveBeenCalled();
+      expect(container.querySelector<HTMLButtonElement>('[data-command="plan-commit"]')!.disabled).toBe(false);
+      click('[data-command="plan-commit"]');
+      expect(context.sendAction).toHaveBeenCalledExactlyOnceWith({
+        type: "commitMoves",
+        payload: { matchId: "match-1v1", turnId: 1, moves: [{ rollId: "y", pieceId: "A1", pathId: "outer" }, { rollId: "d", pieceId: "A1", pathId: "outer" }] }
+      });
+    });
+
+    it("commits immediately via drag-and-drop in single-roll quick mode", () => {
+      const context = fixture1v1();
+      const view = context.publicView as unknown as YutnoriPublicView;
+      view.pieces[0]!.nodeId = "o3";
+      view.legalMoves = getLegalMoves(view);
+      const { container } = mount(context);
+      const surface = container.querySelector<HTMLElement>(".yut-game")!;
+      const piece = container.querySelector('[data-piece="A1"]')!;
+      piece.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerId: 1, button: 0, clientX: 10, clientY: 10 }));
+      surface.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, pointerId: 1, clientX: 30, clientY: 30 }));
+      const destination = container.querySelector<HTMLElement>('[data-destination="o4"]')!;
+      expect(destination).not.toBeNull();
+      const elementFromPoint = vi.spyOn(document, "elementFromPoint").mockReturnValue(destination);
+      surface.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, pointerId: 1, clientX: 30, clientY: 30 }));
+      expect(elementFromPoint).toHaveBeenCalledWith(30, 30);
+      expect(context.sendAction).toHaveBeenCalledExactlyOnceWith({
+        type: "commitMoves",
+        payload: { matchId: "match-1v1", turnId: 1, moves: [{ rollId: "r1", pieceId: "A1", pathId: "outer" }] }
+      });
+    });
+
+    it("commits immediately when picking a route from the route chooser in single-roll quick mode", () => {
+      const context = fixture1v1();
+      const view = context.publicView as unknown as YutnoriPublicView;
+      view.pieces[0]!.nodeId = "o5";
+      view.legalMoves = [
+        { rollId: "r1", pieceId: "A1", pieceIds: ["A1"], pathId: "outer", path: ["o6"], destination: "o6", capturedPieceIds: [], stackedPieceIds: [], completedPieceIds: [] },
+        { rollId: "r1", pieceId: "A1", pieceIds: ["A1"], pathId: "diagonalA", path: ["o6"], destination: "o6", capturedPieceIds: [], stackedPieceIds: [], completedPieceIds: [] }
+      ];
+      const { container, click } = mount(context);
+      click('[data-piece="A1"]');
+      click('[data-destination="o6"]');
+      expect(container.querySelectorAll(".yut-route-picker [data-move]")).toHaveLength(2);
+      expect(context.sendAction).not.toHaveBeenCalled();
+      click('[data-move="r1:A1:diagonalA"]');
+      expect(context.sendAction).toHaveBeenCalledExactlyOnceWith({
+        type: "commitMoves",
+        payload: { matchId: "match-1v1", turnId: 1, moves: [{ rollId: "r1", pieceId: "A1", pathId: "diagonalA" }] }
+      });
+    });
+  });
+
+  describe("2v2 team UI visibility and teammate workflow", () => {
+    it("shows team communication panels for 2v2 active team players and keeps teammate proposals non-committing on 1 roll", () => {
+      const hostContext = fixture("a");
+      const host = mount(hostContext);
+      expect(host.container.querySelector<HTMLElement>('[data-role="suggestions"]')!.hidden).toBe(false);
+      expect(host.container.querySelector<HTMLElement>('[data-role="plan-suggestions"]')!.hidden).toBe(false);
+      expect(host.container.querySelector<HTMLElement>('[data-role="team-rule"]')!.hidden).toBe(false);
+      expect(host.container.querySelector('[data-role="mode-label"]')!.textContent).toBe("2:2 팀전");
+
+      const peerContext = fixture("c");
+      const peer = mount(peerContext);
+      expect(peer.container.querySelector<HTMLElement>('[data-role="suggestions"]')!.hidden).toBe(false);
+      expect(peer.container.querySelector<HTMLElement>('[data-role="plan-suggestions"]')!.hidden).toBe(true);
+      // Teammate gets auto-selected A1 with 0 pieces on board, drafts 1-roll proposal, and never commits directly.
+      expect(peer.container.querySelector('[data-piece="A1"]')!.classList.contains("is-selected")).toBe(true);
+      peer.click('[data-destination="o1"]');
+      expect(peerContext.sendAction).not.toHaveBeenCalled();
+      expect(peer.container.querySelector('[data-command="plan-propose"]')).not.toBeNull();
+      peer.click('[data-command="plan-propose"]');
+      expect(peerContext.sendSignal).toHaveBeenCalledWith({
+        type: "suggestPlan",
+        payload: { matchId: "match-1", turnId: 1, expectedVersion: 1, planRevision: 0, moves: [], proposal: [{ rollId: "r1", pieceId: "A1", pathId: "outer" }] }
+      });
+      expect(peerContext.sendAction).not.toHaveBeenCalled();
+    });
   });
 
 });
