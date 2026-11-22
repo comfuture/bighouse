@@ -3,8 +3,11 @@ import type { RoomState } from "@bighouse/game-sdk/server";
 import { ITEM_CATALOG, MOB_CATALOG, WEAPON_CATALOG } from "../src/catalogs";
 import {
   addItemToInventory,
+  ALL_UPGRADE_STONE_IDS,
   canAddItemToInventory,
+  canDismantleItem,
   computeChestCoinReward,
+  computeDismantleYield,
   computeEffectiveCombatStats,
   computePlayerBaseDex,
   computeUpgradePreview,
@@ -16,12 +19,16 @@ import {
   INVENTORY_SIZE,
   INVENTORY_ITEMS,
   MAX_WEAPON_UPGRADE_LEVEL,
+  POWDER_MAX_STACK,
   removeItemAtSlot,
   removeItemFromInventory,
   rollChestStoneDrop,
   rollEliteStoneDrop,
   SHOP_OFFERS,
+  SMELTING_RECIPES,
+  SMELTING_RECIPES_BY_ID,
   STONE_MAX_STACK,
+  STONE_POWDER_ITEM_ID,
   UPGRADE_STONE_IDS
 } from "../src/economy";
 import { validateNormalizedStage } from "../src/map-schema";
@@ -122,7 +129,11 @@ describe("@bighouse/sunny-meadow economy, 4x6 inventory, chests & weapon upgrade
     const lv10 = computeUpgradePreview(sword, "atk", { atkLevel: 6, dexLevel: 4, failStreak: 0 });
 
     expect(lv0.stoneId).toBe("stone_red");
-    expect(lv9.stoneId).toBe("stone_green");
+    expect(lv0.stoneTier).toBe(1);
+    expect(lv5.stoneId).toBe("stone_red_t2");
+    expect(lv5.stoneTier).toBe(2);
+    expect(lv9.stoneId).toBe("stone_green_t3");
+    expect(lv9.stoneTier).toBe(3);
     expect(lv0.successRate).toBe(1.0);
     expect(lv5.coinCost).toBeGreaterThan(lv0.coinCost);
     expect(lv9.stonesRequired).toBeGreaterThan(lv0.stonesRequired);
@@ -134,7 +145,7 @@ describe("@bighouse/sunny-meadow economy, 4x6 inventory, chests & weapon upgrade
     const lv9Pity = computeUpgradePreview(sword, "dex", { atkLevel: 5, dexLevel: 4, failStreak: 3 });
     expect(lv9Pity.successRate).toBeGreaterThan(lv9.successRate);
 
-    // Combat stats reflect ATK + DEX bonuses with safe caps
+    // Combat stats reflect ATK + DEX bonuses with safe caps, and mixed builds stay viable at mid/end-game
     const baseStats = computeEffectiveCombatStats(sword, 10, computePlayerBaseDex(1), createEmptyWeaponUpgrade());
     const upStats = computeEffectiveCombatStats(sword, 10, computePlayerBaseDex(1), {
       atkLevel: 4,
@@ -145,6 +156,128 @@ describe("@bighouse/sunny-meadow economy, 4x6 inventory, chests & weapon upgrade
     expect(upStats.totalDex).toBe(baseStats.totalDex + 8);
     expect(upStats.critChance).toBeGreaterThan(baseStats.critChance);
     expect(upStats.cooldownSec).toBeLessThan(baseStats.cooldownSec);
+
+    // Even at Lv.60, green attack-speed upgrades still reduce cooldown (not capped out by baseDex alone)
+    const nebula = WEAPON_CATALOG.nebula_staff!;
+    const lv60Base = computeEffectiveCombatStats(nebula, 242, computePlayerBaseDex(60), createEmptyWeaponUpgrade());
+    const lv60Speed = computeEffectiveCombatStats(nebula, 242, computePlayerBaseDex(60), { atkLevel: 0, dexLevel: 4, failStreak: 0 });
+    expect(lv60Speed.cooldownSec).toBeLessThan(lv60Base.cooldownSec);
+  });
+
+  it("enforces 3-tier stones (초급/중급/고급), powder dismantling, and zero-arbitrage smelting invariants", () => {
+    expect(ALL_UPGRADE_STONE_IDS).toHaveLength(12);
+    expect(INVENTORY_ITEMS.stone_red?.name).toBe("초급 붉은 강화석");
+    expect(INVENTORY_ITEMS.stone_green?.name).toBe("초급 초록 강화석");
+    expect(INVENTORY_ITEMS.stone_blue?.name).toBe("초급 푸른 강화석");
+    expect(INVENTORY_ITEMS.stone_orange?.name).toBe("초급 주황 강화석");
+    expect(INVENTORY_ITEMS[STONE_POWDER_ITEM_ID]?.maxStack).toBe(POWDER_MAX_STACK);
+
+    const powderSell = INVENTORY_ITEMS[STONE_POWDER_ITEM_ID]!.sellPrice;
+    const powderBasisCost = INVENTORY_ITEMS.stone_red!.buyPrice! / INVENTORY_ITEMS.stone_red!.dismantlePowder!; // 20c
+
+    for (const recipe of SMELTING_RECIPES) {
+      const spec = INVENTORY_ITEMS[recipe.outputItemId]!;
+      expect(canDismantleItem(spec.id)).toBe(true);
+      const dismantleYield = computeDismantleYield(spec.id, 1);
+      // 1) No powder duplication loop: dismantling always returns strictly less than smelting consumes
+      expect(dismantleYield / recipe.powderCost).toBeLessThan(0.75);
+      // 2) Dismantle -> sell powder never beats selling the stone directly
+      expect(dismantleYield * powderSell).toBeLessThan(spec.sellPrice);
+      // 3) Selling a stone yields <= 30% of its buy or smelted basis cost
+      const basisCost = spec.buyPrice ?? recipe.powderCost * powderBasisCost + recipe.coinCost;
+      expect(spec.sellPrice / basisCost).toBeLessThanOrEqual(0.3);
+      // 4) Smelting Tier 1 is a color-conversion sink, never cheaper than shop buyPrice
+      if (spec.buyPrice) {
+        expect(recipe.powderCost * powderBasisCost + recipe.coinCost).toBeGreaterThanOrEqual(spec.buyPrice);
+      }
+    }
+
+    // High-stage drops can yield 중급 (t2) and 고급 (t3) stones
+    expect(rollChestStoneDrop(5, 0.1, 0.1, 0.85)?.itemId).toBe("stone_red_t2");
+    expect(rollChestStoneDrop(10, 0.1, 0.1, 0.9)?.itemId).toBe("stone_red_t3");
+  });
+
+  it("executes server-authoritative dismantleItem and smeltStone actions and gates +4 upgrades on 중급 stones", () => {
+    const now = 1_700_004_000_000;
+    const room = {
+      roomId: "room-smelt",
+      gameId: "sunny-meadow",
+      mode: "default",
+      minPlayers: 1,
+      maxPlayers: 500,
+      config: {},
+      createdAt: now
+    };
+    const p1 = { playerId: "p1", displayName: "제련사", seat: 0, connected: true, ready: true, joinedAt: now };
+    let state: RoomState = {
+      room,
+      phase: "active",
+      version: 1,
+      players: [p1],
+      stageState: sunnyMeadowDefinition.initialStageState({ room, players: [], now }),
+      playerStates: {},
+      updatedAt: now
+    };
+    state = sunnyMeadowDefinition.onPlayerJoin!({ state, now }, p1, null).state;
+
+    // Seed player with 4 초급 붉은 강화석 (12 powder when dismantled), 500 coins, and a +3 weapon
+    const seededInv = addItemToInventory(createEmptyInventory(), "stone_red", 4).inventory;
+    Object.assign(state.playerStates.p1!, {
+      coins: 500,
+      inventory: seededInv,
+      weaponUpgrades: { wooden_sword: { atkLevel: 2, dexLevel: 1, failStreak: 0 } }
+    });
+
+    // Upgrading +3 -> +4 with only 초급 stones must fail (requires 중급 붉은 강화석)
+    const blockedUpgrade = sunnyMeadowDefinition.applyAction(
+      { state, now: now + 200 },
+      { playerId: "p1", clientActionId: "u_block", expectedVersion: 0, type: "upgradeWeapon", payload: { weaponId: "wooden_sword", stat: "atk" } }
+    );
+    expect(blockedUpgrade.events).toContainEqual(
+      expect.objectContaining({ type: "sunny.actionIgnored", payload: expect.objectContaining({ reason: "insufficient_stones" }) })
+    );
+
+    // Dismantle all 4 초급 붉은 강화석 -> yields 12 강화석 가루
+    const dismantled = sunnyMeadowDefinition.applyAction(
+      { state, now: now + 500 },
+      { playerId: "p1", clientActionId: "dis1", expectedVersion: 0, type: "dismantleItem", payload: { slotIndex: 0, quantity: 4 } }
+    );
+    state = dismantled.state;
+    expect(dismantled.events).toContainEqual(
+      expect.objectContaining({
+        type: "sunny.itemDismantled",
+        payload: expect.objectContaining({ itemId: "stone_red", quantity: 4, powderGained: 12 })
+      })
+    );
+    expect(countItemInInventory((state.playerStates.p1 as { inventory: typeof seededInv }).inventory, STONE_POWDER_ITEM_ID)).toBe(12);
+
+    // Smelt 1 중급 붉은 강화석 (12 가루 + 90 코인)
+    const recipe = SMELTING_RECIPES_BY_ID.smelt_red_t2!;
+    const smelted = sunnyMeadowDefinition.applyAction(
+      { state, now: now + 800 },
+      { playerId: "p1", clientActionId: "sm1", expectedVersion: 0, type: "smeltStone", payload: { recipeId: recipe.id, quantity: 1 } }
+    );
+    state = smelted.state;
+    expect(smelted.events).toContainEqual(
+      expect.objectContaining({
+        type: "sunny.stoneSmelted",
+        payload: expect.objectContaining({ itemId: "stone_red_t2", quantity: 1, powderSpent: 12, coinsSpent: 90 })
+      })
+    );
+    expect((state.playerStates.p1 as { coins: number }).coins).toBe(500 - 90);
+    expect(countItemInInventory((state.playerStates.p1 as { inventory: typeof seededInv }).inventory, "stone_red_t2")).toBe(1);
+
+    // Now +3 -> +4 upgrade consumes the smelted 중급 붉은 강화석
+    const upgraded = sunnyMeadowDefinition.applyAction(
+      { state, now: now + 1100 },
+      { playerId: "p1", clientActionId: "u_t2", expectedVersion: 0, type: "upgradeWeapon", payload: { weaponId: "wooden_sword", stat: "atk" } }
+    );
+    expect(upgraded.events).toContainEqual(
+      expect.objectContaining({
+        type: "sunny.weaponUpgraded",
+        payload: expect.objectContaining({ stoneId: "stone_red_t2", stonesSpent: 1, coinsSpent: 80 })
+      })
+    );
   });
 
   it("places rare elite-guarded treasure chests across all 10 stages with 100% map validity", () => {

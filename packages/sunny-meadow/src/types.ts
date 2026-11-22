@@ -121,7 +121,23 @@ export type WeaponTemplate = {
 
 export type ItemCategory = "heal" | "potion" | "max_hp" | "coin" | "weapon" | "chest" | "stone";
 
-export type UpgradeStoneId = "stone_green" | "stone_blue" | "stone_orange" | "stone_red";
+export type UpgradeStoneTier = 1 | 2 | 3;
+
+export type UpgradeStoneColor = "green" | "blue" | "orange" | "red";
+
+export type UpgradeStoneId =
+  | "stone_green"
+  | "stone_blue"
+  | "stone_orange"
+  | "stone_red"
+  | "stone_green_t2"
+  | "stone_blue_t2"
+  | "stone_orange_t2"
+  | "stone_red_t2"
+  | "stone_green_t3"
+  | "stone_blue_t3"
+  | "stone_orange_t3"
+  | "stone_red_t3";
 
 export type WeaponUpgradeStat = "atk" | "dex";
 
@@ -133,9 +149,12 @@ export type InventorySlot = {
 export type InventoryItemSpec = {
   id: string;
   name: string;
-  kind: "stone" | "consumable" | "relic";
+  kind: "stone" | "powder" | "consumable" | "relic";
+  tier?: UpgradeStoneTier;
+  colorKey?: UpgradeStoneColor;
+  dismantlePowder?: number;
   stackable: boolean;
-  /** Default 20 for upgrade stones, 1 for non-stackables */
+  /** Default 20 for upgrade stones, 999 for powder, 1 for non-stackables */
   maxStack: number;
   /** Sprite cell index in economy_sheet.png (when sheet === "economy") or items_sheet.png */
   sheet: "economy" | "items";

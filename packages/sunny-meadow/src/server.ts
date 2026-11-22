@@ -23,7 +23,9 @@ import {
 import {
   addItemToInventory,
   canAddItemToInventory,
+  canDismantleItem,
   computeChestCoinReward,
+  computeDismantleYield,
   computeEffectiveCombatStats,
   computePlayerBaseDex,
   computeUpgradePreview,
@@ -37,7 +39,9 @@ import {
   removeItemFromInventory,
   rollChestStoneDrop,
   rollEliteStoneDrop,
-  SHOP_OFFERS_BY_ID
+  SHOP_OFFERS_BY_ID,
+  SMELTING_RECIPES_BY_ID,
+  STONE_POWDER_ITEM_ID
 } from "./economy";
 import { baseGameMetadata } from "./metadata";
 import {
@@ -864,6 +868,58 @@ function checkAction(context: GameContext, action: ClientGameAction): ActionChec
       }
       return { ok: true };
     }
+    case "dismantleItem": {
+      if (ps.lastEconomyActionAt && context.now - ps.lastEconomyActionAt < ECONOMY_ACTION_COOLDOWN_MS) {
+        return { ok: false, code: "economy_cooldown", message: "잠시 후 다시 시도해주세요.", stale: true };
+      }
+      const slotIndex = Math.floor(Number(action.payload.slotIndex));
+      const qty = Math.floor(Number(action.payload.quantity ?? 1));
+      const inv = normalizeInventory(ps.inventory);
+      if (!Number.isFinite(slotIndex) || slotIndex < 0 || slotIndex >= inv.length) {
+        return { ok: false, code: "invalid_slot", message: "잘못된 인벤토리 칸입니다." };
+      }
+      const slot = inv[slotIndex];
+      if (!slot || !Number.isFinite(qty) || qty < 1 || qty > slot.quantity) {
+        return { ok: false, code: "invalid_quantity", message: "분해할 강화석이 부족합니다.", stale: true };
+      }
+      if (!canDismantleItem(slot.itemId)) {
+        return { ok: false, code: "undismantleable_item", message: "분해할 수 없는 아이템입니다." };
+      }
+      const powderYield = computeDismantleYield(slot.itemId, qty);
+      const afterRemove = removeItemAtSlot(inv, slotIndex, qty).inventory;
+      if (!canAddItemToInventory(afterRemove, STONE_POWDER_ITEM_ID, powderYield)) {
+        return { ok: false, code: "inventory_full", message: "가방 공간이 부족합니다.", stale: true };
+      }
+      return { ok: true };
+    }
+    case "smeltStone": {
+      if (ps.lastEconomyActionAt && context.now - ps.lastEconomyActionAt < ECONOMY_ACTION_COOLDOWN_MS) {
+        return { ok: false, code: "economy_cooldown", message: "잠시 후 다시 시도해주세요.", stale: true };
+      }
+      const recipeId = typeof action.payload.recipeId === "string" ? action.payload.recipeId : "";
+      const recipe = SMELTING_RECIPES_BY_ID[recipeId];
+      if (!recipe) {
+        return { ok: false, code: "invalid_recipe", message: "존재하지 않는 제련 레시피입니다." };
+      }
+      const qty = Math.floor(Number(action.payload.quantity ?? 1));
+      if (!Number.isFinite(qty) || qty < 1 || qty > 20) {
+        return { ok: false, code: "invalid_quantity", message: "제련 수량이 올바르지 않습니다." };
+      }
+      const totalCoins = recipe.coinCost * qty;
+      const totalPowder = recipe.powderCost * qty;
+      if (ps.coins < totalCoins) {
+        return { ok: false, code: "insufficient_coins", message: "제련 비용(코인)이 부족합니다.", stale: true };
+      }
+      const inv = normalizeInventory(ps.inventory);
+      if (countItemInInventory(inv, STONE_POWDER_ITEM_ID) < totalPowder) {
+        return { ok: false, code: "insufficient_powder", message: "강화석 가루가 부족합니다.", stale: true };
+      }
+      const afterRemove = removeItemFromInventory(inv, STONE_POWDER_ITEM_ID, totalPowder).inventory;
+      if (!canAddItemToInventory(afterRemove, recipe.outputItemId, qty)) {
+        return { ok: false, code: "inventory_full", message: "가방 공간이 부족합니다.", stale: true };
+      }
+      return { ok: true };
+    }
     case "checkpoint":
       return { ok: true };
     default:
@@ -968,7 +1024,8 @@ function applyCheckedAction(context: GameContext, action: ClientGameAction): Act
       const stageMeta = getStageById(ps.stageId).meta;
       const dropChanceRoll = serverEntropyRoll(`edrop:${now}:${mobId}:${recipient.playerId}:${recipient.mobsDefeated}`);
       const dropColorRoll = serverEntropyRoll(`ecolor:${now}:${mobId}:${recipient.playerId}:${recipient.mobsDefeated}`);
-      const eliteDrop = rollEliteStoneDrop(mobTpl, stageMeta.stageNumber, dropChanceRoll, dropColorRoll);
+      const dropTierRoll = serverEntropyRoll(`etier:${now}:${mobId}:${recipient.playerId}:${recipient.mobsDefeated}`);
+      const eliteDrop = rollEliteStoneDrop(mobTpl, stageMeta.stageNumber, dropChanceRoll, dropColorRoll, dropTierRoll);
       let droppedStonePayload:
         | { itemId: string; name: string; quantity: number; overflow: number; color: string; iconIndex: number }
         | undefined;
@@ -1182,7 +1239,8 @@ function applyCheckedAction(context: GameContext, action: ClientGameAction): Act
         ps.coins += chestCoins;
         const chanceRoll = serverEntropyRoll(`cdrop:${now}:${itemId}:${ps.playerId}:${ps.coins}`);
         const colorRoll = serverEntropyRoll(`ccolor:${now}:${itemId}:${ps.playerId}:${ps.coins}`);
-        const stoneDrop = rollChestStoneDrop(stageMeta.stageNumber, chanceRoll, colorRoll);
+        const tierRoll = serverEntropyRoll(`ctier:${now}:${itemId}:${ps.playerId}:${ps.coins}`);
+        const stoneDrop = rollChestStoneDrop(stageMeta.stageNumber, chanceRoll, colorRoll, tierRoll);
         let droppedStonePayload:
           | { itemId: string; name: string; quantity: number; overflow: number; color: string; iconIndex: number }
           | undefined;
@@ -1533,6 +1591,68 @@ function applyCheckedAction(context: GameContext, action: ClientGameAction): Act
           coinsSpent: preview.coinCost,
           stonesSpent: preview.stonesRequired,
           stoneId: preview.stoneId,
+          persistProfile: true
+        },
+        now,
+        "private",
+        ps.playerId
+      )
+    );
+  } else if (action.type === "dismantleItem") {
+    const slotIndex = Math.floor(Number(action.payload.slotIndex));
+    const qty = Math.floor(Number(action.payload.quantity ?? 1));
+    const rem = removeItemAtSlot(normalizeInventory(ps.inventory), slotIndex, qty);
+    const spec = rem.itemId ? INVENTORY_ITEMS[rem.itemId] : undefined;
+    const powderGained = rem.itemId ? computeDismantleYield(rem.itemId, rem.removed) : 0;
+    const added = addItemToInventory(rem.inventory, STONE_POWDER_ITEM_ID, powderGained);
+    ps.inventory = added.inventory;
+    ps.lastEconomyActionAt = now;
+
+    events.push(
+      makeEvent(
+        "sunny.itemDismantled",
+        {
+          stageId: ps.stageId,
+          playerId: ps.playerId,
+          slotIndex,
+          itemId: rem.itemId ?? "",
+          itemName: spec?.name ?? "",
+          quantity: rem.removed,
+          powderGained: added.added,
+          persistProfile: true
+        },
+        now,
+        "private",
+        ps.playerId
+      )
+    );
+  } else if (action.type === "smeltStone") {
+    const recipeId = String(action.payload.recipeId);
+    const recipe = SMELTING_RECIPES_BY_ID[recipeId]!;
+    const qty = Math.floor(Number(action.payload.quantity ?? 1));
+    const totalCoins = recipe.coinCost * qty;
+    const totalPowder = recipe.powderCost * qty;
+    ps.coins = Math.max(0, ps.coins - totalCoins);
+    const afterPowder = removeItemFromInventory(normalizeInventory(ps.inventory), STONE_POWDER_ITEM_ID, totalPowder).inventory;
+    const added = addItemToInventory(afterPowder, recipe.outputItemId, qty);
+    ps.inventory = added.inventory;
+    ps.lastEconomyActionAt = now;
+    const outSpec = INVENTORY_ITEMS[recipe.outputItemId]!;
+
+    events.push(
+      makeEvent(
+        "sunny.stoneSmelted",
+        {
+          stageId: ps.stageId,
+          playerId: ps.playerId,
+          recipeId,
+          itemId: recipe.outputItemId,
+          itemName: outSpec.name,
+          tier: recipe.tier,
+          quantity: added.added,
+          powderSpent: totalPowder,
+          coinsSpent: totalCoins,
+          coins: ps.coins,
           persistProfile: true
         },
         now,

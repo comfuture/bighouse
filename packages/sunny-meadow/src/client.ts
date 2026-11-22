@@ -20,6 +20,8 @@ import {
 } from "./catalogs";
 import { SunnyAudioManager } from "./audio";
 import {
+  canDismantleItem,
+  computeDismantleYield,
   computeEffectiveCombatStats,
   computePlayerBaseDex,
   computeUpgradePreview,
@@ -31,7 +33,11 @@ import {
   normalizeInventory,
   normalizeWeaponUpgrades,
   SHOP_OFFERS,
-  SHOP_OFFERS_BY_ID
+  SHOP_OFFERS_BY_ID,
+  SMELTING_RECIPES,
+  SMELTING_RECIPES_BY_ID,
+  STONE_POWDER_ITEM_ID,
+  UPGRADE_STONE_TIER_LABELS
 } from "./economy";
 import { gameMetadata } from "./client-metadata";
 import {
@@ -79,6 +85,7 @@ import type {
   ServerItemState,
   ServerMobState,
   StatusEffectKind,
+  UpgradeStoneTier,
   WeaponStatusSpec,
   WeaponUpgradeStat,
   WorldPlayerState
@@ -215,11 +222,28 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
         </div>
         <div class="sm-panel">
           <div class="sm-section-head">
-            <h3>가방</h3>
-            <span class="sm-count-badge" data-el="inv-slot-count">0/24</span>
+            <div class="sm-tab-group" role="tablist" aria-label="가방 및 제련">
+              <button type="button" class="sm-tab-btn is-active" role="tab" aria-selected="true" data-inv-tab="bag">
+                가방 <span class="sm-tab-count" data-el="inv-slot-count">0/24</span>
+              </button>
+              <button type="button" class="sm-tab-btn" role="tab" aria-selected="false" data-inv-tab="smelt">
+                제련 <span class="sm-tab-count" data-el="inv-powder-count">가루 0</span>
+              </button>
+            </div>
           </div>
-          <div class="sm-inv-grid" data-el="inv-grid"></div>
-          <div class="sm-detail-box" data-el="inv-item-detail"></div>
+          <div class="sm-tab-pane" data-el="inv-bag-pane">
+            <div class="sm-inv-grid" data-el="inv-grid"></div>
+            <div class="sm-detail-box" data-el="inv-item-detail"></div>
+          </div>
+          <div class="sm-tab-pane is-hidden" data-el="inv-smelt-pane">
+            <div class="sm-tier-tabs" data-el="inv-smelt-tiers">
+              <button type="button" class="sm-tier-btn" data-smelt-tier="1">초급</button>
+              <button type="button" class="sm-tier-btn is-active" data-smelt-tier="2">중급</button>
+              <button type="button" class="sm-tier-btn" data-smelt-tier="3">고급</button>
+            </div>
+            <div class="sm-smelt-grid" data-el="inv-smelt-grid"></div>
+            <div class="sm-detail-box" data-el="inv-smelt-detail"></div>
+          </div>
         </div>
       </div>
       <form method="dialog" class="sm-dialog-footer">
@@ -307,8 +331,13 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
   const invWeaponsEl = root.querySelector<HTMLElement>('[data-el="inv-weapons"]')!;
   const invUpgradePanelEl = root.querySelector<HTMLElement>('[data-el="inv-upgrade-panel"]')!;
   const invSlotCountEl = root.querySelector<HTMLElement>('[data-el="inv-slot-count"]')!;
+  const invPowderCountEl = root.querySelector<HTMLElement>('[data-el="inv-powder-count"]')!;
+  const invBagPaneEl = root.querySelector<HTMLElement>('[data-el="inv-bag-pane"]')!;
+  const invSmeltPaneEl = root.querySelector<HTMLElement>('[data-el="inv-smelt-pane"]')!;
   const invGridEl = root.querySelector<HTMLElement>('[data-el="inv-grid"]')!;
   const invItemDetailEl = root.querySelector<HTMLElement>('[data-el="inv-item-detail"]')!;
+  const invSmeltGridEl = root.querySelector<HTMLElement>('[data-el="inv-smelt-grid"]')!;
+  const invSmeltDetailEl = root.querySelector<HTMLElement>('[data-el="inv-smelt-detail"]')!;
   const shopCoinsEl = root.querySelector<HTMLElement>('[data-el="shop-coins"]')!;
   const shopFeedbackEl = root.querySelector<HTMLElement>('[data-el="shop-feedback"]')!;
   const shopSlotCountEl = root.querySelector<HTMLElement>('[data-el="shop-slot-count"]')!;
@@ -549,6 +578,9 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
   let selectedShopInvSlot = -1;
   let selectedShopOfferId: string = SHOP_OFFERS[0]!.id;
   let selectedUpgradeWeaponId = "wooden_sword";
+  let invRightTab: "bag" | "smelt" = "bag";
+  let selectedSmeltTier: UpgradeStoneTier = 2;
+  let selectedSmeltRecipeId: string = "smelt_red_t2";
   let coinHover = false;
   let statusHover = false;
   const hudClickController = createHudClickController();
@@ -610,6 +642,33 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
     span.style.backgroundSize = `${totalCols * sizePx}px ${sizePx}px`;
     span.style.backgroundPosition = `${-iconIndex * sizePx}px 0px`;
     return span;
+  }
+
+  function makeInventoryItemIcon(itemId: string, sizePx = 32): HTMLElement {
+    const spec = INVENTORY_ITEMS[itemId];
+    if (!spec) return makeSpriteIcon("economy", 5, sizePx);
+    if (spec.kind === "powder") {
+      const wrap = document.createElement("span");
+      wrap.className = "sm-powder-icon";
+      wrap.style.width = `${sizePx}px`;
+      wrap.style.height = `${sizePx}px`;
+      wrap.textContent = "✦";
+      wrap.setAttribute("aria-hidden", "true");
+      return wrap;
+    }
+    const base = makeSpriteIcon(spec.sheet, spec.iconIndex, sizePx);
+    if (spec.tier && spec.tier > 1) {
+      const wrap = document.createElement("span");
+      wrap.className = `sm-tiered-icon is-t${spec.tier}`;
+      wrap.style.width = `${sizePx}px`;
+      wrap.style.height = `${sizePx}px`;
+      const badge = document.createElement("span");
+      badge.className = `sm-tier-badge is-t${spec.tier}`;
+      badge.textContent = spec.tier === 2 ? "중" : "고";
+      wrap.append(base, badge);
+      return wrap;
+    }
+    return base;
   }
 
   function spawnLootDropArc(
@@ -1303,6 +1362,21 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
           economy_cooldown: "잠시 후 재시도"
         };
         setFeedback(invFeedbackEl, msgMap[String(p.reason ?? "")] ?? "강화 실패", "error");
+      } else if (p.action === "dismantleItem") {
+        const msgMap: Record<string, string> = {
+          inventory_full: "가방 가득 참",
+          undismantleable_item: "분해 불가 아이템",
+          economy_cooldown: "잠시 후 재시도"
+        };
+        setFeedback(invFeedbackEl, msgMap[String(p.reason ?? "")] ?? "분해 실패", "error");
+      } else if (p.action === "smeltStone") {
+        const msgMap: Record<string, string> = {
+          insufficient_coins: "코인 부족",
+          insufficient_powder: "강화석 가루 부족",
+          inventory_full: "가방 가득 참",
+          economy_cooldown: "잠시 후 재시도"
+        };
+        setFeedback(invFeedbackEl, msgMap[String(p.reason ?? "")] ?? "제련 실패", "error");
       }
       return;
     }
@@ -1349,6 +1423,27 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
         audio.playSfx("sfx_land", 0.04);
       }
       if (inventoryDialog.open) renderInventoryDialog();
+      return;
+    }
+
+    if (ev.type === "sunny.itemDismantled" && p.playerId === ctx.playerId) {
+      const itemName = String(p.itemName ?? "강화석");
+      const qty = Number(p.quantity ?? 1);
+      const powder = Number(p.powderGained ?? 0);
+      setFeedback(invFeedbackEl, `${itemName} ×${qty} 분해 → 가루 +${powder}`, "success");
+      audio.playSfx("sfx_item_pickup", 0.03);
+      if (inventoryDialog.open) renderInventoryDialog();
+      if (shopDialog.open) renderShopDialog();
+      return;
+    }
+
+    if (ev.type === "sunny.stoneSmelted" && p.playerId === ctx.playerId) {
+      const itemName = String(p.itemName ?? "강화석");
+      const qty = Number(p.quantity ?? 1);
+      setFeedback(invFeedbackEl, `★ ${itemName} ×${qty} 제련 완료`, "success");
+      audio.playSfx("sfx_level_up", 0.04);
+      if (inventoryDialog.open) renderInventoryDialog();
+      if (shopDialog.open) renderShopDialog();
       return;
     }
 
@@ -1837,7 +1932,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
         const spec = INVENTORY_ITEMS[slot.itemId];
         if (spec) {
           btn.title = `${spec.name} (${slot.quantity}/${spec.maxStack})`;
-          btn.append(makeSpriteIcon(spec.sheet, spec.iconIndex, 32));
+          btn.append(makeInventoryItemIcon(slot.itemId, 32));
           if (spec.stackable && slot.quantity > 1) {
             const qty = document.createElement("span");
             qty.className = "sm-slot-qty";
@@ -1973,8 +2068,6 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
     const selW = WEAPON_CATALOG[selectedUpgradeWeaponId] ?? eqW;
     const selUpg = getWeaponUpgrade(localPlayer.weaponUpgrades, selW.id);
     const selCombat = computeEffectiveCombatStats(selW, localPlayer.baseAtk, localPlayer.baseDex, selUpg);
-    const redOwned = countItemInInventory(localInventory, "stone_red");
-    const greenOwned = countItemInInventory(localInventory, "stone_green");
 
     invUpgradePanelEl.textContent = "";
     const upgHead = document.createElement("div");
@@ -1990,9 +2083,10 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
     const actionsWrap = document.createElement("div");
     actionsWrap.className = "sm-upgrade-actions";
 
-    const buildUpgradeCard = (stat: WeaponUpgradeStat, ownedStones: number) => {
+    const buildUpgradeCard = (stat: WeaponUpgradeStat) => {
       const prev = computeUpgradePreview(selW, stat, selUpg);
-      const stoneSpec = INVENTORY_ITEMS[prev.stoneId]!;
+      const ownedStones = countItemInInventory(localInventory, prev.stoneId);
+      const tierLabel = UPGRADE_STONE_TIER_LABELS[prev.stoneTier];
       const card = document.createElement("div");
       card.className = "sm-upgrade-card";
 
@@ -2025,7 +2119,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
       head.className = "sm-upgrade-head";
       const headLeft = document.createElement("span");
       headLeft.className = "sm-inline-icon";
-      headLeft.append(makeSpriteIcon("economy", stoneSpec.iconIndex, 20));
+      headLeft.append(makeInventoryItemIcon(prev.stoneId, 20));
       const t = document.createElement("strong");
       t.textContent = statLabel;
       headLeft.append(t);
@@ -2039,7 +2133,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
       if (!prev.atCap) {
         const stoneCost = document.createElement("span");
         stoneCost.className = ownedStones >= prev.stonesRequired ? "is-ok" : "is-short";
-        stoneCost.textContent = `강화석 ${ownedStones}/${prev.stonesRequired}`;
+        stoneCost.textContent = `${tierLabel} 강화석 ${ownedStones}/${prev.stonesRequired}`;
         const coinCost = document.createElement("span");
         coinCost.className = localPlayer.coins >= prev.coinCost ? "is-ok" : "is-short";
         coinCost.textContent = `🪙 ${prev.coinCost.toLocaleString()}`;
@@ -2064,11 +2158,22 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
       return card;
     };
 
-    actionsWrap.append(buildUpgradeCard("atk", redOwned), buildUpgradeCard("dex", greenOwned));
+    actionsWrap.append(buildUpgradeCard("atk"), buildUpgradeCard("dex"));
     invUpgradePanelEl.append(actionsWrap);
 
-    // 4x6 Inventory Grid & Selected Item Bar
+    // Right Panel Tabs: Bag (4x6 + Dismantle) & Smelting (초급/중급/고급)
+    const ownedPowder = countItemInInventory(localInventory, STONE_POWDER_ITEM_ID);
     invSlotCountEl.textContent = `${countUsedSlots()}/${localInventory.length}`;
+    invPowderCountEl.textContent = `가루 ${ownedPowder.toLocaleString()}`;
+    invBagPaneEl.classList.toggle("is-hidden", invRightTab !== "bag");
+    invSmeltPaneEl.classList.toggle("is-hidden", invRightTab !== "smelt");
+    for (const tabBtn of root.querySelectorAll<HTMLButtonElement>("[data-inv-tab]")) {
+      const active = tabBtn.dataset.invTab === invRightTab;
+      tabBtn.classList.toggle("is-active", active);
+      tabBtn.setAttribute("aria-selected", String(active));
+    }
+
+    // 4x6 Inventory Grid & Selected Item Bar (with inline Dismantle for upgrade stones)
     if (selectedInvSlot >= 0 && !localInventory[selectedInvSlot]) {
       selectedInvSlot = localInventory.findIndex((s) => s !== null);
     }
@@ -2085,7 +2190,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
       topRow.className = "sm-detail-row";
       const left = document.createElement("div");
       left.className = "sm-inline-icon";
-      left.append(makeSpriteIcon(spec.sheet, spec.iconIndex, 24));
+      left.append(makeInventoryItemIcon(curSlot.itemId, 24));
       const nm = document.createElement("strong");
       nm.textContent = spec.name;
       const qty = document.createElement("span");
@@ -2097,16 +2202,120 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
       price.textContent = `🪙 ${spec.sellPrice}`;
       topRow.append(left, price);
 
-      const desc = document.createElement("div");
-      desc.className = "sm-detail-meta";
-      desc.textContent = spec.description;
-      invItemDetailEl.append(topRow, desc);
+      if (canDismantleItem(curSlot.itemId)) {
+        const btns = document.createElement("div");
+        btns.className = "sm-action-row";
+        const makeDisBtn = (label: string, q: number) => {
+          const b = document.createElement("button");
+          b.type = "button";
+          b.className = "sm-btn sm-btn-compact";
+          b.textContent = `${label} (+${computeDismantleYield(curSlot.itemId, q)} 가루)`;
+          b.addEventListener("click", () => {
+            actions.sendAction({ type: "dismantleItem", payload: { slotIndex: selectedInvSlot, quantity: q } });
+          });
+          return b;
+        };
+        btns.append(makeDisBtn("1개 분해", 1));
+        if (curSlot.quantity > 1) {
+          btns.append(makeDisBtn(`전체(${curSlot.quantity}) 분해`, curSlot.quantity));
+        }
+        invItemDetailEl.append(topRow, btns);
+      } else if (curSlot.itemId === STONE_POWDER_ITEM_ID) {
+        const actionRow = document.createElement("div");
+        actionRow.className = "sm-detail-row";
+        const desc = document.createElement("span");
+        desc.className = "sm-detail-meta";
+        desc.textContent = spec.description;
+        const goBtn = document.createElement("button");
+        goBtn.type = "button";
+        goBtn.className = "sm-btn sm-btn-primary sm-btn-compact";
+        goBtn.textContent = "제련하기 ▸";
+        goBtn.addEventListener("click", () => {
+          invRightTab = "smelt";
+          renderInventoryDialog();
+        });
+        actionRow.append(desc, goBtn);
+        invItemDetailEl.append(topRow, actionRow);
+      } else {
+        const desc = document.createElement("div");
+        desc.className = "sm-detail-meta";
+        desc.textContent = spec.description;
+        invItemDetailEl.append(topRow, desc);
+      }
     } else {
       const empty = document.createElement("span");
       empty.className = "sm-detail-empty";
       empty.textContent = "아이템 없음";
       invItemDetailEl.append(empty);
     }
+
+    // Smelting Pane (초급 / 중급 / 고급 tier selector + 2x2 recipes + smelt buttons)
+    for (const tierBtn of root.querySelectorAll<HTMLButtonElement>("[data-smelt-tier]")) {
+      tierBtn.classList.toggle("is-active", Number(tierBtn.dataset.smeltTier) === selectedSmeltTier);
+    }
+    const tierRecipes = SMELTING_RECIPES.filter((r) => r.tier === selectedSmeltTier);
+    if (!tierRecipes.some((r) => r.id === selectedSmeltRecipeId)) {
+      selectedSmeltRecipeId = tierRecipes[0]!.id;
+    }
+    invSmeltGridEl.textContent = "";
+    for (const recipe of tierRecipes) {
+      const outSpec = INVENTORY_ITEMS[recipe.outputItemId]!;
+      const card = document.createElement("button");
+      card.type = "button";
+      card.className = `sm-smelt-card${recipe.id === selectedSmeltRecipeId ? " is-selected" : ""}`;
+      card.append(makeInventoryItemIcon(recipe.outputItemId, 30));
+      const info = document.createElement("div");
+      info.className = "sm-smelt-info";
+      const nm = document.createElement("strong");
+      nm.textContent = outSpec.name;
+      const cost = document.createElement("span");
+      cost.textContent = `가루 ${recipe.powderCost} · 🪙 ${recipe.coinCost}`;
+      info.append(nm, cost);
+      card.append(info);
+      card.addEventListener("click", () => {
+        selectedSmeltRecipeId = recipe.id;
+        renderInventoryDialog();
+      });
+      invSmeltGridEl.append(card);
+    }
+
+    invSmeltDetailEl.textContent = "";
+    const curRecipe = SMELTING_RECIPES_BY_ID[selectedSmeltRecipeId] ?? tierRecipes[0]!;
+    const curOutSpec = INVENTORY_ITEMS[curRecipe.outputItemId]!;
+    const ownedOut = countItemInInventory(localInventory, curRecipe.outputItemId);
+    const smeltTop = document.createElement("div");
+    smeltTop.className = "sm-detail-row";
+    const smeltLeft = document.createElement("div");
+    smeltLeft.className = "sm-inline-icon";
+    smeltLeft.append(makeInventoryItemIcon(curRecipe.outputItemId, 24));
+    const smeltNm = document.createElement("strong");
+    smeltNm.textContent = curOutSpec.name;
+    const smeltOwned = document.createElement("span");
+    smeltOwned.className = "sm-count-badge";
+    smeltOwned.textContent = `보유 ${ownedOut}`;
+    smeltLeft.append(smeltNm, smeltOwned);
+    const smeltNeed = document.createElement("span");
+    smeltNeed.className = "sm-price-tag";
+    smeltNeed.textContent = `가루 ${curRecipe.powderCost} + 🪙 ${curRecipe.coinCost}`;
+    smeltTop.append(smeltLeft, smeltNeed);
+
+    const smeltBtns = document.createElement("div");
+    smeltBtns.className = "sm-action-row";
+    const makeSmeltBtn = (qty: number) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "sm-btn sm-btn-primary sm-btn-compact";
+      const pCost = curRecipe.powderCost * qty;
+      const cCost = curRecipe.coinCost * qty;
+      b.disabled = ownedPowder < pCost || localPlayer.coins < cCost;
+      b.textContent = `${qty}개 제련 (가루 ${pCost} · 🪙 ${cCost.toLocaleString()})`;
+      b.addEventListener("click", () => {
+        actions.sendAction({ type: "smeltStone", payload: { recipeId: curRecipe.id, quantity: qty } });
+      });
+      return b;
+    };
+    smeltBtns.append(makeSmeltBtn(1), makeSmeltBtn(5));
+    invSmeltDetailEl.append(smeltTop, smeltBtns);
   }
 
   function renderShopDialog(): void {
@@ -2130,7 +2339,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
       row.className = "sm-detail-row";
       const left = document.createElement("div");
       left.className = "sm-inline-icon";
-      left.append(makeSpriteIcon(spec.sheet, spec.iconIndex, 24));
+      left.append(makeInventoryItemIcon(sellSlot.itemId, 24));
       const title = document.createElement("strong");
       title.textContent = `${spec.name} ×${sellSlot.quantity}`;
       left.append(title);
@@ -2242,6 +2451,26 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
     if (!shopDialog.open) shopDialog.showModal();
     syncChatAvailability();
     syncMenuMode();
+  }
+
+  // Inventory right-panel tab & smelting tier selectors
+  for (const tabBtn of root.querySelectorAll<HTMLButtonElement>("[data-inv-tab]")) {
+    tabBtn.addEventListener("click", () => {
+      const next = tabBtn.dataset.invTab === "smelt" ? "smelt" : "bag";
+      if (invRightTab !== next) {
+        invRightTab = next;
+        renderInventoryDialog();
+      }
+    });
+  }
+  for (const tierBtn of root.querySelectorAll<HTMLButtonElement>("[data-smelt-tier]")) {
+    tierBtn.addEventListener("click", () => {
+      const t = Number(tierBtn.dataset.smeltTier);
+      if (t === 1 || t === 2 || t === 3) {
+        selectedSmeltTier = t;
+        renderInventoryDialog();
+      }
+    });
   }
 
   // Toolbar event handlers
