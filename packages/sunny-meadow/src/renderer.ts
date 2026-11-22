@@ -2320,15 +2320,16 @@ export class SunnyRenderer {
     ctx.font = 'bold 10px "Pretendard", sans-serif';
     ctx.fillText(`EXP ${p.xp.toLocaleString()} / ${p.xpToNext.toLocaleString()}`, barX + barW * 0.5, 46);
 
-    // ATK / DEX + Potions + Inventory trigger chip
+    // Attack Power / Attack Speed + Potions + Inventory trigger chip
     const eqUpgrade = getWeaponUpgrade(p.weaponUpgrades, wObj.id);
     const combatStats = computeEffectiveCombatStats(wObj, p.baseAtk, p.baseDex, eqUpgrade);
+    const atkRateText = (1 / combatStats.cooldownSec).toFixed(1);
     ctx.textAlign = "left";
     ctx.font = 'bold 11px "Pretendard", sans-serif';
     ctx.fillStyle = "#FFE082";
-    ctx.fillText(`ATK ${combatStats.totalAtk}`, barX, 71);
+    ctx.fillText(`공격 ${combatStats.totalAtk}`, barX, 71);
     ctx.fillStyle = "#A5D6A7";
-    ctx.fillText(`DEX ${combatStats.totalDex}`, barX + 52, 71);
+    ctx.fillText(`공속 ${atkRateText}`, barX + 52, 71);
     if (sheet) {
       ctx.drawImage(sheet, 96, 0, 96, 96, barX + 100, 59, 20, 20);
     }
@@ -2575,7 +2576,7 @@ export class SunnyRenderer {
     }
     const traitText = traits.length > 0 ? ` · ★ ${traits.join(" + ")}` : "";
     const upgTag = combatStats.totalLevel > 0 ? ` +${combatStats.totalLevel}` : "";
-    const wInfo = `${wObj.name}${upgTag} · ATK ${combatStats.totalAtk} · DEX ${combatStats.totalDex}${traitText}`;
+    const wInfo = `${wObj.name}${upgTag} · 공격력 ${combatStats.totalAtk} · 공속 ${atkRateText}/초${traitText}`;
     ctx.strokeText(wInfo, W * 0.5, barTop - 10);
     ctx.fillStyle = "#FFF8E1";
     ctx.fillText(wInfo, W * 0.5, barTop - 10);

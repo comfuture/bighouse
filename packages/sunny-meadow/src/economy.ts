@@ -42,7 +42,7 @@ export const INVENTORY_ITEMS: Record<string, InventoryItemSpec> = {
     buyPrice: 60,
     sellPrice: 15,
     upgradeStat: "atk",
-    description: "ATK 강화 재료"
+    description: "공격력 강화 재료"
   },
   stone_green: {
     id: "stone_green",
@@ -56,7 +56,7 @@ export const INVENTORY_ITEMS: Record<string, InventoryItemSpec> = {
     buyPrice: 55,
     sellPrice: 14,
     upgradeStat: "dex",
-    description: "DEX 강화 재료"
+    description: "공격속도 강화 재료"
   },
   stone_blue: {
     id: "stone_blue",
@@ -123,7 +123,7 @@ export const SHOP_OFFERS: readonly ShopOffer[] = [
     sheet: "economy",
     iconIndex: 5,
     color: "#FF5252",
-    description: "ATK 강화 재료"
+    description: "공격력 강화 재료"
   },
   {
     id: "offer_stone_green",
@@ -135,7 +135,7 @@ export const SHOP_OFFERS: readonly ShopOffer[] = [
     sheet: "economy",
     iconIndex: 2,
     color: "#69F0AE",
-    description: "DEX 강화 재료"
+    description: "공격속도 강화 재료"
   },
   {
     id: "offer_stone_blue",

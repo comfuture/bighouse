@@ -1337,7 +1337,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
 
     if (ev.type === "sunny.weaponUpgraded" && p.playerId === ctx.playerId) {
       const wName = String(p.weaponName ?? "무기");
-      const stat = p.stat === "dex" ? "DEX" : "ATK";
+      const stat = p.stat === "dex" ? "공격속도" : "공격력";
       const ok = Boolean(p.success);
       const tot = Number(p.totalLevel ?? 0);
       if (ok) {
@@ -1908,13 +1908,14 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
     invHeroMetaEl.append(topLine, meters);
 
     invStatsEl.textContent = "";
+    const attacksPerSec = (1 / eqCombat.cooldownSec).toFixed(1);
     const stats: Array<[string, string]> = [
-      ["ATK", eqCombat.atkBonus > 0 ? `${eqCombat.totalAtk} (+${eqCombat.atkBonus})` : String(eqCombat.totalAtk)],
-      ["DEX", eqCombat.dexBonus > 0 ? `${eqCombat.totalDex} (+${eqCombat.dexBonus})` : String(eqCombat.totalDex)],
+      ["공격력", eqCombat.atkBonus > 0 ? `${eqCombat.totalAtk} (+${eqCombat.atkBonus})` : String(eqCombat.totalAtk)],
+      ["공격속도", `${attacksPerSec}/초`],
       ["치명타", `${Math.round(eqCombat.critChance * 100)}%`],
-      ["공속", `${eqCombat.cooldownSec.toFixed(2)}s`],
       ["포션", `×${localPlayer.potions}`],
-      ["처치", localPlayer.mobsDefeated.toLocaleString()]
+      ["처치", localPlayer.mobsDefeated.toLocaleString()],
+      ["점수", localPlayer.score.toLocaleString()]
     ];
     for (const [label, val] of stats) {
       const card = document.createElement("div");
@@ -1940,7 +1941,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
       const btn = document.createElement("button");
       btn.type = "button";
       btn.className = `sm-weapon-tile${isEq ? " is-equipped" : ""}${isSel ? " is-selected" : ""}`;
-      btn.title = `${w.name}${tot > 0 ? ` +${tot}` : ""} · ATK ${w.atk}${upg.atkLevel > 0 ? `(+${upg.atkLevel})` : ""}${upg.dexLevel > 0 ? ` · DEX+${upg.dexLevel * 2}` : ""}`;
+      btn.title = `${w.name}${tot > 0 ? ` +${tot}` : ""} · 공격력 ${w.atk}${upg.atkLevel > 0 ? ` (+${upg.atkLevel}강)` : ""}${upg.dexLevel > 0 ? ` · 공격속도 +${upg.dexLevel}강` : ""}`;
       if (isEq) {
         const eqTag = document.createElement("span");
         eqTag.className = "sm-weapon-badge is-eq";
@@ -1968,7 +1969,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
       invWeaponsEl.append(btn);
     }
 
-    // Weapon Enhancement Station (Red Stone -> ATK, Green Stone -> DEX)
+    // Weapon Enhancement Station (Red Stone -> Attack Power, Green Stone -> Attack Speed & Crit)
     const selW = WEAPON_CATALOG[selectedUpgradeWeaponId] ?? eqW;
     const selUpg = getWeaponUpgrade(localPlayer.weaponUpgrades, selW.id);
     const selCombat = computeEffectiveCombatStats(selW, localPlayer.baseAtk, localPlayer.baseDex, selUpg);
@@ -1995,13 +1996,38 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
       const card = document.createElement("div");
       card.className = "sm-upgrade-card";
 
+      let statLabel: string;
+      let btnLabel: string;
+      if (stat === "atk") {
+        statLabel = prev.atCap ? "공격력" : `공격력 +${prev.statGain}`;
+        btnLabel = prev.atCap ? "MAX" : "공격력 강화";
+      } else {
+        const nextCombat = computeEffectiveCombatStats(selW, localPlayer.baseAtk, localPlayer.baseDex, {
+          ...selUpg,
+          dexLevel: selUpg.dexLevel + 1
+        });
+        const speedGainPct = Math.round(((selCombat.cooldownSec / nextCombat.cooldownSec) - 1) * 1000) / 10;
+        const critGainPct = Math.round((nextCombat.critChance - selCombat.critChance) * 1000) / 10;
+        if (prev.atCap) {
+          statLabel = "공격속도";
+        } else if (speedGainPct > 0) {
+          statLabel = `공격속도 +${speedGainPct.toFixed(1)}%`;
+        } else if (critGainPct > 0) {
+          statLabel = `치명타 +${critGainPct.toFixed(1)}%`;
+        } else {
+          statLabel = "공격속도";
+        }
+        btnLabel = prev.atCap ? "MAX" : "공격속도 강화";
+        card.title = "공격속도 및 치명타 확률 상승";
+      }
+
       const head = document.createElement("div");
       head.className = "sm-upgrade-head";
       const headLeft = document.createElement("span");
       headLeft.className = "sm-inline-icon";
       headLeft.append(makeSpriteIcon("economy", stoneSpec.iconIndex, 20));
       const t = document.createElement("strong");
-      t.textContent = prev.atCap ? stat.toUpperCase() : `${stat.toUpperCase()} +${prev.statGain}`;
+      t.textContent = statLabel;
       headLeft.append(t);
       const rate = document.createElement("span");
       rate.className = "sm-rate-pill";
@@ -2013,7 +2039,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
       if (!prev.atCap) {
         const stoneCost = document.createElement("span");
         stoneCost.className = ownedStones >= prev.stonesRequired ? "is-ok" : "is-short";
-        stoneCost.textContent = `석 ${ownedStones}/${prev.stonesRequired}`;
+        stoneCost.textContent = `강화석 ${ownedStones}/${prev.stonesRequired}`;
         const coinCost = document.createElement("span");
         coinCost.className = localPlayer.coins >= prev.coinCost ? "is-ok" : "is-short";
         coinCost.textContent = `🪙 ${prev.coinCost.toLocaleString()}`;
@@ -2025,7 +2051,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
       btn.className = "sm-btn sm-btn-primary sm-btn-compact";
       const canAfford = !prev.atCap && ownedStones >= prev.stonesRequired && localPlayer.coins >= prev.coinCost;
       btn.disabled = !canAfford;
-      btn.textContent = prev.atCap ? "MAX" : `${stat.toUpperCase()} 강화`;
+      btn.textContent = btnLabel;
       btn.addEventListener("click", () => {
         if (!canAfford) return;
         actions.sendAction({
