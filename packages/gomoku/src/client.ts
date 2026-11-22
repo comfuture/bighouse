@@ -2,6 +2,8 @@ import "./style.css";
 import type { GameClientContext, GameClientSnapshot, MountedGameClient, PlayerSeat } from "@bighouse/game-sdk/client";
 import { triggerPlacementFeedback } from "@bighouse/game-sdk/feedback";
 import { createGameUi, type GameResultDialogState } from "@bighouse/ui";
+import { GomokuAudioManager } from "./audio";
+import { GomokuCanvasRenderer } from "./renderer";
 import { placementProblem, type Board, type GomokuStatus, type Point, type Stone } from "./rules";
 export { gameMetadata } from "./client-metadata";
 
@@ -56,69 +58,159 @@ function createGomokuBoard(
   // Local clock reading at which the current turn runs out, set from each fresh snapshot.
   let turnEndsAt = turnEndFor(view);
   let scrollFrame = 0;
+  let turnChimeTimer: number | null = null;
+  let hoveredCell: Point | null = null;
+  let builtBoardSize = -1;
+  let cells: HTMLButtonElement[] = [];
+  let recentLocalPlacement: { key: string; at: number } | null = null;
+
+  const audio = new GomokuAudioManager();
 
   const surface = document.createElement("div");
   surface.className = "game-contained-surface gomoku-game";
   container.replaceChildren(surface);
   surface.innerHTML = `
-    <div class="gomoku-status" data-role="status"></div>
+    <div class="gomoku-status" data-role="status">
+      <div class="gomoku-status-main">
+        <span class="gomoku-turn-stone" data-role="turn-stone" aria-hidden="true"></span>
+        <span class="gomoku-status-text" data-role="status-text"></span>
+      </div>
+      <button type="button" class="gomoku-mute-toggle" data-role="mute-toggle"></button>
+    </div>
     <div class="gomoku-stage" data-role="stage">
       <div class="gomoku-board" data-role="board" aria-label="Gomoku board"></div>
     </div>
   `;
-  const statusElement = surface.querySelector<HTMLElement>("[data-role='status']")!;
+  const statusTextElement = surface.querySelector<HTMLElement>("[data-role='status-text']")!;
+  const turnStoneElement = surface.querySelector<HTMLElement>("[data-role='turn-stone']")!;
+  const muteToggleButton = surface.querySelector<HTMLButtonElement>("[data-role='mute-toggle']")!;
   const stageElement = surface.querySelector<HTMLElement>("[data-role='stage']")!;
   const boardElement = surface.querySelector<HTMLElement>("[data-role='board']")!;
 
-  function canPlace(x: number, y: number): boolean {
-    const { publicView, privateView, playerId, active } = view;
+  const renderer = new GomokuCanvasRenderer(boardElement, {
+    boardSize: view.publicView.boardSize,
+    board: view.publicView.board,
+    lastMove: view.publicView.lastMove,
+    hoveredCell: null,
+    hoverStone: null,
+    won: view.publicView.status.kind === "won"
+  });
+
+  function syncMuteButton(): void {
+    muteToggleButton.textContent = audio.muted ? "🔇 음소거" : "🔊 사운드";
+    muteToggleButton.setAttribute("aria-label", audio.muted ? "사운드 켜기" : "사운드 끄기");
+    muteToggleButton.classList.toggle("is-muted", audio.muted);
+  }
+
+  const unlockAudioOnGesture = (): void => {
+    void audio.unlock();
+  };
+  surface.addEventListener("pointerdown", unlockAudioOnGesture, { capture: true, passive: true });
+  surface.addEventListener("keydown", unlockAudioOnGesture, { capture: true, passive: true });
+
+  muteToggleButton.addEventListener("mousedown", preventButtonFocus);
+  muteToggleButton.addEventListener("click", (event) => {
+    event.preventDefault();
+    void audio.unlock();
+    audio.toggleMute();
+    syncMuteButton();
+  });
+
+  function isMyActiveTurn(v: GomokuView): boolean {
     return (
-      active &&
-      publicView.status.kind === "playing" &&
-      publicView.status.playerId === playerId &&
+      v.active &&
+      v.publicView.status.kind === "playing" &&
+      v.publicView.status.playerId === v.playerId
+    );
+  }
+
+  function canPlace(x: number, y: number): boolean {
+    const { publicView, privateView } = view;
+    return (
+      isMyActiveTurn(view) &&
       privateView.stone !== undefined &&
       placementProblem(publicView.board, x, y, privateView.stone) === null
     );
   }
 
-  function renderStatus(): void {
-    statusElement.textContent = statusText(view, turnEndsAt);
+  function updateHover(nextCell: Point | null): void {
+    hoveredCell = nextCell;
+    const hoverStone =
+      nextCell && canPlace(nextCell.x, nextCell.y) ? (view.privateView.stone ?? null) : null;
+    renderer.setHover(hoverStone ? nextCell : null, hoverStone);
   }
 
-  function render(): void {
-    const { publicView } = view;
-    renderStatus();
-    boardElement.style.setProperty("--board-size", String(publicView.boardSize));
-    const scroll = { left: stageElement.scrollLeft, top: stageElement.scrollTop, x: window.scrollX, y: window.scrollY };
-    boardElement.innerHTML = "";
+  const onBoardPointerLeave = (): void => {
+    updateHover(null);
+  };
+  boardElement.addEventListener("pointerleave", onBoardPointerLeave);
 
-    for (let y = 0; y < publicView.boardSize; y += 1) {
-      for (let x = 0; x < publicView.boardSize; x += 1) {
+  // Disabled buttons do not emit click events; provide subtle forbidden wood-knock on blocked cells during your turn.
+  const onBoardPointerDown = (event: PointerEvent): void => {
+    if (!isMyActiveTurn(view)) return;
+    const target = event.target as HTMLElement | null;
+    if (!target || !target.classList.contains("gomoku-cell")) return;
+    if (target.classList.contains("is-blocked")) {
+      void audio.unlock();
+      audio.playSfx("sfx_forbidden");
+    }
+  };
+  boardElement.addEventListener("pointerdown", onBoardPointerDown);
+
+  function renderStatus(): void {
+    statusTextElement.textContent = statusText(view, turnEndsAt);
+    const activeStone = currentTurnStone(view);
+    turnStoneElement.className = activeStone
+      ? `gomoku-turn-stone is-${activeStone}`
+      : "gomoku-turn-stone is-hidden";
+  }
+
+  function rebuildCells(boardSize: number): void {
+    const scroll = { left: stageElement.scrollLeft, top: stageElement.scrollTop, x: window.scrollX, y: window.scrollY };
+    for (const existing of cells) {
+      existing.remove();
+    }
+    cells = [];
+    renderer.ensureMounted();
+
+    const fragment = document.createDocumentFragment();
+    for (let y = 0; y < boardSize; y += 1) {
+      for (let x = 0; x < boardSize; x += 1) {
         const cell = document.createElement("button");
-        const value = publicView.board[y]?.[x] ?? null;
-        const legal = canPlace(x, y);
-        const isLast = publicView.lastMove?.x === x && publicView.lastMove.y === y;
         cell.type = "button";
-        cell.className = [
-          "gomoku-cell",
-          value ? `is-${value}` : "is-empty",
-          legal ? "is-legal" : "is-blocked",
-          isLast ? "is-last" : ""
-        ].join(" ");
         cell.dataset.gameElastic = "off";
-        cell.disabled = !legal;
-        cell.ariaLabel = value ? `${value} stone at ${x + 1}, ${y + 1}` : `empty ${x + 1}, ${y + 1}`;
         cell.addEventListener("mousedown", preventButtonFocus);
+        cell.addEventListener("pointerenter", () => updateHover({ x, y }));
+        cell.addEventListener("focus", () => updateHover({ x, y }));
+        cell.addEventListener("blur", () => {
+          if (hoveredCell?.x === x && hoveredCell.y === y) {
+            updateHover(null);
+          }
+        });
         cell.addEventListener("click", (event) => {
           event.preventDefault();
           cell.blur();
-          if (!canPlace(x, y)) return;
+          void audio.unlock();
+          if (!canPlace(x, y)) {
+            if (isMyActiveTurn(view)) {
+              audio.playSfx("sfx_forbidden");
+            }
+            return;
+          }
+          const myStone = view.privateView.stone ?? "black";
+          recentLocalPlacement = { key: `${x},${y}`, at: performance.now() };
           triggerPlacementFeedback();
+          audio.playSfx("sfx_stone_place");
+          renderer.notifyStonePlaced(x, y, myStone);
+          updateHover(null);
           placeStone({ x, y });
         });
-        boardElement.append(cell);
+        cells.push(cell);
+        fragment.append(cell);
       }
     }
+    boardElement.append(fragment);
+    builtBoardSize = boardSize;
 
     // Rebuilding the cells can move the scroll position; put it back now and after layout.
     const restore = (): void => {
@@ -131,6 +223,47 @@ function createGomokuBoard(
     scrollFrame = requestAnimationFrame(restore);
   }
 
+  function render(): void {
+    const { publicView } = view;
+    renderStatus();
+    boardElement.style.setProperty("--board-size", String(publicView.boardSize));
+
+    if (builtBoardSize !== publicView.boardSize) {
+      rebuildCells(publicView.boardSize);
+    }
+
+    let idx = 0;
+    for (let y = 0; y < publicView.boardSize; y += 1) {
+      for (let x = 0; x < publicView.boardSize; x += 1) {
+        const cell = cells[idx++];
+        if (!cell) continue;
+        const value = publicView.board[y]?.[x] ?? null;
+        const legal = canPlace(x, y);
+        const isLast = publicView.lastMove?.x === x && publicView.lastMove.y === y;
+        cell.className = [
+          "gomoku-cell",
+          value ? `is-${value}` : "is-empty",
+          legal ? "is-legal" : "is-blocked",
+          isLast ? "is-last" : ""
+        ].join(" ");
+        cell.disabled = !legal;
+        cell.ariaLabel = value ? `${value} stone at ${x + 1}, ${y + 1}` : `empty ${x + 1}, ${y + 1}`;
+      }
+    }
+
+    const hoverStone =
+      hoveredCell && canPlace(hoveredCell.x, hoveredCell.y) ? (view.privateView.stone ?? null) : null;
+    renderer.setState({
+      boardSize: publicView.boardSize,
+      board: publicView.board,
+      lastMove: publicView.lastMove,
+      hoveredCell: hoverStone ? hoveredCell : null,
+      hoverStone,
+      won: publicView.status.kind === "won"
+    });
+  }
+
+  syncMuteButton();
   render();
   const countdown = window.setInterval(renderStatus, 500);
 
@@ -138,16 +271,111 @@ function createGomokuBoard(
     update(next) {
       // The host also calls this for chat and presence with the same snapshot; only a new version changes the board.
       if (next.version === view.version) return;
+      const prev = view;
       view = next;
       turnEndsAt = turnEndFor(view);
+
+      if (next.publicView.moveCount === 0) {
+        recentLocalPlacement = null;
+      }
+
+      // Detect newly added stones (both own and opponent's)
+      const addedStones = diffAddedStones(prev.publicView.board, next.publicView.board);
+      let playedStoneSound = false;
+      const now = performance.now();
+      for (const added of addedStones) {
+        const key = `${added.x},${added.y}`;
+        const wasJustLocal =
+          recentLocalPlacement !== null &&
+          recentLocalPlacement.key === key &&
+          now - recentLocalPlacement.at < 2000;
+        if (wasJustLocal) {
+          recentLocalPlacement = null;
+          continue;
+        }
+        renderer.notifyStonePlaced(added.x, added.y, added.stone);
+        if (!playedStoneSound) {
+          audio.playSfx("sfx_stone_place");
+          playedStoneSound = true;
+        }
+      }
+
+      // Detect game completion SFX
+      const prevKind = prev.publicView.status.kind;
+      const nextStatus = next.publicView.status;
+      if (prevKind !== nextStatus.kind) {
+        if (nextStatus.kind === "won") {
+          audio.playSfx(nextStatus.winnerPlayerId === next.playerId ? "sfx_win" : "sfx_lose");
+        } else if (nextStatus.kind === "draw") {
+          audio.playSfx("sfx_draw");
+        }
+      }
+
+      // Detect transition into our active turn
+      const wasMyTurn = isMyActiveTurn(prev);
+      const isNowMyTurn = isMyActiveTurn(next);
+      if (!wasMyTurn && isNowMyTurn) {
+        if (turnChimeTimer !== null) {
+          window.clearTimeout(turnChimeTimer);
+          turnChimeTimer = null;
+        }
+        const delayMs = playedStoneSound ? 180 : 0;
+        if (delayMs > 0) {
+          turnChimeTimer = window.setTimeout(() => {
+            turnChimeTimer = null;
+            audio.playSfx("sfx_turn_chime");
+          }, delayMs);
+        } else {
+          audio.playSfx("sfx_turn_chime");
+        }
+      }
+
       render();
     },
     destroy() {
       window.clearInterval(countdown);
+      if (turnChimeTimer !== null) {
+        window.clearTimeout(turnChimeTimer);
+        turnChimeTimer = null;
+      }
       cancelAnimationFrame(scrollFrame);
+      surface.removeEventListener("pointerdown", unlockAudioOnGesture, { capture: true });
+      surface.removeEventListener("keydown", unlockAudioOnGesture, { capture: true });
+      boardElement.removeEventListener("pointerleave", onBoardPointerLeave);
+      boardElement.removeEventListener("pointerdown", onBoardPointerDown);
+      renderer.destroy();
+      audio.destroy();
       surface.remove();
     }
   };
+}
+
+function diffAddedStones(prevBoard: Board, nextBoard: Board): Array<Point & { stone: Stone }> {
+  const added: Array<Point & { stone: Stone }> = [];
+  if (prevBoard.length !== nextBoard.length) return added;
+  for (let y = 0; y < nextBoard.length; y += 1) {
+    const prevRow = prevBoard[y];
+    const nextRow = nextBoard[y];
+    if (!prevRow || !nextRow || prevRow.length !== nextRow.length) continue;
+    for (let x = 0; x < nextRow.length; x += 1) {
+      const nextStone = nextRow[x];
+      if (prevRow[x] === null && (nextStone === "black" || nextStone === "white")) {
+        added.push({ x, y, stone: nextStone });
+      }
+    }
+  }
+  return added;
+}
+
+function currentTurnStone(view: GomokuView): Stone | null {
+  const { status, moveCount } = view.publicView;
+  if (status.kind === "playing" && view.active) {
+    if (status.playerId === view.playerId && view.privateView.stone) {
+      return view.privateView.stone;
+    }
+    return moveCount % 2 === 0 ? "black" : "white";
+  }
+  return null;
 }
 
 function preventButtonFocus(event: MouseEvent): void {
