@@ -65,6 +65,10 @@
 
 <script setup lang="ts">
 import { toDataURL } from "qrcode";
+import {
+  lockMobileLandscapeCcwBestEffort,
+  unlockScreenOrientationBestEffort
+} from "../utils/screenOrientation";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, toRaw, watch } from "vue";
 import { onBeforeRouteLeave, useRoute, useRouter } from "vue-router";
 import type {
@@ -324,26 +328,12 @@ function isMobileDevice(): boolean {
   return navigator.maxTouchPoints > 0 || window.matchMedia("(pointer: coarse)").matches;
 }
 
-type LockableScreenOrientation = ScreenOrientation & {
-  lock?: (orientation: "landscape") => Promise<void>;
-};
-
 async function lockLandscapeBestEffort(): Promise<void> {
-  const orientation = screen.orientation as LockableScreenOrientation | undefined;
-  if (typeof orientation?.lock !== "function") return;
-  try {
-    await orientation.lock("landscape");
-  } catch {
-    // Orientation locking is optional and commonly rejected by mobile browsers.
-  }
+  await lockMobileLandscapeCcwBestEffort();
 }
 
 function unlockScreenOrientation(): void {
-  try {
-    screen.orientation?.unlock();
-  } catch {
-    // Orientation unlocking is best effort for browsers with partial support.
-  }
+  unlockScreenOrientationBestEffort();
 }
 
 async function releaseOwnedFullscreen(): Promise<void> {
