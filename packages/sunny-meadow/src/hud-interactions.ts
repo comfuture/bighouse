@@ -25,6 +25,75 @@ export const HUD_COIN_HITBOX: HudRect = {
 
 export type HudActionTarget = "inventory" | "shop";
 
+export const HUD_WEAPON_BAR_LAYOUT = {
+  maxVisible: 6,
+  slotSize: 42,
+  gap: 7,
+  padX: 9,
+  padY: 3,
+  barHeight: 48,
+  barBottomOffset: 58
+} as const;
+
+export type WeaponSlotHitbox = {
+  readonly weaponId: string;
+  readonly rect: HudRect;
+};
+
+/**
+ * Computes the logical canvas rectangles for the bottom-center unlocked weapon bar
+ * and each visible weapon slot (shared by renderer and touch/click hit-testing).
+ */
+export function computeWeaponSlotHitboxes(unlockedWeapons: readonly string[]): {
+  barRect: HudRect;
+  slots: WeaponSlotHitbox[];
+} {
+  const { maxVisible, slotSize, gap, padX, padY, barHeight, barBottomOffset } = HUD_WEAPON_BAR_LAYOUT;
+  const visible = unlockedWeapons.slice(-maxVisible);
+  const totalW = visible.length * slotSize + Math.max(0, visible.length - 1) * gap + padX * 2;
+  const barLeft = VIEWPORT.width * 0.5 - totalW * 0.5;
+  const barTop = VIEWPORT.height - barBottomOffset;
+  const slots: WeaponSlotHitbox[] = visible.map((weaponId, idx) => ({
+    weaponId,
+    rect: {
+      x: barLeft + padX + idx * (slotSize + gap),
+      y: barTop + padY,
+      w: slotSize,
+      h: slotSize
+    }
+  }));
+  return {
+    barRect: { x: barLeft, y: barTop, w: totalW, h: barHeight },
+    slots
+  };
+}
+
+/**
+ * Hit-tests a logical canvas point against the bottom-center weapon slots,
+ * applying a small non-overlapping touch cushion around each slot.
+ */
+export function hitTestWeaponSlotPoint(
+  logicalX: number,
+  logicalY: number,
+  unlockedWeapons: readonly string[]
+): string | null {
+  const { slots } = computeWeaponSlotHitboxes(unlockedWeapons);
+  const padX = 3;
+  const padY = 6;
+  for (const slot of slots) {
+    const r = slot.rect;
+    if (
+      logicalX >= r.x - padX &&
+      logicalX <= r.x + r.w + padX &&
+      logicalY >= r.y - padY &&
+      logicalY <= r.y + r.h + padY
+    ) {
+      return slot.weaponId;
+    }
+  }
+  return null;
+}
+
 export function isPointInRect(x: number, y: number, rect: HudRect): boolean {
   return x >= rect.x && x <= rect.x + rect.w && y >= rect.y && y <= rect.y + rect.h;
 }

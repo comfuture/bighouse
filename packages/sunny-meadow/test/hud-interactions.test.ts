@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   clientPointToCanvasLogical,
+  computeWeaponSlotHitboxes,
   createHudClickController,
   hitTestHudPoint,
+  hitTestWeaponSlotPoint,
   HUD_COIN_HITBOX,
   HUD_STATUS_HITBOX
 } from "../src/hud-interactions";
@@ -64,5 +66,30 @@ describe("@bighouse/sunny-meadow HUD hitboxes & click activation", () => {
     // Non-primary mouse button rejects activation rather than clearing the guard
     ctrl.onPointerDown("shop", 2);
     expect(ctrl.onClick("shop")).toBeNull();
+  });
+
+  it("computes bottom-center weapon slot hitboxes and resolves direct touch/click targets", () => {
+    const unlocked = ["wooden_sword", "leaf_blade", "star_wand", "golden_hammer"];
+    const { barRect, slots } = computeWeaponSlotHitboxes(unlocked);
+
+    expect(slots).toHaveLength(4);
+    expect(barRect.y).toBe(518);
+    expect(barRect.h).toBe(48);
+
+    // Every slot center hits its exact weaponId without overlapping neighbors
+    for (const slot of slots) {
+      expect(
+        hitTestWeaponSlotPoint(slot.rect.x + slot.rect.w / 2, slot.rect.y + slot.rect.h / 2, unlocked)
+      ).toBe(slot.weaponId);
+    }
+
+    // Outside weapon bar returns null
+    expect(hitTestWeaponSlotPoint(480, 200, unlocked)).toBeNull();
+    expect(hitTestWeaponSlotPoint(barRect.x - 20, barRect.y + 20, unlocked)).toBeNull();
+
+    // More than 6 unlocked weapons displays only the latest 6 slots (matching renderer)
+    const eight = ["w1", "w2", "w3", "w4", "w5", "w6", "w7", "w8"];
+    const capped = computeWeaponSlotHitboxes(eight);
+    expect(capped.slots.map((s) => s.weaponId)).toEqual(["w3", "w4", "w5", "w6", "w7", "w8"]);
   });
 });

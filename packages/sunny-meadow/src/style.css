@@ -154,6 +154,26 @@
   pointer-events: none;
 }
 
+.sm-hud-weapon-bar {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 4;
+}
+
+.sm-hud-weapon-slot {
+  pointer-events: auto;
+  border-radius: 8px;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.sm-hud-weapon-slot::after {
+  content: "";
+  position: absolute;
+  inset: -8px -2px;
+}
+
 .sm-footer {
   width: min(100%, 992px);
   display: flex;
@@ -195,7 +215,7 @@
   left: 0;
   top: 26%;
   bottom: 0;
-  width: 46%;
+  width: 36%;
   pointer-events: auto;
   touch-action: none;
   -webkit-user-select: none;
@@ -345,20 +365,14 @@
 }
 
 .sm-action-btn-potion {
+  grid-column: 2;
+  justify-self: center;
   background: rgba(194, 24, 91, 0.48);
   border-color: rgba(255, 212, 228, 0.78);
 }
 
-.sm-action-btn-weapon {
-  background: rgba(25, 118, 210, 0.46);
-  border-color: rgba(204, 234, 255, 0.76);
-}
-
-.sm-action-btn-weapon.is-dimmed {
-  opacity: 0.48;
-}
-
 .sm-action-btn-jump {
+  grid-column: 1;
   width: 62px;
   height: 62px;
   background: rgba(46, 125, 50, 0.54);
@@ -370,6 +384,7 @@
 }
 
 .sm-action-btn-attack {
+  grid-column: 2;
   width: 68px;
   height: 68px;
   background: rgba(216, 67, 21, 0.56);
@@ -395,10 +410,6 @@
 
 .sm-action-btn-potion.is-pressed {
   background: rgba(236, 64, 122, 0.58);
-}
-
-.sm-action-btn-weapon.is-pressed {
-  background: rgba(66, 165, 245, 0.56);
 }
 
 .sm-action-badge {
@@ -606,7 +617,7 @@
 
   :fullscreen .sm-joypad-zone {
     top: 26%;
-    width: 46%;
+    width: 36%;
   }
 }
 

@@ -43,7 +43,7 @@ import {
   computeEffectiveCombatStats,
   getWeaponUpgrade
 } from "./economy";
-import { HUD_COIN_HITBOX, HUD_STATUS_HITBOX } from "./hud-interactions";
+import { computeWeaponSlotHitboxes, HUD_COIN_HITBOX, HUD_STATUS_HITBOX } from "./hud-interactions";
 import type { CompiledStage, RuntimeDecoration, RuntimePlatform, RuntimePortal } from "./map-schema";
 import { computeXpEfficiency } from "./progression";
 import type { ActiveStatusEffect, RemotePlayerView, StageTheme, StatusEffectKind, WeaponUpgradeState } from "./types";
@@ -277,6 +277,7 @@ export type RenderScene = {
   particles: ClientParticle[];
   coinHover?: boolean;
   statusHover?: boolean;
+  hoveredWeaponId?: string | null;
   stagePlayerCount: number;
   totalPlayersOnline: number;
 };
@@ -2525,29 +2526,31 @@ export class SunnyRenderer {
     ctx.fillStyle = scene.coinHover ? "#4A2C14" : "#FFF8E1";
     ctx.fillText("상점 ▸", chipX + chipW * 0.5, chipY + 10.5);
 
-    // --- Bottom-Center: Unlocked Weapons Bar ---
-    const visibleWeapons = p.unlockedWeapons.slice(-6);
-    const slotSize = 42;
-    const gap = 7;
-    const totalW = visibleWeapons.length * slotSize + Math.max(0, visibleWeapons.length - 1) * gap + 18;
-    const barLeft = W * 0.5 - totalW * 0.5;
-    const barTop = H - 58;
+    // --- Bottom-Center: Unlocked Weapons Bar (directly clickable/tappable to switch) ---
+    const { barRect, slots: weaponSlots } = computeWeaponSlotHitboxes(p.unlockedWeapons);
+    const barTop = barRect.y;
 
     ctx.fillStyle = "rgba(42, 26, 14, 0.76)";
     ctx.strokeStyle = "rgba(255, 224, 130, 0.5)";
     ctx.beginPath();
-    ctx.roundRect(barLeft, barTop, totalW, 48, 12);
+    ctx.roundRect(barRect.x, barRect.y, barRect.w, barRect.h, 12);
     ctx.fill();
     ctx.stroke();
 
-    visibleWeapons.forEach((wid, idx) => {
+    weaponSlots.forEach(({ weaponId: wid, rect: sr }) => {
       const w = WEAPON_CATALOG[wid]!;
       const active = p.equippedWeaponId === wid;
-      const sx = barLeft + 9 + idx * (slotSize + gap);
-      const sy = barTop + 3;
-      ctx.fillStyle = active ? "rgba(255, 213, 79, 0.36)" : "rgba(255, 255, 255, 0.10)";
-      ctx.strokeStyle = active ? "#FFD740" : "rgba(255, 255, 255, 0.25)";
-      ctx.lineWidth = active ? 2.5 : 1.5;
+      const hovered = !active && scene.hoveredWeaponId === wid;
+      const sx = sr.x;
+      const sy = sr.y;
+      const slotSize = sr.w;
+      ctx.fillStyle = active
+        ? "rgba(255, 213, 79, 0.36)"
+        : hovered
+          ? "rgba(255, 236, 179, 0.24)"
+          : "rgba(255, 255, 255, 0.10)";
+      ctx.strokeStyle = active ? "#FFD740" : hovered ? "#FFE082" : "rgba(255, 255, 255, 0.25)";
+      ctx.lineWidth = active ? 2.5 : hovered ? 2.0 : 1.5;
       ctx.beginPath();
       ctx.roundRect(sx, sy, slotSize, slotSize, 8);
       ctx.fill();
