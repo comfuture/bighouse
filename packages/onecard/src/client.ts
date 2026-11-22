@@ -2,13 +2,26 @@ import "./style.css";
 import type { GameClientContext, MountedGameClient } from "@bighouse/game-sdk/client";
 import { triggerCardSubmitFeedback, triggerSelectionFeedback } from "@bighouse/game-sdk/feedback";
 import { createGameUi, type MountedGameUi } from "@bighouse/ui";
-import { cardPlayProblem } from "./rules";
+import cardsArtSheetUrl from "./assets/images/cards_art_sheet.png?url";
+import tableFeltUrl from "./assets/images/table_felt.png?url";
+import {
+  evaluateCardFlightPose,
+  getSpriteCell,
+  isAttackCard,
+  resolveCardCenterSprite,
+  resolveCardSpecialBadge,
+  resolveSuitSprite,
+  type OneCardSpriteKey
+} from "./animation";
+import { OneCardAudioManager } from "./audio";
 import {
   clampFlightCenter,
   clampFlightPosition,
   fitFlightCardSize,
   type FlightCardBounds
 } from "./flight";
+import { OneCardFxRenderer } from "./renderer";
+import { cardPlayProblem, isJoker, rankOf, type Suit } from "./rules";
 export { gameMetadata } from "./client-metadata";
 
 export type OneCardPublicView = {
@@ -19,7 +32,7 @@ export type OneCardPublicView = {
   turnDirection: "clockwise" | "counterclockwise";
   activeAttackCount: number;
   activeAttackCard?: string;
-  chosenSuit?: "S" | "H" | "C" | "D";
+  chosenSuit?: Suit;
   winnerPlayerId?: string;
   eliminatedPlayerIds: string[];
   hasExtraTurn: boolean;
@@ -84,6 +97,12 @@ const bundleFlightMs = 620;
 const bundleStaggerMs = 70;
 const drawRevealHoldMs = 1_200;
 
+function spriteSpanHtml(key: OneCardSpriteKey, extraClass = ""): string {
+  const cell = getSpriteCell(key);
+  const cls = extraClass ? `onecard-sprite ${extraClass}` : "onecard-sprite";
+  return `<span class="${cls}" style="background-position: ${cell.bgPosXPercent}% ${cell.bgPosYPercent}%;" aria-hidden="true"></span>`;
+}
+
 export function mountGame(container: HTMLElement, context: GameClientContext): MountedGameClient {
   const instance = createOneCardGame(container, toOneCardClient(context));
   const gameUi = createGameUi(container, context, context);
@@ -119,12 +138,17 @@ function toOneCardClient(context: GameClientContext): OneCardClient {
 
 export function createOneCardGame(container: HTMLElement, client: OneCardClient): OneCardGameInstance {
   const state = { ...client };
+  const audio = new OneCardAudioManager();
+  const artSheetCssVal = `url("${cardsArtSheetUrl}")`;
+  const tableFeltCssVal = `url("${tableFeltUrl}")`;
 
   const surface = document.createElement("div");
   surface.className = "game-contained-surface onecard-game";
+  surface.style.setProperty("--onecard-felt-url", tableFeltCssVal);
+  surface.style.setProperty("--onecard-art-sheet-url", artSheetCssVal);
   container.replaceChildren(surface);
   surface.innerHTML = `
-    <div class="onecard-table">
+    <div class="onecard-table" data-role="table">
       <!-- Opponent Seats -->
       <div class="opponent-seats">
         <div class="seat-top" data-role="seat-top"></div>
@@ -133,13 +157,13 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
       </div>
 
       <!-- Center Stage -->
-      <div class="onecard-center-stage">
+      <div class="onecard-center-stage" data-role="center-stage">
         <!-- Deck / Draw Pile -->
         <div class="onecard-deck" data-role="deck" aria-label="Draw deck">
           <div class="deck-cards">
-            <div class="deck-card-back"></div>
-            <div class="deck-card-back"></div>
-            <div class="deck-card-back"></div>
+            <div class="deck-card-back">${spriteSpanHtml("cardBack", "deck-crest-sprite")}</div>
+            <div class="deck-card-back">${spriteSpanHtml("cardBack", "deck-crest-sprite")}</div>
+            <div class="deck-card-back">${spriteSpanHtml("cardBack", "deck-crest-sprite")}</div>
           </div>
           <div class="deck-info">
             <span class="deck-count" data-role="deck-count">0</span>
@@ -158,7 +182,7 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
           <div class="discard-card-holder" data-role="discard-card-holder"></div>
         </div>
 
-        <!-- Joker Declared Suit Banner -->
+        <!-- Joker / 7 Declared Suit Banner -->
         <div class="wild-suit-banner is-hidden" data-role="wild-suit-banner"></div>
         <div class="table-action-toast is-hidden" data-role="action-toast" aria-live="polite"></div>
       </div>
@@ -170,7 +194,10 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
       <!-- Bottom / Current Player Hand Area -->
       <div class="player-hand-container" data-role="player-hand-container">
         <div class="hand-header">
-          <span class="player-name" data-role="player-name">Your Hand</span>
+          <div class="hand-header-left">
+            <span class="player-name" data-role="player-name">Your Hand</span>
+            <button type="button" class="onecard-mute-btn" data-role="mute-toggle" aria-pressed="${audio.muted ? "true" : "false"}">${audio.muted ? "🔇 음소거" : "🔊 사운드"}</button>
+          </div>
           <div class="hand-actions">
             <button type="button" class="draw-button is-hidden" data-role="draw-button">Draw</button>
             <button type="button" class="pass-button is-hidden" data-role="pass-button">Pass / End Turn</button>
@@ -179,15 +206,15 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
         <div class="player-hand" data-role="player-hand"></div>
       </div>
 
-      <!-- Joker Suit Picker Modal -->
+      <!-- Joker / 7 Suit Picker Modal -->
       <div class="suit-picker-modal is-hidden" data-role="suit-picker">
         <div class="suit-picker-panel">
           <h3>Choose a Suit</h3>
           <div class="suit-buttons">
-            <button type="button" class="suit-btn is-spade" data-suit="S">♠ Spade</button>
-            <button type="button" class="suit-btn is-heart" data-suit="H">♥ Heart</button>
-            <button type="button" class="suit-btn is-club" data-suit="C">♣ Club</button>
-            <button type="button" class="suit-btn is-diamond" data-suit="D">♦ Diamond</button>
+            <button type="button" class="suit-btn is-spade" data-suit="S">${spriteSpanHtml("suitSpade", "suit-btn-sprite")}<span>♠ Spade</span></button>
+            <button type="button" class="suit-btn is-heart" data-suit="H">${spriteSpanHtml("suitHeart", "suit-btn-sprite")}<span>♥ Heart</span></button>
+            <button type="button" class="suit-btn is-club" data-suit="C">${spriteSpanHtml("suitClub", "suit-btn-sprite")}<span>♣ Club</span></button>
+            <button type="button" class="suit-btn is-diamond" data-suit="D">${spriteSpanHtml("suitDiamond", "suit-btn-sprite")}<span>♦ Diamond</span></button>
           </div>
         </div>
       </div>
@@ -196,6 +223,8 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
   `;
 
   // Query DOM selectors
+  const tableEl = surface.querySelector<HTMLElement>("[data-role='table']");
+  const centerStageEl = surface.querySelector<HTMLElement>("[data-role='center-stage']");
   const seatTop = surface.querySelector<HTMLElement>("[data-role='seat-top']");
   const seatLeft = surface.querySelector<HTMLElement>("[data-role='seat-left']");
   const seatRight = surface.querySelector<HTMLElement>("[data-role='seat-right']");
@@ -213,10 +242,13 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
   const playerHandEl = surface.querySelector<HTMLElement>("[data-role='player-hand']");
   const drawButton = surface.querySelector<HTMLButtonElement>("[data-role='draw-button']");
   const passButton = surface.querySelector<HTMLButtonElement>("[data-role='pass-button']");
+  const muteButton = surface.querySelector<HTMLButtonElement>("[data-role='mute-toggle']");
   const suitPicker = surface.querySelector<HTMLElement>("[data-role='suit-picker']");
   let gameUi: MountedGameUi | undefined;
 
-  // State variable for pending suit choice
+  const fxRenderer = tableEl ? new OneCardFxRenderer(tableEl, centerStageEl, discardEl) : null;
+
+  // State variables for pending suit choice & feedback
   let pendingJokerCard: string | null = null;
   let pendingJokerSourceEl: HTMLElement | null = null;
   let drawNotice: { playerId: string; count: number; wasAttack: boolean; version: number } | null = null;
@@ -230,13 +262,35 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
   let flightTimers: number[] = [];
   let flightAnimationFrames: number[] = [];
   let flightElements: HTMLElement[] = [];
+
   const handleViewportChange = (): void => {
     clearFlightAnimations();
     clearLocalDrawReveal(true);
   };
 
+  const handleAudioUnlockGesture = (): void => {
+    void audio.unlock();
+  };
+
+  surface.addEventListener("pointerdown", handleAudioUnlockGesture, { passive: true });
+  surface.addEventListener("keydown", handleAudioUnlockGesture, { passive: true });
   window.addEventListener("resize", handleViewportChange);
   window.visualViewport?.addEventListener("resize", handleViewportChange);
+
+  function syncMuteButton(): void {
+    if (!muteButton) return;
+    muteButton.textContent = audio.muted ? "🔇 음소거" : "🔊 사운드";
+    muteButton.setAttribute("aria-pressed", audio.muted ? "true" : "false");
+    muteButton.classList.toggle("is-muted", audio.muted);
+  }
+
+  muteButton?.addEventListener("click", () => {
+    const nextMuted = audio.toggleMute();
+    if (!nextMuted) {
+      void audio.unlock();
+    }
+    syncMuteButton();
+  });
 
   // Set event listeners
   deckEl?.addEventListener("click", () => {
@@ -248,19 +302,27 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
   });
 
   passButton?.addEventListener("click", () => {
+    void audio.unlock();
     triggerSelectionFeedback();
+    audio.playSfx("sfx_card_play", 0.04);
     client.sendAction({ type: "pass", payload: {} });
   });
 
   suitPicker?.addEventListener("click", (e) => {
     const btn = (e.target as HTMLElement).closest<HTMLButtonElement>("[data-suit]");
     if (btn && pendingJokerCard) {
-      const chosenSuit = btn.getAttribute("data-suit");
+      const chosenSuit = btn.getAttribute("data-suit") as Suit | null;
+      void audio.unlock();
       triggerCardSubmitFeedback();
+      audio.playSfx("sfx_card_play", 0.05);
+      if (chosenSuit) {
+        audio.playSfx("sfx_suit_pick", 0.03);
+        fxRenderer?.triggerSuitWave(chosenSuit);
+      }
       if (pendingJokerSourceEl && discardEl) {
         triggerFlyAnimation(pendingJokerSourceEl, discardEl, pendingJokerCard, {
           label: `You played ${formatCardName(pendingJokerCard)}`,
-          tone: "play"
+          tone: isAttackCard(pendingJokerCard) ? "attack" : "play"
         });
       }
       setActionNotice(`You played ${formatCardName(pendingJokerCard)}`, "play");
@@ -278,30 +340,59 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
     const cardEl = document.createElement("div");
     const isBJ = cardStr === "BJ";
     const isCJ = cardStr === "CJ";
+    const badge = resolveCardSpecialBadge(cardStr);
+    const centerSprite = resolveCardCenterSprite(cardStr);
     cardEl.dataset.card = cardStr;
+
+    const badgeHtml = badge
+      ? `<div class="card-effect-badge is-${badge.kind}">${spriteSpanHtml(badge.sprite, "badge-sprite")}<span>${badge.label}</span></div>`
+      : "";
 
     if (isBJ || isCJ) {
       cardEl.className = `onecard-card is-joker ${isCJ ? "is-color-joker" : "is-black-joker"}`;
       cardEl.innerHTML = `
         <div class="card-inner">
-          <div class="card-center">🃏</div>
+          <div class="card-corner top-left">
+            <span class="card-rank">★</span>
+            <span class="card-symbol">JKR</span>
+          </div>
+          <div class="card-center card-art-medallion is-joker-art">
+            ${spriteSpanHtml(centerSprite, "card-center-sprite")}
+          </div>
           <div class="joker-text">${isCJ ? "COLOR JOKER" : "B&W JOKER"}</div>
+          ${badgeHtml}
         </div>
       `;
     } else {
-      const suit = cardStr.slice(-1) as "S" | "H" | "C" | "D";
+      const suit = cardStr.slice(-1) as Suit;
       const rank = cardStr.slice(0, -1);
       const symbol = SUIT_SYMBOLS[suit] ?? "";
       const isRed = suit === "H" || suit === "D";
+      const isCourt = rank === "A" || rank === "J" || rank === "Q" || rank === "K";
+      const isWildSeven = rank === "7";
+      const suitClass = `is-suit-${suit.toLowerCase()}`;
 
-      cardEl.className = `onecard-card ${isRed ? "is-red" : ""}`;
+      cardEl.className = [
+        "onecard-card",
+        isRed ? "is-red" : "",
+        suitClass,
+        isCourt ? "is-court" : "",
+        isWildSeven ? "is-wild-seven" : "",
+        isAttackCard(cardStr) ? "is-attack-card" : ""
+      ]
+        .filter(Boolean)
+        .join(" ");
+
       cardEl.innerHTML = `
         <div class="card-inner">
           <div class="card-corner top-left">
             <span class="card-rank">${rank}</span>
             <span class="card-symbol">${symbol}</span>
           </div>
-          <div class="card-center">${symbol}</div>
+          <div class="card-center card-art-medallion ${isCourt || isWildSeven ? "is-illustrated-court" : "is-suit-gem"}">
+            ${spriteSpanHtml(centerSprite, "card-center-sprite")}
+          </div>
+          ${badgeHtml}
           <div class="card-corner bottom-right">
             <span class="card-rank">${rank}</span>
             <span class="card-symbol">${symbol}</span>
@@ -317,7 +408,7 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
     cardEl.className = "onecard-card is-card-back";
     cardEl.innerHTML = `
       <div class="card-back-pattern">
-        <div class="card-back-mark">BH</div>
+        ${spriteSpanHtml("cardBack", "card-back-crest-sprite")}
       </div>
     `;
     return cardEl;
@@ -337,7 +428,8 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
     const endRect = targetEl.getBoundingClientRect();
     const count = Math.max(1, options.count ?? 1);
     const flyerCount = Math.min(count, maxBundleFlyers);
-    const duration = count > 1 ? bundleFlightMs : singleFlightMs;
+    const reduced = fxRenderer?.isReducedMotion() ?? false;
+    const duration = reduced ? 240 : count > 1 ? bundleFlightMs : singleFlightMs;
     const viewport = getFlightViewport();
     const { width: cardWidth, height: cardHeight } = fitFlightCardSize(
       getRenderedFlightCardBounds(fromEl, targetEl),
@@ -347,46 +439,83 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
     const startCenterY = clampFlightCenter(startRect.top + startRect.height / 2, cardHeight / 2, viewport.top, viewport.height);
     const endCenterX = clampFlightCenter(endRect.left + endRect.width / 2, cardWidth / 2, viewport.left, viewport.width);
     const endCenterY = clampFlightCenter(endRect.top + endRect.height / 2, cardHeight / 2, viewport.top, viewport.height);
+    const trailTone = options.tone ?? (cardStr ? "play" : "draw");
 
     for (let index = 0; index < flyerCount; index += 1) {
       const offset = (index - (flyerCount - 1) / 2) * 8;
+      const landingOffset = count > 1 ? (index - (flyerCount - 1) / 2) * 5 : 0;
+      const flyerStartX = clampFlightCenter(startCenterX + offset, cardWidth / 2, viewport.left, viewport.width);
+      const flyerStartY = clampFlightCenter(startCenterY - Math.abs(offset) * 0.4, cardHeight / 2, viewport.top, viewport.height);
+      const flyerEndX = clampFlightCenter(endCenterX + landingOffset, cardWidth / 2, viewport.left, viewport.width);
+      const flyerEndY = clampFlightCenter(endCenterY - Math.abs(landingOffset) * 0.35, cardHeight / 2, viewport.top, viewport.height);
+      const initialTiltDeg = offset * 0.9;
+      const finalTiltDeg = landingOffset * -1.4 + (index % 2 === 0 ? 2.5 : -2.5);
+      const arcHeight = reduced ? 8 : count > 1 ? 56 + index * 6 : undefined;
+
       const flyer = cardStr ? renderCard(cardStr) : renderCardBack();
-      flyer.classList.add("flyer-animating", options.tone === "play" ? "is-play-flight" : "is-draw-flight");
+      flyer.style.setProperty("--onecard-art-sheet-url", artSheetCssVal);
+      flyer.classList.add("flyer-animating", trailTone === "play" || trailTone === "attack" ? "is-play-flight" : "is-draw-flight");
       if (count > 1) {
         flyer.classList.add("is-bundle-flight");
       }
       flyer.style.position = "fixed";
-      flyer.style.left = `${clampFlightPosition(startCenterX - cardWidth / 2 + offset, cardWidth, viewport.left, viewport.width)}px`;
-      flyer.style.top = `${clampFlightPosition(startCenterY - cardHeight / 2 - Math.abs(offset) * 0.4, cardHeight, viewport.top, viewport.height)}px`;
+      flyer.style.left = `${clampFlightPosition(flyerStartX - cardWidth / 2, cardWidth, viewport.left, viewport.width)}px`;
+      flyer.style.top = `${clampFlightPosition(flyerStartY - cardHeight / 2, cardHeight, viewport.top, viewport.height)}px`;
       flyer.style.width = `${cardWidth}px`;
       flyer.style.height = `${cardHeight}px`;
       flyer.style.margin = "0";
       flyer.style.zIndex = "999";
       flyer.style.opacity = "0.9";
-      flyer.style.transform = `rotate(${offset * 0.9}deg) scale(${count > 1 ? 0.92 : 1})`;
-      flyer.style.transition = [
-        `left ${duration}ms cubic-bezier(0.2, 0.82, 0.2, 1)`,
-        `top ${duration}ms cubic-bezier(0.2, 0.82, 0.2, 1)`,
-        `transform ${duration}ms cubic-bezier(0.2, 0.82, 0.2, 1)`,
-        `opacity ${duration}ms ease`
-      ].join(", ");
+      flyer.style.transform = `rotate(${initialTiltDeg}deg) scale(${count > 1 ? 0.92 : 1})`;
       appendFlightElement(flyer);
 
       const delay = index * bundleStaggerMs;
       setFlightTimeout(() => {
-        requestFlightAnimationFrame(() => {
-          const landingOffset = count > 1 ? (index - (flyerCount - 1) / 2) * 5 : 0;
-          flyer.style.left = `${clampFlightPosition(endCenterX - cardWidth / 2 + landingOffset, cardWidth, viewport.left, viewport.width)}px`;
-          flyer.style.top = `${clampFlightPosition(endCenterY - cardHeight / 2 - Math.abs(landingOffset) * 0.35, cardHeight, viewport.top, viewport.height)}px`;
-          flyer.style.transform = `rotate(${landingOffset * -1.4 + (Math.random() * 8 - 4)}deg) scale(${cardStr ? 0.98 : 0.88})`;
-          flyer.style.opacity = "1";
+        fxRenderer?.emitFlightTrail({
+          startClientX: flyerStartX,
+          startClientY: flyerStartY,
+          endClientX: flyerEndX,
+          endClientY: flyerEndY,
+          durationMs: duration,
+          tone: trailTone,
+          arcHeight
         });
-      }, delay);
 
-      setFlightTimeout(() => {
-        flyer.style.opacity = "0";
-        setFlightTimeout(() => removeFlightElement(flyer), 120);
-      }, duration + delay);
+        const startTs = typeof performance !== "undefined" ? performance.now() : Date.now();
+        const baseScale = cardStr ? 0.98 : 0.88;
+
+        const stepFlyer = (nowTs: number): void => {
+          const progress = Math.min(1, Math.max(0, (nowTs - startTs) / duration));
+          const pose = evaluateCardFlightPose({
+            startX: flyerStartX,
+            startY: flyerStartY,
+            endX: flyerEndX,
+            endY: flyerEndY,
+            progress,
+            arcHeight,
+            initialTiltDeg,
+            finalTiltDeg,
+            scaleLift: reduced ? 0.04 : cardStr ? 0.16 : 0.1
+          });
+
+          const leftPx = clampFlightPosition(pose.x - cardWidth / 2, cardWidth, viewport.left, viewport.width);
+          const topPx = clampFlightPosition(pose.y - cardHeight / 2, cardHeight, viewport.top, viewport.height);
+          flyer.style.left = `${leftPx}px`;
+          flyer.style.top = `${topPx}px`;
+          flyer.style.transform = `rotate(${pose.rotationDeg.toFixed(2)}deg) scale(${(pose.scale * baseScale).toFixed(3)})`;
+          flyer.style.opacity = String(pose.opacity);
+
+          if (progress < 1) {
+            requestFlightAnimationFrame(stepFlyer);
+          } else {
+            flyer.style.transition = "opacity 120ms ease";
+            flyer.style.opacity = "0";
+            setFlightTimeout(() => removeFlightElement(flyer), 120);
+          }
+        };
+
+        requestFlightAnimationFrame(stepFlyer);
+      }, delay);
     }
 
     if (count > 1) {
@@ -429,9 +558,11 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
   function getRenderedFlightCardBounds(fromEl: HTMLElement, targetEl: HTMLElement): FlightCardBounds | undefined {
     const cardSelector = ".onecard-card, .onecard-deck, .onecard-discard, .deck-card-back";
     const measuredElement = [fromEl, targetEl]
-      .flatMap((element) => element.matches(cardSelector)
-        ? [element]
-        : [...element.querySelectorAll<HTMLElement>(cardSelector)])
+      .flatMap((element) =>
+        element.matches(cardSelector)
+          ? [element]
+          : [...element.querySelectorAll<HTMLElement>(cardSelector)]
+      )
       .find((element) => {
         const rect = element.getBoundingClientRect();
         return rect.width > 0 && rect.height > 0;
@@ -515,10 +646,10 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
     flightTimers.push(timer);
   }
 
-  function requestFlightAnimationFrame(callback: () => void): void {
-    const frame = window.requestAnimationFrame(() => {
+  function requestFlightAnimationFrame(callback: (timestamp: number) => void): void {
+    const frame = window.requestAnimationFrame((ts) => {
       flightAnimationFrames = flightAnimationFrames.filter((candidate) => candidate !== frame);
-      callback();
+      callback(ts);
     });
     flightAnimationFrames.push(frame);
   }
@@ -559,6 +690,7 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
   }
 
   function drawCard(): void {
+    void audio.unlock();
     const isMyTurn = state.publicView.currentPlayerId === state.playerId;
     if (isMyTurn && !state.publicView.winnerPlayerId) {
       triggerSelectionFeedback();
@@ -569,22 +701,24 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
   function render(): void {
     const pub = state.publicView;
     const priv = state.privateView;
-    const N = Object.keys(pub.hands).length || 2;
     const isMyTurn = pub.currentPlayerId === state.playerId && !pub.winnerPlayerId;
     const nextPlayerId = getNextPlayerId(pub);
     const playable = getPlayableCards(priv.hand, pub);
     const hasPlayableCard = playable.length > 0;
+
+    fxRenderer?.setState({
+      turnDirection: pub.turnDirection,
+      activeAttackCount: pub.activeAttackCount,
+      chosenSuit: pub.chosenSuit,
+      hasWinner: Boolean(pub.winnerPlayerId)
+    });
 
     // Render deck count
     if (deckCountEl) {
       deckCountEl.textContent = String(pub.deckCount);
     }
     if (deckEl) {
-      if (isMyTurn) {
-        deckEl.classList.add("is-glow");
-      } else {
-        deckEl.classList.remove("is-glow");
-      }
+      deckEl.classList.toggle("is-glow", isMyTurn);
     }
 
     // Render direction indicator
@@ -597,6 +731,9 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
     }
 
     // Render open card discard pile
+    if (discardEl) {
+      discardEl.classList.toggle("is-under-attack", pub.activeAttackCount > 0);
+    }
     if (discardHolder) {
       discardHolder.innerHTML = "";
       const topCard = pub.discardPile[pub.discardPile.length - 1];
@@ -605,15 +742,16 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
       }
     }
 
-    // Render Wild Suit banner if Joker suit declared
+    // Render Wild Suit banner if Joker/7 suit declared
     if (wildSuitBanner) {
       if (pub.chosenSuit) {
         wildSuitBanner.classList.remove("is-hidden");
         const symbol = SUIT_SYMBOLS[pub.chosenSuit] ?? "";
         const name = SUIT_NAMES[pub.chosenSuit] ?? "";
         const isRed = pub.chosenSuit === "H" || pub.chosenSuit === "D";
+        const suitSprite = spriteSpanHtml(resolveSuitSprite(pub.chosenSuit), "wild-suit-sprite");
         wildSuitBanner.className = `wild-suit-banner ${isRed ? "is-red" : ""}`;
-        wildSuitBanner.innerHTML = `Wild Suit: <span class="wild-suit-symbol">${symbol}</span> ${name}`;
+        wildSuitBanner.innerHTML = `${suitSprite}<span>Wild Suit: <span class="wild-suit-symbol">${symbol}</span> ${name}</span>`;
       } else {
         wildSuitBanner.classList.add("is-hidden");
       }
@@ -623,6 +761,7 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
     renderSeats();
     renderTurnTracker(pub, nextPlayerId);
     renderActionToast();
+    syncMuteButton();
 
     if (playerHandContainer) {
       playerHandContainer.classList.toggle("is-active-turn", isMyTurn);
@@ -632,7 +771,7 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
       playerName.textContent = isMyTurn ? "Your Hand - Turn" : nextPlayerId === state.playerId ? "Your Hand - Next" : "Your Hand";
     }
 
-    // Render Pass button (Only visible if King played and hasExtraTurn is true)
+    // Render Draw & Pass buttons
     if (drawButton) {
       if (isMyTurn) {
         drawButton.classList.remove("is-hidden");
@@ -655,6 +794,7 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
     if (statusBar) {
       statusBar.innerHTML = "";
       if (pub.winnerPlayerId) {
+        statusBar.className = "onecard-status-bar";
         statusBar.textContent = pub.winnerPlayerId === state.playerId ? "🏆 You Won!" : "Game Over";
       } else if (pub.activeAttackCount > 0) {
         statusBar.className = "onecard-status-bar active-attack";
@@ -679,13 +819,22 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
       }
     }
 
-    // Render player's hand cards
+    // Render player's hand cards with gentle parlor fan polish
     if (playerHandEl) {
       playerHandEl.innerHTML = "";
       playerHandEl.style.setProperty("--hand-card-overlap", `${getMobileHandOverlap(priv.hand.length)}px`);
+      const handLen = priv.hand.length;
+      const mid = (handLen - 1) / 2;
+      const denom = Math.max(1, mid);
 
       priv.hand.forEach((card, index) => {
         const cardEl = renderCard(card);
+        const fanNorm = handLen > 1 ? (index - mid) / denom : 0;
+        const fanAngle = fanNorm * Math.min(4.2, handLen * 0.65);
+        const fanDrop = Math.abs(fanNorm) * Math.abs(fanNorm) * Math.min(8, handLen * 0.9);
+        cardEl.style.setProperty("--fan-angle", `${fanAngle.toFixed(2)}deg`);
+        cardEl.style.setProperty("--fan-drop", `${fanDrop.toFixed(1)}px`);
+
         const isPlayable = isMyTurn && playable.includes(card);
         const reveal = localDrawReveal;
         const isDrawReveal =
@@ -701,18 +850,20 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
         if (isPlayable) {
           cardEl.classList.add("is-playable");
           cardEl.addEventListener("click", () => {
-            const rank = card === "BJ" || card === "CJ" ? card : card.slice(0, -1);
-            if (card === "BJ" || card === "CJ" || rank === "7") {
+            void audio.unlock();
+            const rank = rankOf(card);
+            if (isJoker(card) || rank === "7") {
               triggerSelectionFeedback();
               pendingJokerCard = card;
               pendingJokerSourceEl = cardEl;
               suitPicker?.classList.remove("is-hidden");
             } else {
               triggerCardSubmitFeedback();
+              audio.playSfx("sfx_card_play", 0.05);
               if (discardEl) {
                 triggerFlyAnimation(cardEl, discardEl, card, {
                   label: `You played ${formatCardName(card)}`,
-                  tone: "play"
+                  tone: isAttackCard(card) ? "attack" : "play"
                 });
               }
               setActionNotice(`You played ${formatCardName(card)}`, "play");
@@ -853,7 +1004,7 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
           <div class="opponent-avatar">👤</div>
           <div class="opponent-name">${playerNameHtml(pid)}</div>
           <div class="opponent-hand-preview">
-            <div class="card-back-icon">🎴</div>
+            <div class="card-back-icon">${spriteSpanHtml("cardBack", "mini-back-sprite")}</div>
             <span class="opponent-card-count">x${count}</span>
           </div>
           ${isBankrupt ? `<div class="bankrupt-badge">BANKRUPT</div>` : ""}
@@ -902,28 +1053,61 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
       if (state.version === input.version) return;
       const oldPub = state.publicView;
       const newPub = input.publicView;
-      const directionChanged = oldPub?.turnDirection !== undefined && newPub?.turnDirection !== undefined && oldPub.turnDirection !== newPub.turnDirection;
+      const directionChanged =
+        oldPub?.turnDirection !== undefined &&
+        newPub?.turnDirection !== undefined &&
+        oldPub.turnDirection !== newPub.turnDirection;
 
+      // Track card play transition for SFX + VFX + opponent card flight
       if (oldPub && newPub && newPub.discardPile.length > oldPub.discardPile.length) {
         const topPlayed = newPub.discardPile[newPub.discardPile.length - 1]!;
         const actorId = oldPub.currentPlayerId;
+        const playedRank = rankOf(topPlayed);
+        const isLocalActor = actorId === input.playerId;
+
         if (actorId) {
           setActionNotice(`${getPlayerName(actorId)} played ${formatCardName(topPlayed)}`, "play");
         }
-        if (actorId && actorId !== input.playerId) {
+        if (actorId && !isLocalActor) {
+          audio.playSfx("sfx_card_play", 0.05);
           const sourceSeatEl = getPlayerTargetElement(actorId);
-
           if (sourceSeatEl && discardEl) {
             triggerFlyAnimation(sourceSeatEl, discardEl, topPlayed, {
               label: `${getPlayerName(actorId)} played ${formatCardName(topPlayed)}`,
-              tone: "play"
+              tone: isAttackCard(topPlayed) ? "attack" : "play"
             });
           }
         }
+
+        // Special card SFX & canvas VFX
+        if (isJoker(topPlayed)) {
+          audio.playSfx("sfx_joker", 0.03);
+          fxRenderer?.triggerJokerBurst(topPlayed === "CJ");
+        } else if (newPub.activeAttackCount > oldPub.activeAttackCount) {
+          audio.playSfx("sfx_attack", 0.04);
+          fxRenderer?.triggerAttackHit();
+        } else if (playedRank === "J") {
+          audio.playSfx("sfx_jump", 0.04);
+          fxRenderer?.triggerJumpBurst();
+        } else if (playedRank === "Q" || directionChanged) {
+          audio.playSfx("sfx_reverse", 0.03);
+          fxRenderer?.triggerReverseBurst();
+        }
+
+        // Suit change ripple for opponent 7/Joker suit declarations
+        if (newPub.chosenSuit && newPub.chosenSuit !== oldPub.chosenSuit && !isLocalActor) {
+          audio.playSfx("sfx_suit_pick", 0.03);
+          fxRenderer?.triggerSuitWave(newPub.chosenSuit);
+        }
+      } else if (directionChanged) {
+        audio.playSfx("sfx_reverse", 0.03);
+        fxRenderer?.triggerReverseBurst();
       }
 
+      // Track card draw transition
       const draw = oldPub && newPub ? findDrawFromSnapshot(oldPub, newPub) : null;
       if (draw && deckEl) {
+        audio.playSfx(draw.count > 1 || draw.wasAttack ? "sfx_card_bundle" : "sfx_card_draw", 0.05);
         const targetEl = getPlayerTargetElement(draw.playerId);
         const subject = getPlayerName(draw.playerId);
         const cardText = draw.count === 1 ? "1 card" : `${draw.count} cards`;
@@ -943,7 +1127,33 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
           }
         }
         setDrawNotice(draw.playerId, draw.count, draw.wasAttack, input.version);
-        setActionNotice(draw.wasAttack ? `${subject} picked up ${cardText}` : `${subject} drew ${cardText}`, draw.wasAttack ? "attack" : "draw");
+        setActionNotice(
+          draw.wasAttack ? `${subject} picked up ${cardText}` : `${subject} drew ${cardText}`,
+          draw.wasAttack ? "attack" : "draw"
+        );
+      }
+
+      // One Card alert when any player drops to exactly 1 card
+      if (oldPub && newPub && !newPub.winnerPlayerId) {
+        const hitOneCard = Object.keys(newPub.hands).some((pid) => {
+          const prevCount = oldPub.hands[pid]?.count ?? 0;
+          const nextCount = newPub.hands[pid]?.count ?? 0;
+          return prevCount > 1 && nextCount === 1;
+        });
+        if (hitOneCard) {
+          audio.playSfx("sfx_onecard_alert", 0.02);
+          fxRenderer?.triggerOneCardAlert();
+        }
+      }
+
+      // Win / Lose transition
+      if (oldPub && newPub && !oldPub.winnerPlayerId && newPub.winnerPlayerId) {
+        if (newPub.winnerPlayerId === input.playerId) {
+          audio.playSfx("sfx_win", 0);
+          fxRenderer?.triggerWinCelebration();
+        } else {
+          audio.playSfx("sfx_lose", 0);
+        }
       }
 
       if (directionChanged) {
@@ -965,9 +1175,13 @@ export function createOneCardGame(container: HTMLElement, client: OneCardClient)
       if (actionNoticeTimer) window.clearTimeout(actionNoticeTimer);
       clearLocalDrawReveal(false);
       if (directionFlashTimer) window.clearTimeout(directionFlashTimer);
+      surface.removeEventListener("pointerdown", handleAudioUnlockGesture);
+      surface.removeEventListener("keydown", handleAudioUnlockGesture);
       window.removeEventListener("resize", handleViewportChange);
       window.visualViewport?.removeEventListener("resize", handleViewportChange);
       clearFlightAnimations();
+      fxRenderer?.destroy();
+      audio.destroy();
       surface.remove();
     }
   };
