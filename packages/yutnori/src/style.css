@@ -437,3 +437,170 @@
 .yut-plan-proposal button:disabled { opacity: .45; }
 .yut-teams-bottom { margin-top: 19px; margin-bottom: 0; }
 @media (max-width: 720px) { .yut-teams-bottom { margin-top: 15px; } }
+
+/* Traditional Korean folk-art overhaul: warm hanji board, glossy lacquer mal tokens, natural birch wood sticks. */
+.yut-game {
+  background: radial-gradient(circle at 20% 8%, #fcf5e3 0%, #edf4ee 48%, #e2ece7 100%);
+}
+.yut-bgm { display: flex; align-items: center; gap: 6px; min-height: 36px; color: #70887e; font-size: 12px; white-space: nowrap; cursor: pointer; }
+.yut-bgm input { width: 16px; height: 16px; margin: 0; accent-color: var(--yut-blue); }
+@media (max-width: 720px) {
+  .yut-bgm { font-size: 10px; min-height: 30px; }
+  .yut-bgm input { width: 14px; height: 14px; }
+}
+
+.yut-board-wrap {
+  background: linear-gradient(155deg, #c9dfd6 0%, #aec9c1 54%, #95b5ac 100%);
+  border: 2px solid #e4efe6;
+  box-shadow: 0 9px #7c9d96, 0 18px 32px #3c5d5529, inset 0 3px #eef6ee;
+}
+.yut-board {
+  background: #f9f1de url("./assets/images/board_hanji.png") center / 100% 100% no-repeat;
+  border-radius: 20px;
+  box-shadow: inset 0 2px 6px #5d42241f, 0 2px 10px #4c3b2718;
+}
+.yut-board-lines g {
+  stroke: #b59e7d;
+  stroke-width: .78;
+}
+.yut-path-preview {
+  stroke: #3468d6;
+  stroke-width: 1.15;
+  filter: drop-shadow(0 1px 2px #2c57b538);
+}
+.yut-route-arrow { stroke: #9f8a6e; stroke-width: .72; }
+.yut-route-arrow.is-chosen { stroke: #3367d8; stroke-width: .95; }
+
+.yut-node-button {
+  background: radial-gradient(circle at 35% 30%, #fffdf6 0%, #f4ebd7 100%);
+  border: 1.5px solid #cab593;
+  color: #9e8a6b;
+  box-shadow: inset 0 1px 2px #fff, 0 2px 3px #6b53321e;
+  transition: transform .14s ease, box-shadow .14s ease;
+}
+.yut-node-button:not(:disabled):hover {
+  transform: scale(1.07);
+}
+.yut-node.is-special .yut-node-button {
+  background: radial-gradient(circle at 35% 30%, #fff9e5 0%, #f1ddb2 75%, #e2c58a 100%);
+  border: 2px solid #b88c4b;
+  color: #a67838;
+  box-shadow: inset 0 2px 3px #fff8df, 0 2px 5px #7c56202b;
+}
+.yut-node.is-target .yut-node-button {
+  border: 2px solid #487bd9;
+  background: radial-gradient(circle at 35% 30%, #f5faff 0%, #dcebff 100%);
+  color: #2f62c2;
+  box-shadow: 0 0 0 3px #6ca2f252, 0 3px 8px #2e5db028;
+}
+.yut-node .yut-node-button.has-piece {
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+}
+
+/* Glossy celadon & vermilion lacquered wooden mal tokens from pieces_sheet.png (4x2 grid) */
+.yut-piece-face,
+.yut-piece-layer {
+  background-color: transparent;
+  background-image: url("./assets/images/pieces_sheet.png");
+  background-size: 400% 200%;
+  background-repeat: no-repeat;
+  background-position: 0% 0%;
+  border: 0;
+  box-shadow: none;
+  color: #fffdf7;
+  text-shadow: 0 1px 2px #142a57c4, 0 0 4px #10244a75;
+  filter: drop-shadow(0 3px 3px #2b211638);
+}
+.yut-piece-face.is-stacked {
+  background-position: 66.6667% 0%;
+}
+.yut-motion-sprite .yut-piece-face,
+.yut-drag-piece .yut-piece-face {
+  background-position: 33.3333% 0%;
+}
+.yut-motion-sprite .yut-piece-face.is-stacked,
+.yut-drag-piece .yut-piece-face.is-stacked {
+  background-position: 66.6667% 0%;
+}
+
+.team-B > .yut-piece-face,
+.team-B > .yut-piece-layer {
+  background-position: 0% 100%;
+  text-shadow: 0 1px 2px #5c1614c4, 0 0 4px #4d121075;
+}
+.team-B > .yut-piece-face.is-stacked {
+  background-position: 66.6667% 100%;
+}
+.yut-motion-sprite.team-B .yut-piece-face,
+.yut-drag-piece.team-B .yut-piece-face {
+  background-position: 33.3333% 100%;
+}
+.yut-motion-sprite.team-B .yut-piece-face.is-stacked,
+.yut-drag-piece.team-B .yut-piece-face.is-stacked {
+  background-position: 66.6667% 100%;
+}
+
+.yut-piece-layer {
+  transform: translate(calc(var(--layer) * -3px), calc(var(--layer) * 4px));
+  filter: brightness(.88) saturate(.9) drop-shadow(0 2px 2px #2b211630);
+}
+.yut-stack-count {
+  border: 2px solid #fffdf4;
+  background: linear-gradient(180deg, #fff4c6 0%, #f4d67c 100%);
+  color: #6f4c16;
+  box-shadow: 0 2px #c8a24b, 0 3px 5px #573d1430;
+}
+
+/* Keep origin and teammate proposal ghosts dashed & translucent without opaque token artwork */
+.yut-origin-ghost .yut-piece-face,
+.yut-origin-ghost .yut-piece-layer {
+  background-image: none;
+  background-color: transparent;
+  border: 2px dashed #497abe;
+  box-shadow: none;
+  color: #497abe;
+  text-shadow: none;
+  filter: none;
+}
+.yut-origin-ghost.team-B .yut-piece-face,
+.yut-origin-ghost.team-B .yut-piece-layer {
+  border-color: #c9776d;
+  color: #c9776d;
+}
+.yut-proposal-ghost .yut-piece-face,
+.yut-proposal-ghost .yut-piece-layer {
+  filter: saturate(.85) opacity(.82);
+}
+
+/* Natural birch wood grain on summary and 2D fallback Yut sticks */
+.yut-summary-stick,
+.yut-flat-stick {
+  background-image:
+    linear-gradient(90deg, #74441938 0%, #ffffff26 32%, #ffffff00 58%, #5e351242 100%),
+    url("./assets/images/yut_wood_texture.png");
+  background-size: cover;
+  border-color: #9b6c39;
+  box-shadow: 1px 3px 5px #422b132b, inset 0 1px 0 #f8e4be88;
+}
+.yut-summary-stick.is-flat,
+.yut-flat-stick.is-flat {
+  background-image:
+    linear-gradient(180deg, #fff5dfb8 0%, #f5dfb4b0 100%),
+    url("./assets/images/yut_wood_texture.png");
+  background-size: cover;
+  border-color: #bfa06e;
+}
+.yut-throw-card {
+  background: linear-gradient(180deg, #fffdf5 0%, #fbf3df 100%);
+  box-shadow: 0 4px #dfd1b3;
+}
+.yut-throw-overlay {
+  background: radial-gradient(circle at 50% 42%, #fffaf0f5 0%, #edf4eef5 100%);
+}
+.yut-overlay-result > strong {
+  color: #2f60c4;
+  text-shadow: 0 3px #d7e4fb;
+}
+

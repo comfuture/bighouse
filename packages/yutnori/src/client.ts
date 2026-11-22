@@ -6,6 +6,7 @@ import { simulateMovePlan, mandatoryThrows, THROW_RESULT_HOLD_MS } from "./rules
 import { createThrowScene } from "./scene";
 import { createPieceMarkup } from "./pieces";
 import { createBoardMotion } from "./motion";
+import { createBoardFxCanvas } from "./fx-canvas";
 import { createThrowAudio } from "./audio";
 import { stickFaceMarkup } from "./stick-face";
 import { OUTCOME_LABELS, type LegalMove, type TeamId, type YutnoriPublicView, type YutSuggestion, type YutThrow, type PlanChoice } from "./types";
@@ -94,16 +95,22 @@ export function mountGame(container: HTMLElement, context: GameClientContext): M
   let refreshTimer: ReturnType<typeof setTimeout> | undefined;
   let vibrationEnabled = true;
   let soundMuted = false;
+  let bgmMuted = false;
   let notifiedTurn = "";
   const storageKey = `bighouse:yutnori:turn:${context.room.roomId}:${context.playerId}`;
-  try { soundMuted = localStorage.getItem("bighouse:yutnori:sound") === "off"; vibrationEnabled = localStorage.getItem("bighouse:yutnori:vibration") !== "off"; notifiedTurn = sessionStorage.getItem(storageKey) ?? ""; } catch { /* Storage can be unavailable in private browsing. */ }
+  try {
+    soundMuted = localStorage.getItem("bighouse:yutnori:sound") === "off";
+    bgmMuted = localStorage.getItem("bighouse:yutnori:bgm") === "off";
+    vibrationEnabled = localStorage.getItem("bighouse:yutnori:vibration") !== "off";
+    notifiedTurn = sessionStorage.getItem(storageKey) ?? "";
+  } catch { /* Storage can be unavailable in private browsing. */ }
   const surface = document.createElement("section");
   surface.className = "game-contained-surface yut-game";
   surface.setAttribute("aria-label", "윷놀이 게임");
   surface.innerHTML = `
     <header class="yut-header"><div><span class="yut-toy-logo" aria-hidden="true"><i></i><i></i><i></i></span><h1>윷놀이</h1><span class="yut-eyebrow">개인전 · 팀전</span></div></header>
     <div class="yut-turn" data-role="turn" aria-live="polite" aria-atomic="true"></div>
-    <div class="yut-options"><span>● 청팀 · ■ 홍팀 · 겹친 말은 함께 이동</span><label class="yut-vibration"><input type="checkbox" data-role="vibration" ${vibrationEnabled ? "checked" : ""}> 차례 진동</label><label class="yut-sound"><input type="checkbox" data-role="sound" ${soundMuted ? "" : "checked"}> 효과음</label></div>
+    <div class="yut-options"><span>● 청팀 · ■ 홍팀 · 겹친 말은 함께 이동</span><label class="yut-vibration"><input type="checkbox" data-role="vibration" ${vibrationEnabled ? "checked" : ""}> 차례 진동</label><label class="yut-sound"><input type="checkbox" data-role="sound" ${soundMuted ? "" : "checked"}> 효과음</label><label class="yut-bgm"><input type="checkbox" data-role="bgm" ${bgmMuted ? "" : "checked"}> 배경음악</label></div>
     <div class="yut-layout"><div class="yut-table-column"><div class="yut-board-wrap"><div class="yut-board" data-role="board" aria-label="29개 밭으로 이루어진 윷판"></div></div><div class="yut-board-caption"><span data-role="board-hint">말을 누르고 가고 싶은 곳을 골라요</span><span data-role="ghost-hint" hidden>빈 말은 원래 자리예요</span></div><section class="yut-action-card" data-role="actions"></section><section class="yut-plan-suggestions" data-role="plan-suggestions" aria-label="팀 구성원의 제안"></section></div>
     <aside class="yut-console" aria-label="윷 던지기와 말 이동"><section class="yut-throw-card"><div class="yut-section-heading"><span>윷 던지기</span><span class="yut-live">모두에게 공유</span></div><div class="yut-scene-summary" data-role="scene-summary" aria-label="최근 윷 결과"></div><div class="yut-outcome" data-role="outcome" aria-live="polite"></div><div class="yut-throw-controls" data-role="throw-controls"></div><p class="yut-face-legend" data-role="face-legend"></p></section><section class="yut-suggestions" data-role="suggestions" aria-label="팀원 이동 제안"></section></aside></div>
     <div class="yut-throw-overlay" data-role="throw-overlay" role="status" aria-live="polite" aria-label="모두 함께 보는 윷 던지기" hidden>
@@ -115,10 +122,97 @@ export function mountGame(container: HTMLElement, context: GameClientContext): M
   container.replaceChildren(surface);
   const el = (role: string): HTMLElement => surface.querySelector<HTMLElement>(`[data-role="${role}"]`)!;
   const scene = createThrowScene(el("scene"));
-  const throwAudio = createThrowAudio(soundMuted);
+  const throwAudio = createThrowAudio(soundMuted, bgmMuted);
   const gameUi = createGameUi(container, context, context, { theme: "playful" });
-  const boardMotion = createBoardMotion(el("board"));
+  const boardEl = el("board");
+  const boardMotion = createBoardMotion(boardEl);
+  const boardFx = createBoardFxCanvas(boardEl.parentElement!, boardEl);
+  const fxTimers = new Set<ReturnType<typeof setTimeout>>();
+  let lastFxSequenceId = "";
+  let lastFxMoveKey = "";
+  let lastVictoryMatchId = "";
   let hasRendered = false;
+  function clearFxTimers(): void {
+    for (const timer of fxTimers) clearTimeout(timer);
+    fxTimers.clear();
+  }
+  function scheduleFx(delayMs: number, fn: () => void): void {
+    if (delayMs <= 0) {
+      fn();
+      return;
+    }
+    const timer = setTimeout(() => {
+      fxTimers.delete(timer);
+      fn();
+    }, delayMs);
+    fxTimers.add(timer);
+  }
+  function triggerMoveFeedback(previous: YutnoriPublicView, next: YutnoriPublicView): void {
+    if (previous.matchId !== next.matchId) {
+      clearFxTimers();
+      lastFxSequenceId = "";
+      lastFxMoveKey = "";
+      return;
+    }
+    const teamOf = (pieceIdValue: string): TeamId =>
+      previous.pieces.find((entry) => entry.pieceId === pieceIdValue)?.teamId ??
+      next.pieces.find((entry) => entry.pieceId === pieceIdValue)?.teamId ??
+      next.turn.teamId;
+
+    const emitForMove = (move: NonNullable<YutnoriPublicView["lastMove"]>, baseDelayMs: number): void => {
+      const team = teamOf(move.pieceId);
+      const travelMs = Math.min(1250, Math.max(360, move.path.length * 180));
+      scheduleFx(baseDelayMs, () => {
+        throwAudio.playHop();
+        boardFx.emitHopPath(move.path, team, travelMs);
+      });
+      const arrivalMs = baseDelayMs + travelMs;
+      if (move.capturedPieceIds.length) {
+        scheduleFx(arrivalMs, () => {
+          throwAudio.playCapture();
+          boardFx.emitCapture(move.destination, team);
+        });
+      }
+      if (move.stackedPieceIds.length) {
+        scheduleFx(arrivalMs, () => {
+          throwAudio.playStack();
+          boardFx.emitStack(move.destination, team);
+        });
+      }
+      if (move.completedPieceIds.length) {
+        scheduleFx(arrivalMs, () => {
+          throwAudio.playFinish();
+          boardFx.emitFinish("o0", team);
+        });
+      }
+    };
+
+    const sequence = next.lastMoveSequence;
+    if (sequence && sequence.sequenceId !== previous.lastMoveSequence?.sequenceId && sequence.sequenceId !== lastFxSequenceId) {
+      lastFxSequenceId = sequence.sequenceId;
+      const nowMs = serverNow();
+      if (nowMs < sequence.startedAt + sequence.durationMs) {
+        for (const move of sequence.moves) {
+          const startDelay = Math.max(0, (move.startedAt ?? sequence.startedAt) - nowMs);
+          emitForMove(move, startDelay);
+        }
+      }
+      return;
+    }
+
+    const move = next.lastMove;
+    if (move && previous.lastMove?.rollId !== move.rollId && move.matchId === next.matchId && move.path.length) {
+      const key = `${move.matchId}:${move.turnId}:${move.rollId}`;
+      if (key === lastFxMoveKey) return;
+      lastFxMoveKey = key;
+      const nowMs = serverNow();
+      const elapsed = Math.max(0, nowMs - (move.startedAt ?? nowMs));
+      const travelMs = Math.min(1250, Math.max(360, move.path.length * 180));
+      if (elapsed < travelMs + 650) {
+        emitForMove(move, 0);
+      }
+    }
+  }
   const serverNow = (): number => Date.now() + clockOffset;
   const name = (id: string): string => snapshot.room.players.find((player) => player.playerId === id)?.displayName ?? "플레이어";
   const myTeam = (): TeamId | undefined => view.teams.find((team) => team.playerIds.includes(snapshot.playerId))?.teamId;
@@ -191,6 +285,8 @@ export function mountGame(container: HTMLElement, context: GameClientContext): M
     preparePreview();
     if (!displayView.legalMoves.some((entry) => entry.pieceId === pieceId)) pieceId = undefined;
     message = "";
+    throwAudio.playHop();
+    boardFx.emitHop(move.destination, displayView.turn.teamId);
     sharePreview();
     render();
     focusNextChoice();
@@ -457,6 +553,12 @@ export function mountGame(container: HTMLElement, context: GameClientContext): M
     if (!soundMuted) throwAudio.unlock();
     try { localStorage.setItem("bighouse:yutnori:sound", soundMuted ? "off" : "on"); } catch { /* Retain in memory. */ }
   }
+  function onBgmChange(event: Event): void {
+    bgmMuted = !(event.target as HTMLInputElement).checked;
+    throwAudio.setBgmMuted(bgmMuted);
+    if (!bgmMuted) throwAudio.unlock();
+    try { localStorage.setItem("bighouse:yutnori:bgm", bgmMuted ? "off" : "on"); } catch { /* Retain in memory. */ }
+  }
   const unlockAudio = (): void => throwAudio.unlock();
   document.addEventListener("pointerdown", unlockAudio, { capture: true });
   document.addEventListener("keydown", unlockAudio, { capture: true });
@@ -466,6 +568,7 @@ export function mountGame(container: HTMLElement, context: GameClientContext): M
   surface.addEventListener("pointerup", pointerUp);
   surface.addEventListener("pointercancel", cancelDrag);
   el("sound").addEventListener("change", onSoundChange);
+  el("bgm").addEventListener("change", onBgmChange);
   el("vibration").addEventListener("change", onVibrationChange);
   function update(next: GameClientSnapshot): void {
     const previous = view;
@@ -491,9 +594,21 @@ export function mountGame(container: HTMLElement, context: GameClientContext): M
     gameUi.update(next);
     notifyTurn();
     render();
-    if (hasRendered && previous !== view) boardMotion.play(previous, view);
+    if (hasRendered && previous !== view) {
+      boardMotion.play(previous, view);
+      triggerMoveFeedback(previous, view);
+      if (view.winnerTeamId && !previous.winnerTeamId && lastVictoryMatchId !== view.matchId) {
+        lastVictoryMatchId = view.matchId;
+        const winner = view.winnerTeamId;
+        const winDelay = movementAnimating() ? Math.max(0, view.lastMoveSequence!.startedAt + view.lastMoveSequence!.durationMs - serverNow()) : 0;
+        scheduleFx(winDelay, () => {
+          throwAudio.playVictory();
+          boardFx.emitVictory(winner);
+        });
+      }
+    }
     hasRendered = true;
   }
   update(context);
-  return { update, destroy() { clearTimeout(refreshTimer); clearTimeout(previewTimer); clearTimeout(previewRenewTimer); cancelDrag(); surface.removeEventListener("pointerdown", pointerDown); surface.removeEventListener("pointermove", pointerMove); surface.removeEventListener("pointerup", pointerUp); surface.removeEventListener("pointercancel", cancelDrag); surface.removeEventListener("click", onClick); el("vibration").removeEventListener("change", onVibrationChange); document.removeEventListener("pointerdown", unlockAudio, { capture: true }); document.removeEventListener("keydown", unlockAudio, { capture: true }); el("sound").removeEventListener("change", onSoundChange); throwAudio.destroy(); scene.destroy(); boardMotion.destroy(); gameUi.destroy(); surface.remove(); } };
+  return { update, destroy() { clearTimeout(refreshTimer); clearTimeout(previewTimer); clearTimeout(previewRenewTimer); clearFxTimers(); cancelDrag(); surface.removeEventListener("pointerdown", pointerDown); surface.removeEventListener("pointermove", pointerMove); surface.removeEventListener("pointerup", pointerUp); surface.removeEventListener("pointercancel", cancelDrag); surface.removeEventListener("click", onClick); el("vibration").removeEventListener("change", onVibrationChange); document.removeEventListener("pointerdown", unlockAudio, { capture: true }); document.removeEventListener("keydown", unlockAudio, { capture: true }); el("sound").removeEventListener("change", onSoundChange); el("bgm").removeEventListener("change", onBgmChange); throwAudio.destroy(); scene.destroy(); boardMotion.destroy(); boardFx.destroy(); gameUi.destroy(); surface.remove(); } };
 }
