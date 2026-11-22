@@ -5,6 +5,7 @@ import { createGameUi, type GameResultDialogState } from "@bighouse/ui";
 import { GomokuAudioManager } from "./audio";
 import { GomokuCanvasRenderer } from "./renderer";
 import { placementProblem, type Board, type GomokuStatus, type Point, type Stone } from "./rules";
+import { resolveTurnStone } from "./turn-stone";
 export { gameMetadata } from "./client-metadata";
 
 type GomokuPublicView = {
@@ -368,14 +369,13 @@ function diffAddedStones(prevBoard: Board, nextBoard: Board): Array<Point & { st
 }
 
 function currentTurnStone(view: GomokuView): Stone | null {
-  const { status, moveCount } = view.publicView;
-  if (status.kind === "playing" && view.active) {
-    if (status.playerId === view.playerId && view.privateView.stone) {
-      return view.privateView.stone;
-    }
-    return moveCount % 2 === 0 ? "black" : "white";
-  }
-  return null;
+  return resolveTurnStone({
+    active: view.active,
+    status: view.publicView.status,
+    playerId: view.playerId,
+    myStone: view.privateView.stone,
+    players: view.players
+  });
 }
 
 function preventButtonFocus(event: MouseEvent): void {
