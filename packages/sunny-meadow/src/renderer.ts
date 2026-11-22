@@ -2287,7 +2287,7 @@ export class SunnyRenderer {
 
     // HP Bar
     const barX = 72;
-    const barW = 212;
+    const barW = 230;
     const hpRatio = Math.max(0, Math.min(1, p.hp / Math.max(1, p.maxHp)));
     ctx.fillStyle = "#3E2723";
     ctx.beginPath();
@@ -2299,7 +2299,7 @@ export class SunnyRenderer {
       ctx.roundRect(barX + 1, 19, Math.max(8, (barW - 2) * hpRatio), 14, 7);
       ctx.fill();
     }
-    ctx.font = 'bold 11px "Pretendard", sans-serif';
+    ctx.font = 'bold 11px "Pretendard", "Apple SD Gothic Neo", sans-serif';
     ctx.fillStyle = "#FFFFFF";
     ctx.textAlign = "center";
     ctx.fillText(`HP ${Math.ceil(p.hp)} / ${p.maxHp}`, barX + barW * 0.5, 26);
@@ -2317,7 +2317,7 @@ export class SunnyRenderer {
       ctx.fill();
     }
     ctx.fillStyle = "#EDE7F6";
-    ctx.font = 'bold 10px "Pretendard", sans-serif';
+    ctx.font = 'bold 10px "Pretendard", "Apple SD Gothic Neo", sans-serif';
     ctx.fillText(`EXP ${p.xp.toLocaleString()} / ${p.xpToNext.toLocaleString()}`, barX + barW * 0.5, 46);
 
     // Attack Power / Attack Speed + Potions + Inventory trigger chip
@@ -2325,16 +2325,16 @@ export class SunnyRenderer {
     const combatStats = computeEffectiveCombatStats(wObj, p.baseAtk, p.baseDex, eqUpgrade);
     const atkRateText = (1 / combatStats.cooldownSec).toFixed(1);
     ctx.textAlign = "left";
-    ctx.font = 'bold 11px "Pretendard", sans-serif';
+    ctx.font = 'bold 11px "Pretendard", "Apple SD Gothic Neo", sans-serif';
     ctx.fillStyle = "#FFE082";
     ctx.fillText(`공격 ${combatStats.totalAtk}`, barX, 71);
     ctx.fillStyle = "#A5D6A7";
-    ctx.fillText(`공속 ${atkRateText}`, barX + 52, 71);
+    ctx.fillText(`공속 ${atkRateText}`, barX + 60, 71);
     if (sheet) {
-      ctx.drawImage(sheet, 96, 0, 96, 96, barX + 100, 59, 20, 20);
+      ctx.drawImage(sheet, 96, 0, 96, 96, barX + 114, 59, 20, 20);
     }
     ctx.fillStyle = p.potions > 0 ? "#FFCDD2" : "#9E9E9E";
-    ctx.fillText(`×${p.potions}`, barX + 121, 71);
+    ctx.fillText(`×${p.potions}`, barX + 135, 71);
 
     const invChipW = 54;
     const invChipX = sb.x + sb.w - invChipW - 8;
@@ -2344,7 +2344,7 @@ export class SunnyRenderer {
     ctx.roundRect(invChipX, invChipY, invChipW, 19, 8);
     ctx.fill();
     ctx.textAlign = "center";
-    ctx.font = '800 10px "Pretendard", sans-serif';
+    ctx.font = '800 10px "Pretendard", "Apple SD Gothic Neo", sans-serif';
     ctx.fillStyle = scene.statusHover ? "#4A2C14" : "#FFF8E1";
     ctx.fillText("가방 ▸", invChipX + invChipW * 0.5, invChipY + 10);
 

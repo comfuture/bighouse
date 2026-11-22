@@ -251,10 +251,38 @@ describe("@bighouse/sunny-meadow economy, 4x6 inventory, chests & weapon upgrade
     );
     expect(countItemInInventory((state.playerStates.p1 as { inventory: typeof seededInv }).inventory, STONE_POWDER_ITEM_ID)).toBe(12);
 
+    // Rapid duplicate dismantle on Slot 0 (now holding stone_powder) degrades softly to sunny.actionIgnored
+    const dupDismantle = sunnyMeadowDefinition.applyAction(
+      { state, now: now + 700 },
+      { playerId: "p1", clientActionId: "dis_dup", expectedVersion: 0, type: "dismantleItem", payload: { slotIndex: 0, quantity: 1 } }
+    );
+    expect(dupDismantle.events).toContainEqual(
+      expect.objectContaining({
+        type: "sunny.actionIgnored",
+        payload: expect.objectContaining({ action: "dismantleItem", reason: "undismantleable_item" })
+      })
+    );
+
+    // Malformed non-numeric slotIndex (null / "" / false) must never coerce to slot 0
+    for (const badSlot of [null, "", false]) {
+      const badDis = sunnyMeadowDefinition.validateAction!(
+        { state, now: now + 750 },
+        { playerId: "p1", clientActionId: "bad_dis", expectedVersion: 0, type: "dismantleItem", payload: { slotIndex: badSlot, quantity: 1 } }
+      );
+      expect(badDis.ok).toBe(false);
+      expect(badDis.code).toBe("invalid_slot");
+      const badSell = sunnyMeadowDefinition.validateAction!(
+        { state, now: now + 750 },
+        { playerId: "p1", clientActionId: "bad_sell", expectedVersion: 0, type: "shopSell", payload: { slotIndex: badSlot, quantity: 1 } }
+      );
+      expect(badSell.ok).toBe(false);
+      expect(badSell.code).toBe("invalid_slot");
+    }
+
     // Smelt 1 중급 붉은 강화석 (12 가루 + 90 코인)
     const recipe = SMELTING_RECIPES_BY_ID.smelt_red_t2!;
     const smelted = sunnyMeadowDefinition.applyAction(
-      { state, now: now + 800 },
+      { state, now: now + 1000 },
       { playerId: "p1", clientActionId: "sm1", expectedVersion: 0, type: "smeltStone", payload: { recipeId: recipe.id, quantity: 1 } }
     );
     state = smelted.state;
@@ -269,7 +297,7 @@ describe("@bighouse/sunny-meadow economy, 4x6 inventory, chests & weapon upgrade
 
     // Now +3 -> +4 upgrade consumes the smelted 중급 붉은 강화석
     const upgraded = sunnyMeadowDefinition.applyAction(
-      { state, now: now + 1100 },
+      { state, now: now + 1300 },
       { playerId: "p1", clientActionId: "u_t2", expectedVersion: 0, type: "upgradeWeapon", payload: { weaponId: "wooden_sword", stat: "atk" } }
     );
     expect(upgraded.events).toContainEqual(
