@@ -1224,6 +1224,7 @@ input.game-plastic-input::placeholder {
     position: relative;
     min-width: 320px;
     height: 100svh;
+    height: 100dvh;
     overflow: hidden;
     --bh-room-backdrop-image:
       radial-gradient(circle at 18% 18%, rgb(255 255 255 / 0.18) 0 3px, transparent 4px),
@@ -1246,6 +1247,7 @@ input.game-plastic-input::placeholder {
     width: 100%;
     min-width: 0;
     height: 100svh;
+    height: 100dvh;
     min-height: 0;
     place-items: center;
     overflow: hidden;
@@ -1257,7 +1259,16 @@ input.game-plastic-input::placeholder {
     grid-area: 1 / 1;
     max-width: 100%;
     max-block-size: 100svh;
+    max-block-size: 100dvh;
     isolation: isolate;
+  }
+
+  :fullscreen .game-room-shell,
+  :fullscreen .game-room-host {
+    width: 100vw;
+    width: 100dvw;
+    height: 100vh;
+    height: 100dvh;
   }
 
   .game-room-loading {

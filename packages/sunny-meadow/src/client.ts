@@ -44,12 +44,23 @@ import {
 import { gameMetadata } from "./client-metadata";
 import {
   clientPointToCanvasLogical,
-  computeWeaponSlotHitboxes,
+  computeHudLayout,
   createHudClickController,
   hitTestHudPoint,
   hitTestWeaponSlotPoint,
-  type HudActionTarget
+  type HudActionTarget,
+  type HudLayout
 } from "./hud-interactions";
+import {
+  computeCameraBounds,
+  computeCameraTarget,
+  computeStageViewport,
+  createDefaultViewportState,
+  type SafeInsets,
+  type StageDisplayMode,
+  type StageViewportState,
+  type TopbarOverlayRect
+} from "./viewport";
 import { createMenuModeSync } from "./menu-mode-sync";
 import { createMobileJoypadController, type JoypadDirections } from "./mobile-joypad";
 import { createWeaponSwitchSequence } from "./weapon-switch-sequence";
@@ -178,20 +189,22 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
   const root = document.createElement("div");
   root.className = "sm-root";
   root.innerHTML = `
-    <header class="sm-topbar">
+    <div class="sm-safe-area-probe" data-el="safe-area-probe" aria-hidden="true"></div>
+    <header class="sm-topbar" data-el="topbar">
       <div class="sm-brand">
         <span class="sm-badge" data-el="stage-badge">STAGE 1</span>
         <h1 class="sm-title" data-el="stage-title">햇살 초원 모험</h1>
       </div>
-      <div class="sm-actions">
-        <button type="button" class="sm-btn sm-btn-primary" data-act="map">🗺 스테이지</button>
-        <button type="button" class="sm-btn" data-act="chat">💬 채팅</button>
-        <button type="button" class="sm-btn" data-act="mute">🔊 사운드</button>
-        <button type="button" class="sm-btn" data-act="help">📖 가이드</button>
-        <button type="button" class="sm-btn" data-act="share">🔗 초대</button>
-        <button type="button" class="sm-btn" data-act="fullscreen">⛶ 전체화면</button>
-        <button type="button" class="sm-btn" data-act="leave">🚪 나가기</button>
+      <div class="sm-actions" data-el="topbar-actions">
+        <button type="button" class="sm-btn sm-btn-primary" data-act="map" aria-label="스테이지 선택"><span aria-hidden="true">🗺</span><span class="sm-btn-label"> 스테이지</span></button>
+        <button type="button" class="sm-btn" data-act="chat" aria-label="채팅"><span aria-hidden="true">💬</span><span class="sm-btn-label"> 채팅</span></button>
+        <button type="button" class="sm-btn" data-act="mute" aria-label="사운드 켜기/끄기"><span data-el="mute-icon" aria-hidden="true">🔊</span><span class="sm-btn-label" data-el="mute-label"> 사운드</span></button>
+        <button type="button" class="sm-btn" data-act="help" aria-label="가이드"><span aria-hidden="true">📖</span><span class="sm-btn-label"> 가이드</span></button>
+        <button type="button" class="sm-btn" data-act="share" aria-label="초대"><span aria-hidden="true">🔗</span><span class="sm-btn-label"> 초대</span></button>
+        <button type="button" class="sm-btn sm-btn-fullscreen" data-act="fullscreen" aria-label="전체화면 전환" aria-pressed="false"><span data-el="fullscreen-icon" aria-hidden="true">⛶</span><span class="sm-btn-label" data-el="fullscreen-label"> 전체화면</span></button>
+        <button type="button" class="sm-btn" data-act="leave" aria-label="방 나가기"><span aria-hidden="true">🚪</span><span class="sm-btn-label"> 나가기</span></button>
       </div>
+      <button type="button" class="sm-btn sm-topbar-toggle" data-act="toggle-topbar" aria-label="상단 메뉴 접기" aria-expanded="true"><span data-el="topbar-toggle-icon" aria-hidden="true">▴</span></button>
     </header>
     <div class="sm-play-shell" data-el="play-shell">
       <section class="sm-stage-frame" data-el="stage-frame" aria-label="햇살 초원 모험 게임 화면">
@@ -210,7 +223,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
             <div class="sm-joypad-knob" data-el="joypad-knob"></div>
           </div>
         </div>
-        <div class="sm-action-pad" aria-label="행동 버튼">
+        <div class="sm-action-pad" data-el="action-pad" aria-label="행동 버튼">
           <button type="button" class="sm-action-btn sm-action-btn-sub sm-action-btn-potion" data-touch="potion" aria-label="포션 사용">
             <span class="sm-action-icon" aria-hidden="true">🧪</span>
             <span class="sm-action-badge" data-el="touch-potion-count">2</span>
@@ -347,6 +360,15 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
   `;
   container.appendChild(root);
 
+  const safeAreaProbe = root.querySelector<HTMLElement>('[data-el="safe-area-probe"]')!;
+  const topbarEl = root.querySelector<HTMLElement>('[data-el="topbar"]')!;
+  const topbarToggleBtn = root.querySelector<HTMLButtonElement>('[data-act="toggle-topbar"]')!;
+  const topbarToggleIconEl = root.querySelector<HTMLElement>('[data-el="topbar-toggle-icon"]')!;
+  const muteIconEl = root.querySelector<HTMLElement>('[data-el="mute-icon"]')!;
+  const muteLabelEl = root.querySelector<HTMLElement>('[data-el="mute-label"]')!;
+  const fullscreenBtn = root.querySelector<HTMLButtonElement>('[data-act="fullscreen"]')!;
+  const fullscreenIconEl = root.querySelector<HTMLElement>('[data-el="fullscreen-icon"]')!;
+  const fullscreenLabelEl = root.querySelector<HTMLElement>('[data-el="fullscreen-label"]')!;
   const playShell = root.querySelector<HTMLElement>('[data-el="play-shell"]')!;
   const canvas = root.querySelector<HTMLCanvasElement>('[data-el="canvas"]')!;
   const stageFrame = root.querySelector<HTMLElement>('[data-el="stage-frame"]')!;
@@ -354,6 +376,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
   const joypadZone = root.querySelector<HTMLElement>('[data-el="joypad-zone"]')!;
   const joypadBase = root.querySelector<HTMLElement>('[data-el="joypad-base"]')!;
   const joypadKnob = root.querySelector<HTMLElement>('[data-el="joypad-knob"]')!;
+  const actionPadEl = root.querySelector<HTMLElement>('[data-el="action-pad"]')!;
   const touchPotionCountEl = root.querySelector<HTMLElement>('[data-el="touch-potion-count"]')!;
   const stageBadge = root.querySelector<HTMLElement>('[data-el="stage-badge"]')!;
   const stageTitle = root.querySelector<HTMLElement>('[data-el="stage-title"]')!;
@@ -520,14 +543,33 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
     virtualTapQueue.clear();
   }
 
+  let stageViewport: StageViewportState = createDefaultViewportState();
+  let hudLayout: HudLayout = computeHudLayout(stageViewport);
+  let topbarCollapsed = false;
+  let wasFullscreen = false;
   let lastHudWeaponSlotsKey = "";
   let hoveredWeaponId: string | null = null;
 
-  function syncHudWeaponSlots(): void {
-    const key = `${localPlayer.unlockedWeapons.join(",")}|${localPlayer.equippedWeaponId}`;
-    if (key === lastHudWeaponSlotsKey) return;
+  function applyHudHotspotRect(
+    el: HTMLElement | null,
+    rect: { x: number; y: number; w: number; h: number },
+    hudW: number,
+    hudH: number
+  ): void {
+    if (!el || hudW <= 0 || hudH <= 0) return;
+    el.style.left = `${((rect.x / hudW) * 100).toFixed(3)}%`;
+    el.style.right = "auto";
+    el.style.top = `${((rect.y / hudH) * 100).toFixed(3)}%`;
+    el.style.width = `${((rect.w / hudW) * 100).toFixed(3)}%`;
+    el.style.height = `${((rect.h / hudH) * 100).toFixed(3)}%`;
+  }
+
+  function syncHudWeaponSlots(force = false): void {
+    hudLayout = computeHudLayout(stageViewport, localPlayer.unlockedWeapons);
+    const key = `${localPlayer.unlockedWeapons.join(",")}|${localPlayer.equippedWeaponId}|${hudLayout.hudWidth.toFixed(1)}x${hudLayout.hudHeight.toFixed(1)}|${hudLayout.weaponBarRect.y.toFixed(1)}|${hudLayout.weaponSlotSize}`;
+    if (!force && key === lastHudWeaponSlotsKey) return;
     lastHudWeaponSlotsKey = key;
-    const { slots } = computeWeaponSlotHitboxes(localPlayer.unlockedWeapons);
+    const { weaponSlots: slots, hudWidth, hudHeight } = hudLayout;
     hudWeaponBarEl.textContent = "";
     for (const { weaponId, rect } of slots) {
       const w = WEAPON_CATALOG[weaponId];
@@ -539,10 +581,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
       btn.dataset.weaponSlot = weaponId;
       btn.setAttribute("aria-label", `${w.name} 장착`);
       btn.setAttribute("aria-pressed", String(active));
-      btn.style.left = `${((rect.x / VIEWPORT.width) * 100).toFixed(3)}%`;
-      btn.style.top = `${((rect.y / VIEWPORT.height) * 100).toFixed(3)}%`;
-      btn.style.width = `${((rect.w / VIEWPORT.width) * 100).toFixed(3)}%`;
-      btn.style.height = `${((rect.h / VIEWPORT.height) * 100).toFixed(3)}%`;
+      applyHudHotspotRect(btn, rect, hudWidth, hudHeight);
       btn.addEventListener("pointerenter", () => {
         if (!downed()) hoveredWeaponId = weaponId;
       });
@@ -569,6 +608,138 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
       });
       hudWeaponBarEl.append(btn);
     }
+  }
+
+  function syncHudHotspots(forceWeapons = false): void {
+    hudLayout = computeHudLayout(stageViewport, localPlayer.unlockedWeapons);
+    applyHudHotspotRect(
+      root.querySelector<HTMLElement>('[data-act="hud-inventory"]'),
+      hudLayout.statusRect,
+      hudLayout.hudWidth,
+      hudLayout.hudHeight
+    );
+    applyHudHotspotRect(
+      root.querySelector<HTMLElement>('[data-act="hud-shop"]'),
+      hudLayout.coinRect,
+      hudLayout.hudWidth,
+      hudLayout.hudHeight
+    );
+    syncHudWeaponSlots(forceWeapons);
+  }
+
+  function readSafeInsets(): SafeInsets {
+    const cs = window.getComputedStyle(safeAreaProbe);
+    return {
+      top: parseFloat(cs.paddingTop) || 0,
+      right: parseFloat(cs.paddingRight) || 0,
+      bottom: parseFloat(cs.paddingBottom) || 0,
+      left: parseFloat(cs.paddingLeft) || 0
+    };
+  }
+
+  function detectMobileOverlay(): boolean {
+    return (
+      window.matchMedia("(hover: none) and (pointer: coarse)").matches ||
+      window.matchMedia("(max-width: 720px), (orientation: landscape) and (max-height: 540px)").matches
+    );
+  }
+
+  function getStageScreenWidthPx(): number {
+    return (
+      (compiledStage.meta.screenWidthTiles || VIEWPORT.screenWidthTiles) *
+      (compiledStage.meta.tileSize || VIEWPORT.tileSize)
+    );
+  }
+
+  function syncViewport(): void {
+    if (destroyed) return;
+    const isFullscreen = Boolean(document.fullscreenElement);
+    if (wasFullscreen && !isFullscreen) {
+      topbarCollapsed = false;
+    }
+    wasFullscreen = isFullscreen;
+
+    const mobileOverlay = detectMobileOverlay();
+    const mode: StageDisplayMode = isFullscreen || mobileOverlay ? "expanded" : "framed";
+
+    root.classList.toggle("is-fullscreen", isFullscreen);
+    root.classList.toggle("is-expanded", mode === "expanded");
+    root.classList.toggle("is-mobile-overlay", mobileOverlay);
+    root.classList.toggle("is-topbar-collapsed", mode === "expanded" && topbarCollapsed);
+
+    fullscreenBtn.setAttribute("aria-pressed", String(isFullscreen));
+    fullscreenBtn.setAttribute("aria-label", isFullscreen ? "전체화면 종료" : "전체화면 전환");
+    fullscreenIconEl.textContent = isFullscreen ? "✕" : "⛶";
+    fullscreenLabelEl.textContent = isFullscreen ? " 창모드" : " 전체화면";
+
+    topbarToggleBtn.setAttribute("aria-expanded", String(!topbarCollapsed));
+    topbarToggleBtn.setAttribute("aria-label", topbarCollapsed ? "상단 메뉴 펼치기" : "상단 메뉴 접기");
+    topbarToggleIconEl.textContent = topbarCollapsed ? "☰" : "▴";
+
+    const sfRect = stageFrame.getBoundingClientRect();
+    const cssWidth = sfRect.width > 0 ? sfRect.width : VIEWPORT.width;
+    const cssHeight = sfRect.height > 0 ? sfRect.height : VIEWPORT.height;
+    const isPortrait = cssHeight > cssWidth;
+    root.classList.toggle("is-portrait", isPortrait);
+
+    const safeInsets = readSafeInsets();
+
+    let floatingTopbarCss: TopbarOverlayRect | null = null;
+    if (mode === "expanded") {
+      const tbRect = topbarEl.getBoundingClientRect();
+      if (tbRect.width > 0 && tbRect.height > 0) {
+        floatingTopbarCss = {
+          left: tbRect.left - sfRect.left,
+          top: tbRect.top - sfRect.top,
+          width: tbRect.width,
+          height: tbRect.height
+        };
+      }
+    }
+
+    let mobileControlBandCss = 0;
+    if (mode === "expanded" && mobileOverlay) {
+      if (isPortrait) {
+        const jzRect = joypadZone.getBoundingClientRect();
+        mobileControlBandCss = jzRect.height > 40 ? jzRect.height : 156 + safeInsets.bottom;
+      } else {
+        const apRect = actionPadEl.getBoundingClientRect();
+        const measured = apRect.height > 40 ? sfRect.bottom - apRect.top : 108 + safeInsets.bottom;
+        mobileControlBandCss = Math.max(84, Math.min(156, measured));
+      }
+    }
+
+    stageViewport = computeStageViewport({
+      mode,
+      cssWidth,
+      cssHeight,
+      dpr: window.devicePixelRatio || 1,
+      mobileOverlay,
+      safeInsets,
+      mobileControlBandCss,
+      floatingTopbarCss
+    });
+
+    if (canvas.width !== stageViewport.pixelWidth || canvas.height !== stageViewport.pixelHeight) {
+      canvas.width = stageViewport.pixelWidth;
+      canvas.height = stageViewport.pixelHeight;
+    }
+
+    syncHudHotspots(true);
+
+    const bounds = computeCameraBounds(
+      compiledStage.meta.worldWidth,
+      compiledStage.meta.worldHeight,
+      getStageScreenWidthPx(),
+      localPlayer.x + localPlayer.w * 0.5,
+      stageViewport
+    );
+    camera.minX = bounds.minX;
+    camera.maxX = bounds.maxX;
+    camera.minY = bounds.minY;
+    camera.maxY = bounds.maxY;
+    camera.x = Math.max(camera.minX, Math.min(camera.maxX, camera.x));
+    camera.y = Math.max(camera.minY, Math.min(camera.maxY, camera.y));
   }
 
   function syncMobileActionBadges(): void {
@@ -716,7 +887,7 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
   let shakeY = 0;
   let warpFlash = 0;
 
-  const camera = { x: 0, y: 280, maxX: 0, maxY: 0 };
+  const camera = { x: 0, y: 280, minX: 0, maxX: 0, minY: 0, maxY: 0 };
   let mobs: ClientMobEntity[] = [];
   const mobsById = new Map<string, ClientMobEntity>();
   let items: ClientItemRender[] = [];
@@ -1295,10 +1466,25 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
       lastSafeY = spawnY;
     }
 
-    camera.maxX = Math.max(0, compiledStage.meta.worldWidth - VIEWPORT.width);
-    camera.maxY = Math.max(0, compiledStage.meta.worldHeight - VIEWPORT.height);
-    camera.x = Math.max(0, Math.min(camera.maxX, localPlayer.x - VIEWPORT.width * 0.42));
-    camera.y = Math.max(0, Math.min(camera.maxY, localPlayer.y - VIEWPORT.height * 0.55));
+    const camInit = computeCameraTarget({
+      playerX: localPlayer.x,
+      playerY: localPlayer.y,
+      playerW: localPlayer.w,
+      playerH: localPlayer.h,
+      facing: localPlayer.facing,
+      stageWorldWidth: compiledStage.meta.worldWidth,
+      stageWorldHeight: compiledStage.meta.worldHeight,
+      screenWidthPx: getStageScreenWidthPx(),
+      viewport: stageViewport,
+      topHudClearanceHud: hudLayout.topClearanceHud,
+      weaponBarClearanceHud: hudLayout.bottomClearanceHud
+    });
+    camera.minX = camInit.bounds.minX;
+    camera.maxX = camInit.bounds.maxX;
+    camera.minY = camInit.bounds.minY;
+    camera.maxY = camInit.bounds.maxY;
+    camera.x = camInit.x;
+    camera.y = camInit.y;
     warpFlash = 0.25;
   }
 
@@ -2741,15 +2927,20 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
   muteBtn.addEventListener("click", async () => {
     await audio.unlock();
     const muted = audio.toggleMute();
-    muteBtn.textContent = muted ? "🔇 음소거" : "🔊 사운드";
+    muteIconEl.textContent = muted ? "🔇" : "🔊";
+    muteLabelEl.textContent = muted ? " 음소거" : " 사운드";
   });
   root.querySelector<HTMLElement>('[data-act="chat"]')?.addEventListener("click", (event) => {
     if (chat.open) chat.open = false;
     else chat.openFrom(event.currentTarget as HTMLElement);
   });
   root.querySelector('[data-act="share"]')?.addEventListener("click", () => actions.shareRoom());
-  root.querySelector('[data-act="fullscreen"]')?.addEventListener("click", () => {
+  fullscreenBtn.addEventListener("click", () => {
     container.dispatchEvent(new CustomEvent("bighouse-toggle-fullscreen", { bubbles: true }));
+  });
+  topbarToggleBtn.addEventListener("click", () => {
+    topbarCollapsed = !topbarCollapsed;
+    syncViewport();
   });
   root.querySelector('[data-act="leave"]')?.addEventListener("click", () => {
     actions.sendAction({ type: "checkpoint", payload: { x: Math.round(localPlayer.x), y: Math.round(localPlayer.y) } });
@@ -2799,12 +2990,18 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
   // Activated on `click` (not `pointerdown`) so `closedby="any"` dialogs are never
   // light-dismissed by the matching `pointerup` release outside the centered modal.
   const getHudTargetAtEvent = (e: MouseEvent): HudActionTarget | null => {
-    const pt = clientPointToCanvasLogical(e.clientX, e.clientY, canvas.getBoundingClientRect());
-    return pt ? hitTestHudPoint(pt.x, pt.y) : null;
+    const pt = clientPointToCanvasLogical(e.clientX, e.clientY, canvas.getBoundingClientRect(), {
+      width: hudLayout.hudWidth,
+      height: hudLayout.hudHeight
+    });
+    return pt ? hitTestHudPoint(pt.x, pt.y, hudLayout) : null;
   };
   const getWeaponSlotAtClientPoint = (clientX: number, clientY: number): string | null => {
-    const pt = clientPointToCanvasLogical(clientX, clientY, canvas.getBoundingClientRect());
-    return pt ? hitTestWeaponSlotPoint(pt.x, pt.y, localPlayer.unlockedWeapons) : null;
+    const pt = clientPointToCanvasLogical(clientX, clientY, canvas.getBoundingClientRect(), {
+      width: hudLayout.hudWidth,
+      height: hudLayout.hudHeight
+    });
+    return pt ? hitTestWeaponSlotPoint(pt.x, pt.y, localPlayer.unlockedWeapons, hudLayout) : null;
   };
   const onCanvasPointerMove = (e: PointerEvent) => {
     const blocked = downed() || inventoryDialog.open || shopDialog.open || mapDialog.open || helpDialog.open;
@@ -2928,13 +3125,33 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
       resetMobileControls();
     }
   };
+  let viewportSyncRaf: number | null = null;
+  const scheduleViewportSync = () => {
+    if (destroyed || viewportSyncRaf !== null) return;
+    viewportSyncRaf = requestAnimationFrame(() => {
+      viewportSyncRaf = null;
+      syncViewport();
+    });
+  };
   const onViewportChange = () => {
     resetMobileControls();
+    syncViewport();
+    scheduleViewportSync();
   };
+  let stageResizeObserver: ResizeObserver | null = null;
+  if (typeof ResizeObserver !== "undefined") {
+    stageResizeObserver = new ResizeObserver(() => {
+      scheduleViewportSync();
+    });
+    stageResizeObserver.observe(stageFrame);
+    stageResizeObserver.observe(topbarEl);
+  }
   window.addEventListener("keydown", onKeyDown);
   window.addEventListener("keyup", onKeyUp);
   window.addEventListener("blur", onBlur);
   window.addEventListener("resize", onViewportChange);
+  window.addEventListener("orientationchange", onViewportChange);
+  window.visualViewport?.addEventListener("resize", onViewportChange);
   document.addEventListener("visibilitychange", onVisibilityChange);
   document.addEventListener("fullscreenchange", onViewportChange);
 
@@ -4434,12 +4651,26 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
   }
 
   function updateCamera(dt: number): void {
-    const lookAhead = localPlayer.facing * 54;
-    const targetX = Math.max(0, Math.min(camera.maxX, localPlayer.x + localPlayer.w * 0.5 + lookAhead - VIEWPORT.width * 0.46));
-    const targetY = Math.max(0, Math.min(camera.maxY, localPlayer.y + localPlayer.h * 0.5 - VIEWPORT.height * 0.55));
+    const camTarget = computeCameraTarget({
+      playerX: localPlayer.x,
+      playerY: localPlayer.y,
+      playerW: localPlayer.w,
+      playerH: localPlayer.h,
+      facing: localPlayer.facing,
+      stageWorldWidth: compiledStage.meta.worldWidth,
+      stageWorldHeight: compiledStage.meta.worldHeight,
+      screenWidthPx: getStageScreenWidthPx(),
+      viewport: stageViewport,
+      topHudClearanceHud: hudLayout.topClearanceHud,
+      weaponBarClearanceHud: hudLayout.bottomClearanceHud
+    });
+    camera.minX = camTarget.bounds.minX;
+    camera.maxX = camTarget.bounds.maxX;
+    camera.minY = camTarget.bounds.minY;
+    camera.maxY = camTarget.bounds.maxY;
     const s = Math.min(1, dt * 6.5);
-    camera.x += (targetX - camera.x) * s;
-    camera.y += (targetY - camera.y) * s;
+    camera.x = Math.max(camera.minX, Math.min(camera.maxX, camera.x + (camTarget.x - camera.x) * s));
+    camera.y = Math.max(camera.minY, Math.min(camera.maxY, camera.y + (camTarget.y - camera.y) * s));
   }
 
   function sendPeriodicSync(dt: number): void {
@@ -4546,7 +4777,9 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
           statusHover,
           hoveredWeaponId,
           stagePlayerCount,
-          totalPlayersOnline
+          totalPlayersOnline,
+          viewport: stageViewport,
+          hudLayout
         },
         frameDt
       );
@@ -4582,10 +4815,13 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
   }
 
   // Bootstrap assets & initial state
+  syncViewport();
   applySnapshot(initialContext);
+  scheduleViewportSync();
   void loadSunnyImages().then((imgs) => {
     if (destroyed) return;
     renderer = new SunnyRenderer(canvas, imgs);
+    syncViewport();
     startLoop();
   });
 
@@ -4603,10 +4839,14 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
       destroyed = true;
       resetMobileControls();
       if (rafId !== null) cancelAnimationFrame(rafId);
+      if (viewportSyncRaf !== null) cancelAnimationFrame(viewportSyncRaf);
+      stageResizeObserver?.disconnect();
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("keyup", onKeyUp);
       window.removeEventListener("blur", onBlur);
       window.removeEventListener("resize", onViewportChange);
+      window.removeEventListener("orientationchange", onViewportChange);
+      window.visualViewport?.removeEventListener("resize", onViewportChange);
       window.removeEventListener("pointermove", onWindowPointerMove);
       window.removeEventListener("pointerup", onWindowPointerEnd);
       window.removeEventListener("pointercancel", onWindowPointerEnd);

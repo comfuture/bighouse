@@ -43,10 +43,11 @@ import {
   computeEffectiveCombatStats,
   getWeaponUpgrade
 } from "./economy";
-import { computeWeaponSlotHitboxes, HUD_COIN_HITBOX, HUD_STATUS_HITBOX } from "./hud-interactions";
+import { computeHudLayout, HUD_COIN_HITBOX, HUD_STATUS_HITBOX, type HudLayout } from "./hud-interactions";
 import type { CompiledStage, RuntimeDecoration, RuntimePlatform, RuntimePortal } from "./map-schema";
 import { computeXpEfficiency } from "./progression";
 import type { ActiveStatusEffect, RemotePlayerView, StageTheme, StatusEffectKind, WeaponUpgradeState } from "./types";
+import { createDefaultViewportState, type StageViewportState } from "./viewport";
 
 export { economySheetUrl, itemsSheetUrl, heroUrl, HUD_COIN_HITBOX, HUD_STATUS_HITBOX };
 
@@ -280,6 +281,8 @@ export type RenderScene = {
   hoveredWeaponId?: string | null;
   stagePlayerCount: number;
   totalPlayersOnline: number;
+  viewport?: StageViewportState;
+  hudLayout?: HudLayout;
 };
 
 export async function loadSunnyImages(): Promise<Record<string, HTMLImageElement>> {
@@ -300,6 +303,7 @@ export async function loadSunnyImages(): Promise<Record<string, HTMLImageElement
 }
 
 export class SunnyRenderer {
+  private canvas: HTMLCanvasElement;
   private ctx: CanvasRenderingContext2D;
   private tintCanvas: HTMLCanvasElement;
   private tintCtx: CanvasRenderingContext2D;
@@ -312,6 +316,7 @@ export class SunnyRenderer {
   ) {
     const ctx = canvas.getContext("2d");
     if (!ctx) throw new Error("2D canvas context unavailable");
+    this.canvas = canvas;
     this.ctx = ctx;
     this.tintCanvas = document.createElement("canvas");
     this.tintCanvas.width = 128;
@@ -322,20 +327,28 @@ export class SunnyRenderer {
   render(scene: RenderScene, dt: number): void {
     this.time += dt;
     const ctx = this.ctx;
-    const W = VIEWPORT.width;
-    const H = VIEWPORT.height;
+    const vp = scene.viewport ?? createDefaultViewportState();
+    const hudLayout = scene.hudLayout ?? computeHudLayout(vp, scene.player.unlockedWeapons);
+    const W = vp.worldWidth;
+    const H = vp.worldHeight;
+    const backingW = Math.max(1, this.canvas.width);
+    const backingH = Math.max(1, this.canvas.height);
 
     ctx.save();
+    ctx.setTransform(backingW / W, 0, 0, backingH / H, 0, 0);
     ctx.clearRect(0, 0, W, H);
-
-    this.drawParallax(ctx, scene.camera, scene.stage.meta.themeId);
 
     const camX = Math.round(scene.camera.x + scene.shakeX);
     const camY = Math.round(scene.camera.y + scene.shakeY);
+    const worldBottomScreenY = scene.stage.meta.worldHeight - camY;
+    const horizonH = Math.max(Math.min(H, VIEWPORT.height), Math.min(H, worldBottomScreenY));
+
+    this.drawParallax(ctx, scene.camera, scene.stage.meta.themeId, W, H, horizonH);
 
     ctx.save();
     ctx.translate(-camX, -camY);
 
+    this.drawWorldFoundation(ctx, scene.stage, camX, camY, W, H);
     this.drawHazards(ctx, scene.stage, camX, W);
     this.drawPlatforms(ctx, scene.stage, camX, W);
     this.drawMovingPlatforms(ctx, scene.stage, camX, W);
@@ -359,7 +372,8 @@ export class SunnyRenderer {
       ctx.fillRect(0, 0, W, H);
     }
 
-    this.drawHUD(ctx, scene);
+    ctx.setTransform(backingW / hudLayout.hudWidth, 0, 0, backingH / hudLayout.hudHeight, 0, 0);
+    this.drawHUD(ctx, scene, hudLayout);
     ctx.restore();
   }
 
@@ -567,12 +581,17 @@ export class SunnyRenderer {
     return canvas;
   }
 
-  private drawParallax(ctx: CanvasRenderingContext2D, camera: RenderScene["camera"], themeId: string): void {
-    const W = VIEWPORT.width;
-    const H = VIEWPORT.height;
+  private drawParallax(
+    ctx: CanvasRenderingContext2D,
+    camera: RenderScene["camera"],
+    themeId: string,
+    W: number,
+    H: number,
+    horizonH: number
+  ): void {
     const theme = THEME_CATALOG[themeId] ?? THEME_CATALOG.sunny_meadow!;
 
-    const grad = ctx.createLinearGradient(0, 0, 0, H);
+    const grad = ctx.createLinearGradient(0, 0, 0, Math.max(H, horizonH));
     grad.addColorStop(0, theme.skyGradient[0]);
     grad.addColorStop(0.62, theme.skyGradient[1]);
     grad.addColorStop(1, theme.skyGradient[2]);
@@ -580,7 +599,7 @@ export class SunnyRenderer {
     ctx.fillRect(0, 0, W, H);
 
     // Biome-specific far sky art (sun, moon, aurora, cave ceiling, embers)
-    this.drawBiomeSkyDetails(ctx, camera, theme, W, H);
+    this.drawBiomeSkyDetails(ctx, camera, theme, W, horizonH);
 
     // Use illustrated parallax layers for outdoor meadow/clover/cliff/maple/forest,
     // and bespoke procedural parallax silhouettes for cavern/marsh/cloud/volcano/starlight
@@ -605,27 +624,79 @@ export class SunnyRenderer {
         ctx.globalAlpha = layer.alpha;
         const imgW = img.width;
         const imgH = img.height;
+        const scale = layer.anchorBottom
+          ? Math.max(1, Math.min(1.45, horizonH / imgH))
+          : Math.max(1, horizonH / imgH);
+        const drawW = imgW * scale;
+        const drawH = imgH * scale;
         const scrollX = camera.x * layer.factorX + this.time * layer.drift;
-        let startX = -(scrollX % imgW);
-        if (startX > 0) startX -= imgW;
+        let startX = -(scrollX % drawW);
+        if (startX > 0) startX -= drawW;
         const offsetY = layer.anchorBottom
-          ? H - imgH + Math.min(48, Math.max(-36, (camera.maxY - camera.y) * layer.factorY * 0.35))
-          : -Math.min(30, camera.y * layer.factorY * 0.25);
+          ? horizonH - drawH + Math.min(48, Math.max(-36, (camera.maxY - camera.y) * layer.factorY * 0.35))
+          : -Math.min(30, Math.max(0, camera.y) * layer.factorY * 0.25);
 
-        for (let x = startX; x < W; x += imgW) {
-          ctx.drawImage(img, Math.floor(x), Math.floor(offsetY));
+        for (let x = startX; x < W; x += drawW) {
+          ctx.drawImage(img, Math.floor(x), Math.floor(offsetY), Math.ceil(drawW), Math.ceil(drawH));
         }
         ctx.restore();
       }
     }
 
     // Distinct mid-ground biome landmarks & drifting ambient particles
-    this.drawBiomeScenery(ctx, camera, theme, W, H);
+    this.drawBiomeScenery(ctx, camera, theme, W, horizonH);
 
     if (theme.ambientOverlay) {
       ctx.fillStyle = theme.ambientOverlay;
       ctx.fillRect(0, 0, W, H);
     }
+  }
+
+  /**
+   * Seamless deep underground foundation rendered below stage.meta.worldHeight when
+   * mobile overlay bottom clearance lifts the playable ground floor upward.
+   */
+  private drawWorldFoundation(
+    ctx: CanvasRenderingContext2D,
+    stage: CompiledStage,
+    camX: number,
+    camY: number,
+    viewW: number,
+    viewH: number
+  ): void {
+    const worldBottom = stage.meta.worldHeight;
+    const screenBottomWorld = camY + viewH;
+    if (screenBottomWorld <= worldBottom) return;
+
+    const theme = THEME_CATALOG[stage.meta.themeId] ?? THEME_CATALOG.sunny_meadow!;
+    const tiles = this.getBiomeTileset(stage.meta.themeId);
+    const ts = 48;
+    const fillH = screenBottomWorld - worldBottom + ts;
+    const startX = Math.floor(camX / ts) * ts - ts;
+    const endX = camX + viewW + ts;
+
+    ctx.save();
+    ctx.fillStyle = theme.palette.bodyDark;
+    ctx.fillRect(startX, worldBottom, endX - startX, fillH);
+
+    if (tiles) {
+      const rows = Math.ceil(fillH / ts);
+      for (let r = 0; r < rows; r++) {
+        const y = worldBottom + r * ts;
+        for (let x = startX; x < endX; x += ts) {
+          ctx.drawImage(tiles, 4 * ts, 0, ts, ts, x, y, ts, ts);
+        }
+      }
+    }
+
+    // Subtle atmospheric depth scrim so mobile thumb controls stay crisp and high-contrast
+    const shade = ctx.createLinearGradient(0, worldBottom, 0, screenBottomWorld);
+    shade.addColorStop(0, "rgba(18, 12, 8, 0.24)");
+    shade.addColorStop(0.45, "rgba(14, 9, 6, 0.44)");
+    shade.addColorStop(1, "rgba(10, 6, 4, 0.62)");
+    ctx.fillStyle = shade;
+    ctx.fillRect(startX, worldBottom, endX - startX, fillH);
+    ctx.restore();
   }
 
   private drawBiomeSkyDetails(
@@ -2254,16 +2325,16 @@ export class SunnyRenderer {
     ctx.restore();
   }
 
-  private drawHUD(ctx: CanvasRenderingContext2D, scene: RenderScene): void {
-    const W = VIEWPORT.width;
-    const H = VIEWPORT.height;
+  private drawHUD(ctx: CanvasRenderingContext2D, scene: RenderScene, layout: HudLayout): void {
+    const W = layout.hudWidth;
     const p = scene.player;
     const sheet = this.images.items_sheet;
     const wObj = WEAPON_CATALOG[p.equippedWeaponId] ?? WEAPON_CATALOG.wooden_sword!;
 
     ctx.save();
     // --- Top-Left: Clickable Character Status Card (opens Inventory) ---
-    const sb = HUD_STATUS_HITBOX;
+    const sb = layout.statusRect;
+    const narrowStatus = sb.w < 276;
     ctx.fillStyle = scene.statusHover ? "rgba(68, 42, 18, 0.92)" : "rgba(42, 26, 14, 0.80)";
     ctx.strokeStyle = scene.statusHover ? "#FFE57F" : "rgba(255, 224, 130, 0.65)";
     ctx.lineWidth = scene.statusHover ? 2.4 : 2;
@@ -2273,74 +2344,87 @@ export class SunnyRenderer {
     ctx.stroke();
 
     if (this.images.hero) {
-      ctx.drawImage(this.images.hero, 15, 16, 48, 50);
+      ctx.drawImage(this.images.hero, sb.x + 3, sb.y + 6, 48, 50);
     }
 
     // Level pill under avatar
     ctx.fillStyle = "#FFD740";
     ctx.beginPath();
-    ctx.roundRect(18, 66, 44, 18, 8);
+    ctx.roundRect(sb.x + 6, sb.y + 56, 44, 18, 8);
     ctx.fill();
     ctx.font = '900 11px "Pretendard", sans-serif';
     ctx.fillStyle = "#4A2C14";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
-    ctx.fillText(`Lv.${p.level}`, 40, 75);
+    ctx.fillText(`Lv.${p.level}`, sb.x + 28, sb.y + 65);
 
     // HP Bar
-    const barX = 72;
-    const barW = 230;
+    const barX = sb.x + 60;
+    const barW = Math.max(110, sb.w - 74);
     const hpRatio = Math.max(0, Math.min(1, p.hp / Math.max(1, p.maxHp)));
     ctx.fillStyle = "#3E2723";
     ctx.beginPath();
-    ctx.roundRect(barX, 18, barW, 16, 8);
+    ctx.roundRect(barX, sb.y + 8, barW, 16, 8);
     ctx.fill();
     if (hpRatio > 0) {
       ctx.fillStyle = hpRatio > 0.35 ? "#FF5252" : "#D50000";
       ctx.beginPath();
-      ctx.roundRect(barX + 1, 19, Math.max(8, (barW - 2) * hpRatio), 14, 7);
+      ctx.roundRect(barX + 1, sb.y + 9, Math.max(8, (barW - 2) * hpRatio), 14, 7);
       ctx.fill();
     }
     ctx.font = 'bold 11px "Pretendard", "Apple SD Gothic Neo", sans-serif';
     ctx.fillStyle = "#FFFFFF";
     ctx.textAlign = "center";
-    ctx.fillText(`HP ${Math.ceil(p.hp)} / ${p.maxHp}`, barX + barW * 0.5, 26);
+    ctx.fillText(`HP ${Math.ceil(p.hp)} / ${p.maxHp}`, barX + barW * 0.5, sb.y + 16);
 
     // EXP Bar
     const xpRatio = Math.max(0, Math.min(1, p.xp / Math.max(1, p.xpToNext)));
     ctx.fillStyle = "#263238";
     ctx.beginPath();
-    ctx.roundRect(barX, 39, barW, 14, 7);
+    ctx.roundRect(barX, sb.y + 29, barW, 14, 7);
     ctx.fill();
     if (xpRatio > 0) {
       ctx.fillStyle = "#7C4DFF";
       ctx.beginPath();
-      ctx.roundRect(barX + 1, 40, Math.max(6, (barW - 2) * xpRatio), 12, 6);
+      ctx.roundRect(barX + 1, sb.y + 30, Math.max(6, (barW - 2) * xpRatio), 12, 6);
       ctx.fill();
     }
     ctx.fillStyle = "#EDE7F6";
     ctx.font = 'bold 10px "Pretendard", "Apple SD Gothic Neo", sans-serif';
-    ctx.fillText(`EXP ${p.xp.toLocaleString()} / ${p.xpToNext.toLocaleString()}`, barX + barW * 0.5, 46);
+    ctx.fillText(`EXP ${p.xp.toLocaleString()} / ${p.xpToNext.toLocaleString()}`, barX + barW * 0.5, sb.y + 36);
 
     // Attack Power / Attack Speed + Potions + Inventory trigger chip
     const eqUpgrade = getWeaponUpgrade(p.weaponUpgrades, wObj.id);
     const combatStats = computeEffectiveCombatStats(wObj, p.baseAtk, p.baseDex, eqUpgrade);
     const atkRateText = (1 / combatStats.cooldownSec).toFixed(1);
-    ctx.textAlign = "left";
-    ctx.font = 'bold 11px "Pretendard", "Apple SD Gothic Neo", sans-serif';
-    ctx.fillStyle = "#FFE082";
-    ctx.fillText(`공격 ${combatStats.totalAtk}`, barX, 71);
-    ctx.fillStyle = "#A5D6A7";
-    ctx.fillText(`공속 ${atkRateText}`, barX + 60, 71);
-    if (sheet) {
-      ctx.drawImage(sheet, 96, 0, 96, 96, barX + 114, 59, 20, 20);
-    }
-    ctx.fillStyle = p.potions > 0 ? "#FFCDD2" : "#9E9E9E";
-    ctx.fillText(`×${p.potions}`, barX + 135, 71);
-
-    const invChipW = 54;
+    const invChipW = narrowStatus ? 46 : 54;
     const invChipX = sb.x + sb.w - invChipW - 8;
-    const invChipY = 61;
+    const invChipY = sb.y + 51;
+    const statBaselineY = sb.y + 61;
+
+    ctx.textAlign = "left";
+    ctx.font = narrowStatus
+      ? 'bold 10px "Pretendard", "Apple SD Gothic Neo", sans-serif'
+      : 'bold 11px "Pretendard", "Apple SD Gothic Neo", sans-serif';
+    ctx.fillStyle = "#FFE082";
+    ctx.fillText(`공격 ${combatStats.totalAtk}`, barX, statBaselineY);
+    if (!narrowStatus) {
+      ctx.fillStyle = "#A5D6A7";
+      ctx.fillText(`공속 ${atkRateText}`, barX + 60, statBaselineY);
+      if (sheet) {
+        ctx.drawImage(sheet, 96, 0, 96, 96, barX + 114, sb.y + 49, 20, 20);
+      }
+      ctx.fillStyle = p.potions > 0 ? "#FFCDD2" : "#9E9E9E";
+      ctx.fillText(`×${p.potions}`, barX + 135, statBaselineY);
+    } else {
+      const potX = barX + 54;
+      if (sheet) {
+        ctx.drawImage(sheet, 96, 0, 96, 96, potX, sb.y + 50, 18, 18);
+      }
+      ctx.fillStyle = p.potions > 0 ? "#FFCDD2" : "#9E9E9E";
+      ctx.fillText(`×${p.potions}`, potX + 19, statBaselineY);
+    }
+
     ctx.fillStyle = scene.statusHover ? "#FFD740" : "rgba(255, 215, 64, 0.20)";
     ctx.beginPath();
     ctx.roundRect(invChipX, invChipY, invChipW, 19, 8);
@@ -2350,7 +2434,7 @@ export class SunnyRenderer {
     ctx.fillStyle = scene.statusHover ? "#4A2C14" : "#FFF8E1";
     ctx.fillText("가방 ▸", invChipX + invChipW * 0.5, invChipY + 10);
 
-    // Active Player Status Pills & Idle Regen Badge directly beneath top-left HUD card
+    // Active Player Status Pills & Idle Regen Badge directly beneath top HUD row
     {
       const activeList = p.statuses
         ? (Object.values(p.statuses) as Array<ActiveStatusEffect | undefined>).filter(
@@ -2358,8 +2442,8 @@ export class SunnyRenderer {
           )
         : [];
       if (activeList.length > 0 || p.idleRegenActive || p.idleRestMode) {
-        let px = 14;
-        const py = 98;
+        let px = sb.x + 2;
+        const py = layout.statusPillsY;
         ctx.font = 'bold 11px "Pretendard", sans-serif';
         ctx.textAlign = "left";
         ctx.textBaseline = "middle";
@@ -2408,94 +2492,127 @@ export class SunnyRenderer {
       }
     }
 
-    // --- Top-Center: Stage Progress & Online Population ---
-    const progW = 290;
-    const progX = W * 0.5 - progW * 0.5;
+    // --- Top-Center (or Row 2 on narrow portrait): Stage Progress & Online Population ---
+    const pr = layout.progressRect;
+    const progCenterX = pr.x + pr.w * 0.5;
     ctx.fillStyle = "rgba(42, 26, 14, 0.78)";
     ctx.strokeStyle = "rgba(255, 224, 130, 0.58)";
+    ctx.lineWidth = 1.8;
     ctx.beginPath();
-    ctx.roundRect(progX, 10, progW, 56, 12);
+    ctx.roundRect(pr.x, pr.y, pr.w, pr.h, 12);
     ctx.fill();
     ctx.stroke();
 
+    const stageScreenPx = (scene.stage.meta.screenWidthTiles || VIEWPORT.screenWidthTiles) * (scene.stage.meta.tileSize || VIEWPORT.tileSize);
     const totalScreens = Math.max(1, Math.round(scene.stage.meta.widthTiles / scene.stage.meta.screenWidthTiles));
-    const screenNum = Math.min(totalScreens, Math.max(1, Math.floor((p.x + p.w * 0.5) / VIEWPORT.width) + 1));
+    const screenNum = Math.min(totalScreens, Math.max(1, Math.floor((p.x + p.w * 0.5) / stageScreenPx) + 1));
     const inIsolatedChamber = screenNum === totalScreens;
-    ctx.font = 'bold 12px "Pretendard", sans-serif';
-    ctx.textAlign = "center";
-    ctx.fillStyle = inIsolatedChamber ? "#80D8FF" : "#FFF59D";
-    ctx.fillText(
-      inIsolatedChamber
-        ? `${scene.stage.meta.name} · ★ 비밀 구역`
-        : `${scene.stage.meta.name} (${screenNum}/${totalScreens - 1})`,
-      W * 0.5,
-      23
-    );
-
-    const trackX = progX + 16;
-    const trackW = progW - 32;
-    ctx.fillStyle = "rgba(255,255,255,0.22)";
-    ctx.beginPath();
-    ctx.roundRect(trackX, 34, trackW, 6, 3);
-    ctx.fill();
+    const titleLabel = inIsolatedChamber
+      ? `${scene.stage.meta.name} · ★ 비밀 구역`
+      : `${scene.stage.meta.name} (${screenNum}/${totalScreens - 1})`;
+    const trackX = pr.x + 14;
+    const trackW = pr.w - 28;
     const pct = Math.max(0, Math.min(1, (p.x + p.w * 0.5) / scene.stage.meta.worldWidth));
-    ctx.fillStyle = "#81C784";
-    ctx.beginPath();
-    ctx.roundRect(trackX, 34, Math.max(6, trackW * pct), 6, 3);
-    ctx.fill();
-    ctx.fillStyle = "#FFD740";
-    ctx.beginPath();
-    ctx.arc(trackX + trackW * pct, 37, 4.5, 0, Math.PI * 2);
-    ctx.fill();
 
-    ctx.font = 'bold 10.5px "Pretendard", sans-serif';
-    ctx.fillStyle = "#B2EBF2";
-    ctx.fillText(
-      `Lv.${scene.stage.meta.recommendedMinLevel}~${scene.stage.meta.recommendedMaxLevel} · ${scene.stagePlayerCount}명 / 전체 ${scene.totalPlayersOnline}명`,
-      W * 0.5,
-      54
-    );
+    if (layout.compactTop) {
+      ctx.font = 'bold 11px "Pretendard", sans-serif';
+      ctx.textAlign = "left";
+      ctx.textBaseline = "middle";
+      ctx.fillStyle = inIsolatedChamber ? "#80D8FF" : "#FFF59D";
+      ctx.fillText(titleLabel, pr.x + 12, pr.y + 13, pr.w - 92);
+
+      ctx.font = 'bold 10px "Pretendard", sans-serif';
+      ctx.textAlign = "right";
+      ctx.fillStyle = "#B2EBF2";
+      ctx.fillText(`${scene.stagePlayerCount}/${scene.totalPlayersOnline}명`, pr.x + pr.w - 12, pr.y + 13);
+
+      const trackY = pr.y + 25;
+      ctx.fillStyle = "rgba(255,255,255,0.22)";
+      ctx.beginPath();
+      ctx.roundRect(trackX, trackY, trackW, 5, 3);
+      ctx.fill();
+      ctx.fillStyle = "#81C784";
+      ctx.beginPath();
+      ctx.roundRect(trackX, trackY, Math.max(6, trackW * pct), 5, 3);
+      ctx.fill();
+      ctx.fillStyle = "#FFD740";
+      ctx.beginPath();
+      ctx.arc(trackX + trackW * pct, trackY + 2.5, 4, 0, Math.PI * 2);
+      ctx.fill();
+    } else {
+      ctx.font = 'bold 12px "Pretendard", sans-serif';
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillStyle = inIsolatedChamber ? "#80D8FF" : "#FFF59D";
+      ctx.fillText(titleLabel, progCenterX, pr.y + 13, pr.w - 16);
+
+      const trackY = pr.y + 24;
+      ctx.fillStyle = "rgba(255,255,255,0.22)";
+      ctx.beginPath();
+      ctx.roundRect(trackX, trackY, trackW, 6, 3);
+      ctx.fill();
+      ctx.fillStyle = "#81C784";
+      ctx.beginPath();
+      ctx.roundRect(trackX, trackY, Math.max(6, trackW * pct), 6, 3);
+      ctx.fill();
+      ctx.fillStyle = "#FFD740";
+      ctx.beginPath();
+      ctx.arc(trackX + trackW * pct, trackY + 3, 4.5, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.font = 'bold 10.5px "Pretendard", sans-serif';
+      ctx.fillStyle = "#B2EBF2";
+      ctx.fillText(
+        `Lv.${scene.stage.meta.recommendedMinLevel}~${scene.stage.meta.recommendedMaxLevel} · ${scene.stagePlayerCount}명 / 전체 ${scene.totalPlayersOnline}명`,
+        progCenterX,
+        pr.y + 44,
+        pr.w - 16
+      );
+    }
 
     // Low XP efficiency notice if player strongly outlevels current stage
     const stageEff = computeXpEfficiency(p.level, scene.stage.meta.recommendedMaxLevel);
     if (stageEff < 0.5 && scene.stage.nextStageId) {
+      const warnW = Math.min(pr.w - 12, 270);
+      const warnX = progCenterX - warnW * 0.5;
+      const warnY = layout.lowXpBannerY;
       ctx.fillStyle = "rgba(183, 28, 28, 0.88)";
       ctx.beginPath();
-      ctx.roundRect(progX + 10, 72, progW - 20, 22, 10);
+      ctx.roundRect(warnX, warnY, warnW, 22, 10);
       ctx.fill();
       ctx.fillStyle = "#FFF59D";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
       ctx.font = 'bold 11px "Pretendard", sans-serif';
-      ctx.fillText("⚠ 경험치 감소 · 다음 스테이지 권장", W * 0.5, 83);
+      ctx.fillText("⚠ 경험치 감소 · 다음 스테이지 권장", progCenterX, warnY + 11, warnW - 12);
     }
 
     // --- Top-Right: Clearly Separated Points Pill & Clickable Coin Shop Pill with Icons ---
     // 1. Points + Mobs Defeated Pill
-    const ptsX = W - 238;
-    const ptsY = 10;
-    const ptsW = 226;
-    const ptsH = 29;
+    const prPts = layout.pointsRect;
+    const narrowRight = prPts.w < 204;
     ctx.fillStyle = "rgba(38, 25, 15, 0.84)";
     ctx.strokeStyle = "rgba(255, 224, 130, 0.55)";
     ctx.lineWidth = 1.8;
     ctx.beginPath();
-    ctx.roundRect(ptsX, ptsY, ptsW, ptsH, 10);
+    ctx.roundRect(prPts.x, prPts.y, prPts.w, prPts.h, 10);
     ctx.fill();
     ctx.stroke();
 
     // Star / Trophy icon for Points
-    this.drawStar(ctx, ptsX + 16, ptsY + 14.5, 8.5, 5, "#FFD740", "#5D3A1A");
+    this.drawStar(ctx, prPts.x + 15, prPts.y + 14.5, 8, 5, "#FFD740", "#5D3A1A");
     ctx.textAlign = "left";
     ctx.textBaseline = "middle";
-    ctx.font = '800 13px "Pretendard", sans-serif';
+    ctx.font = narrowRight ? '800 11.5px "Pretendard", sans-serif' : '800 13px "Pretendard", sans-serif';
     ctx.fillStyle = "#FFF59D";
-    ctx.fillText(`${p.score.toLocaleString()} PTS`, ptsX + 30, ptsY + 15);
+    ctx.fillText(`${p.score.toLocaleString()} PTS`, prPts.x + 28, prPts.y + 15, prPts.w - 76);
     ctx.textAlign = "right";
-    ctx.font = 'bold 10.5px "Pretendard", sans-serif';
+    ctx.font = 'bold 10px "Pretendard", sans-serif';
     ctx.fillStyle = "#C8E6C9";
-    ctx.fillText(`처치 ${p.mobsDefeated}`, ptsX + ptsW - 10, ptsY + 15);
+    ctx.fillText(`처치 ${p.mobsDefeated}`, prPts.x + prPts.w - 9, prPts.y + 15);
 
     // 2. Coin Pill (Clickable -> Opens Shop!)
-    const cb = HUD_COIN_HITBOX;
+    const cb = layout.coinRect;
     ctx.fillStyle = scene.coinHover ? "rgba(92, 58, 18, 0.94)" : "rgba(56, 36, 14, 0.86)";
     ctx.strokeStyle = scene.coinHover ? "#FFE57F" : "#FFB300";
     ctx.lineWidth = scene.coinHover ? 2.4 : 1.8;
@@ -2508,30 +2625,31 @@ export class SunnyRenderer {
     if (sheet) {
       ctx.drawImage(sheet, 3 * 96, 0, 96, 96, cb.x + 6, cb.y + 4, 24, 24);
     }
-    ctx.textAlign = "left";
-    ctx.font = '800 13.5px "Pretendard", sans-serif';
-    ctx.fillStyle = "#FFD740";
-    ctx.fillText(`${p.coins.toLocaleString()} 코인`, cb.x + 34, cb.y + 16.5);
-
-    // Subtle "상점" button chip inside Coin Pill
-    const chipW = 54;
+    const chipW = narrowRight ? 46 : 54;
     const chipX = cb.x + cb.w - chipW - 7;
     const chipY = cb.y + 6;
+    ctx.textAlign = "left";
+    ctx.font = narrowRight ? '800 12px "Pretendard", sans-serif' : '800 13.5px "Pretendard", sans-serif';
+    ctx.fillStyle = "#FFD740";
+    ctx.fillText(`${p.coins.toLocaleString()} 코인`, cb.x + 33, cb.y + 16.5, Math.max(54, chipX - (cb.x + 36)));
+
+    // Subtle "상점" button chip inside Coin Pill
     ctx.fillStyle = scene.coinHover ? "#FFD740" : "rgba(255, 215, 64, 0.22)";
     ctx.beginPath();
     ctx.roundRect(chipX, chipY, chipW, 20, 8);
     ctx.fill();
     ctx.textAlign = "center";
-    ctx.font = '800 10.5px "Pretendard", sans-serif';
+    ctx.font = '800 10px "Pretendard", sans-serif';
     ctx.fillStyle = scene.coinHover ? "#4A2C14" : "#FFF8E1";
     ctx.fillText("상점 ▸", chipX + chipW * 0.5, chipY + 10.5);
 
-    // --- Bottom-Center: Unlocked Weapons Bar (directly clickable/tappable to switch) ---
-    const { barRect, slots: weaponSlots } = computeWeaponSlotHitboxes(p.unlockedWeapons);
-    const barTop = barRect.y;
+    // --- Bottom-Center (elevated above controls in portrait): Unlocked Weapons Bar ---
+    const barRect = layout.weaponBarRect;
+    const weaponSlots = layout.weaponSlots;
 
     ctx.fillStyle = "rgba(42, 26, 14, 0.76)";
     ctx.strokeStyle = "rgba(255, 224, 130, 0.5)";
+    ctx.lineWidth = 1.6;
     ctx.beginPath();
     ctx.roundRect(barRect.x, barRect.y, barRect.w, barRect.h, 12);
     ctx.fill();
@@ -2557,7 +2675,8 @@ export class SunnyRenderer {
       ctx.stroke();
 
       if (sheet) {
-        ctx.drawImage(sheet, w.iconIndex * 96, 0, 96, 96, sx + 3, sy + 3, 36, 36);
+        const iconSize = Math.max(24, slotSize - 6);
+        ctx.drawImage(sheet, w.iconIndex * 96, 0, 96, 96, sx + 3, sy + 3, iconSize, iconSize);
       }
       const orderIdx = WEAPON_ORDER.indexOf(wid as (typeof WEAPON_ORDER)[number]) + 1;
       ctx.fillStyle = active ? "#FFD740" : "#CCCCCC";
@@ -2579,6 +2698,7 @@ export class SunnyRenderer {
 
     ctx.font = 'bold 12px "Pretendard", sans-serif';
     ctx.textAlign = "center";
+    ctx.textBaseline = "alphabetic";
     ctx.strokeStyle = "rgba(42, 26, 14, 0.85)";
     ctx.lineWidth = 3;
     const traits: string[] = [];
@@ -2594,9 +2714,10 @@ export class SunnyRenderer {
     const traitText = traits.length > 0 ? ` · ★ ${traits.join(" + ")}` : "";
     const upgTag = combatStats.totalLevel > 0 ? ` +${combatStats.totalLevel}` : "";
     const wInfo = `${wObj.name}${upgTag} · 공격력 ${combatStats.totalAtk} · 공속 ${atkRateText}/초${traitText}`;
-    ctx.strokeText(wInfo, W * 0.5, barTop - 10);
+    const maxCaptionW = Math.max(200, W - 24);
+    ctx.strokeText(wInfo, W * 0.5, layout.weaponCaptionY, maxCaptionW);
     ctx.fillStyle = "#FFF8E1";
-    ctx.fillText(wInfo, W * 0.5, barTop - 10);
+    ctx.fillText(wInfo, W * 0.5, layout.weaponCaptionY, maxCaptionW);
     ctx.restore();
   }
 
