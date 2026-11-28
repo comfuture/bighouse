@@ -854,18 +854,21 @@ export class RoomDO extends DurableObject<Env> {
 
   sendGameSignal(playerId: string, signal: GameAction): void {
     const state = this.requireState();
+    const definition = getGameDefinition(state.room.gameId);
+    const isPersistentWorld = Boolean(definition.persistentWorld);
     if (state.phase !== "active" || state.activeInterruption || !state.players.some((player) => player.playerId === playerId)) {
+      if (isPersistentWorld) return;
       throw new GameServerError("invalid_action", "Game suggestions are unavailable", 409);
     }
     if (!signal || typeof signal.type !== "string" || !signal.payload || typeof signal.payload !== "object" || Array.isArray(signal.payload) || JSON.stringify(signal).length > 2048) {
+      if (isPersistentWorld) return;
       throw new GameServerError("bad_request", "Invalid game suggestion", 400);
     }
     const now = Date.now();
-    const definition = getGameDefinition(state.room.gameId);
-    const isPersistentWorld = Boolean(definition.persistentWorld);
     const team = isPersistentWorld ? undefined : requirePlayerTeam(state, definition, playerId);
     const result = definition.handleSignal?.({ state: cloneState(state), now }, playerId, signal);
     if (!result) {
+      if (isPersistentWorld) return; // Silently drop stale/no-op signals (e.g. pose while dead or in menu)
       throw new GameServerError("invalid_action", "This suggestion is no longer valid", 409);
     }
     if (!isPersistentWorld && (result.recipientPlayerIds.length === 0 || result.recipientPlayerIds.some((id) => !team!.playerIds.includes(id)))) {
@@ -1053,6 +1056,12 @@ export class RoomDO extends DurableObject<Env> {
       const state = this.loadState();
       const roomId = state?.room.roomId ?? "unknown";
       const version = state?.version ?? 0;
+      if (error instanceof GameServerError && error.code === "stale_action" && state) {
+        const attachment = ws.deserializeAttachment() as SocketAttachment | undefined;
+        if (attachment?.playerId && state.players.some((candidate) => candidate.playerId === attachment.playerId)) {
+          this.sendToSocket(ws, this.message(state, "snapshot", this.createSnapshot(state, attachment.playerId)));
+        }
+      }
       this.sendToSocket(ws, {
         type: "error",
         roomId,

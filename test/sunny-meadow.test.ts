@@ -249,4 +249,29 @@ describe("Sunny Meadow Bighouse integration (persistent world + D1 profile persi
     const summary = await roomDo.join({ playerId: "rush_host" });
     expect(summary.playerCount).toBe(joiners.length + 1);
   });
+
+  it("silently drops stale/ignored persistent-world pose signals (e.g. while in menu) instead of throwing suggestion errors", async () => {
+    const createRes = await SELF.fetch("http://example.com/games/sunny-meadow/lobbies/default/rooms", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ playerId: "menu_hero", displayName: "메뉴용사" })
+    });
+    expect(createRes.status).toBe(200);
+    const created = (await createRes.json()) as { doName: string };
+    const roomDo = env.ROOM_DO.getByName(created.doName) as unknown as RoomDO;
+
+    const menuRes = await roomDo.trySubmitAction({
+      playerId: "menu_hero",
+      clientActionId: "enter_menu_1",
+      expectedVersion: 0,
+      type: "setMenuMode",
+      payload: { inMenu: true }
+    });
+    expect(menuRes.ok).toBe(true);
+
+    // Racing pose signal arriving after entering menu must NOT throw "This suggestion is no longer valid"
+    await expect(
+      roomDo.sendGameSignal("menu_hero", { type: "playerPose", payload: { x: 200, y: 500, vx: 0, vy: 0, facing: 1 } })
+    ).resolves.toBeUndefined();
+  });
 });
