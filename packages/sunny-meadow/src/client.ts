@@ -732,7 +732,8 @@ export function mountGame(container: HTMLElement, initialContext: GameClientCont
       compiledStage.meta.worldHeight,
       getStageScreenWidthPx(),
       localPlayer.x + localPlayer.w * 0.5,
-      stageViewport
+      stageViewport,
+      hudLayout.topClearanceHud
     );
     camera.minX = bounds.minX;
     camera.maxX = bounds.maxX;

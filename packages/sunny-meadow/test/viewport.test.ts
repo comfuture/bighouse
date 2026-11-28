@@ -233,4 +233,50 @@ describe("@bighouse/sunny-meadow responsive stage viewport & aspect-ratio framin
     expect(chamberBounds.minX).toBeGreaterThanOrEqual(8640 - 240);
     expect(chamberBounds.maxX).toBe(chamberBounds.minX);
   });
+
+  it("allows upward camera clearance on portrait phones so high chamber platforms stay below the top HUD", () => {
+    const stageW = 200 * 48; // Stage 1: 9600
+    const stageH = 18 * 48; // Stage 1: 864
+    const isoTopY = 5 * 48; // iso_top platform surface at world y = 240
+    const playerH = 42;
+    const playerOnIsoTopY = isoTopY - playerH; // 198
+
+    const portraitVp = computeStageViewport({
+      mode: "expanded",
+      cssWidth: 390,
+      cssHeight: 844,
+      dpr: 2,
+      mobileOverlay: true,
+      safeInsets: { top: 47, bottom: 34 },
+      mobileControlBandCss: 192,
+      floatingTopbarCss: { left: 45, top: 53, width: 300, height: 38 }
+    });
+    const hud = computeHudLayout(portraitVp, ["wooden_sword"]);
+    const cam = computeCameraTarget({
+      playerX: 9000,
+      playerY: playerOnIsoTopY,
+      playerW: 28,
+      playerH,
+      facing: 1,
+      stageWorldWidth: stageW,
+      stageWorldHeight: stageH,
+      screenWidthPx: 960,
+      viewport: portraitVp,
+      topHudClearanceHud: hud.topClearanceHud,
+      weaponBarClearanceHud: hud.bottomClearanceHud
+    });
+
+    expect(cam.bounds.minY).toBeLessThan(0);
+    expect(cam.y).toBeLessThan(0);
+
+    const hudBottomCss = (hud.progressRect.y + hud.progressRect.h) * portraitVp.hudScale;
+    const playerTopCss = (playerOnIsoTopY - cam.y) * portraitVp.worldScale;
+    const playerFeetCss = (isoTopY - cam.y) * portraitVp.worldScale;
+    const weaponBarTopCss = hud.weaponBarRect.y * portraitVp.hudScale;
+
+    // Player standing on iso_top (and overhead sprite/nameplate clearance) renders completely below the top HUD
+    expect(playerTopCss).toBeGreaterThan(hudBottomCss + 40);
+    // And stays well above the elevated weapon bar / bottom controls
+    expect(playerFeetCss).toBeLessThan(weaponBarTopCss - 20);
+  });
 });
