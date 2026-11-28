@@ -242,15 +242,19 @@ export function computeStageViewport(input: ComputeViewportInput): StageViewport
 
 /**
  * Computes horizontal & vertical camera bounds for a stage and viewport.
- * Keeps the isolated final-screen portal chamber visually separated from the main
- * course even on wide 20:9 / 21:9 aspect ratios.
+ * - Keeps the isolated final-screen portal chamber visually separated from the main
+ *   course even on wide 20:9 / 21:9 aspect ratios.
+ * - Allows a negative upper camera bound (`minY`) in expanded mode when top HUD /
+ *   floating topbar overlays are present so players on high platforms (e.g. Stage 1
+ *   chamber `iso_top`) stay clearly visible below the HUD.
  */
 export function computeCameraBounds(
   stageWorldWidth: number,
   stageWorldHeight: number,
   screenWidthPx: number,
   playerCenterX: number,
-  viewport: StageViewportState
+  viewport: StageViewportState,
+  topHudClearanceHud = 0
 ): CameraBounds {
   const viewW = viewport.worldWidth;
   const viewH = viewport.worldHeight;
@@ -279,9 +283,15 @@ export function computeCameraBounds(
     }
   }
 
+  const topClearanceWorld =
+    viewport.mode === "expanded" && topHudClearanceHud > 0
+      ? clamp((topHudClearanceHud * viewport.hudScale) / viewport.worldScale, 0, viewH * 0.35)
+      : 0;
+  const desiredMinY = topClearanceWorld > 0 ? -Math.round(topClearanceWorld) : 0;
+
   const effectiveBottom = stageWorldHeight + viewport.cameraBottomClearanceWorld;
   const rawMaxY = effectiveBottom - viewH;
-  const minY = Math.min(0, rawMaxY);
+  const minY = Math.min(desiredMinY, rawMaxY);
   const maxY = rawMaxY;
 
   return { minX, maxX, minY, maxY };
@@ -300,7 +310,8 @@ export function computeCameraTarget(input: CameraTargetInput): { x: number; y: n
     input.stageWorldHeight,
     input.screenWidthPx,
     playerCenterX,
-    viewport
+    viewport,
+    input.topHudClearanceHud ?? 0
   );
 
   // Use a slightly gentler look-ahead on narrow portrait screens so the player stays well centered.
