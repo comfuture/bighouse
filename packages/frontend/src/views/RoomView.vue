@@ -55,6 +55,7 @@
       <template #body>
         <div class="flex flex-col items-center gap-4">
           <img v-if="qrCodeDataUrl" class="room-qr-image" :src="qrCodeDataUrl" alt="Room QR code" />
+          <div v-else-if="qrError" class="portal-alert" role="status">{{ qrError }}</div>
           <div v-else class="portal-alert" role="status">Preparing QR code…</div>
           <p class="max-w-full break-all text-center text-xs text-muted">{{ publicRoomUrl }}</p>
         </div>
@@ -69,6 +70,7 @@ import {
   lockMobileLandscapeCcwBestEffort,
   unlockScreenOrientationBestEffort
 } from "../utils/screenOrientation";
+import { classifyRoomError, type ServerErrorPayload } from "../utils/roomError";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, toRaw, watch } from "vue";
 import { onBeforeRouteLeave, useRoute, useRouter } from "vue-router";
 import type {
@@ -99,6 +101,7 @@ const error = ref("");
 const leaveConfirmOpen = ref(false);
 const qrModalOpen = ref(false);
 const qrCodeDataUrl = ref("");
+const qrError = ref("");
 const gameHost = ref<HTMLElement>();
 const gameReady = ref(false);
 const fullscreenAvailable = ref(false);
@@ -113,6 +116,7 @@ let reconnectTimer: number | undefined;
 let leaveFallbackTimer: number | undefined;
 let reconnectAttempt = 0;
 let closingRoom = false;
+let roomClosedByServer = false;
 let leavingRoom = false;
 let leaveDestination: string | undefined;
 let pendingGuardDestination: string | undefined;
@@ -237,6 +241,7 @@ watch(roomCanShareQr, (canShare) => {
 
 watch(qrModalOpen, async (open) => {
   if (!open || qrCodeDataUrl.value) return;
+  qrError.value = "";
   try {
     qrCodeDataUrl.value = await toDataURL(publicRoomUrl.value, {
       errorCorrectionLevel: "M",
@@ -245,8 +250,7 @@ watch(qrModalOpen, async (open) => {
     });
   } catch (cause) {
     console.error("Failed to generate room QR code", cause);
-    error.value = "Failed to generate room QR code";
-    qrModalOpen.value = false;
+    qrError.value = "Failed to generate room QR code";
   }
 });
 
@@ -356,6 +360,7 @@ function reportActionError(message: string): void {
 function connectRoom(): void {
   clearReconnectTimer();
   closingRoom = false;
+  roomClosedByServer = false;
   ws?.close();
   const socket = new WebSocket(roomWebsocketUrl(roomId.value));
   ws = socket;
@@ -389,6 +394,11 @@ async function handleRoomMessage(message: ServerMessage): Promise<void> {
   if (message.type === "snapshot") {
     lastSnapshotServerTime.value = message.serverTime;
     room.value = message.payload as unknown as RoomSnapshot;
+    if (room.value.phase === "closed") {
+      roomClosedByServer = true;
+    } else if (connected.value && !roomClosedByServer) {
+      error.value = "";
+    }
     uiRevision.value += 1;
     await mountOrUpdateGame();
     return;
@@ -420,6 +430,9 @@ async function handleRoomMessage(message: ServerMessage): Promise<void> {
   }
   if (message.type === "ack") {
     const payload = message.payload as { command?: string };
+    if (connected.value && !roomClosedByServer && room.value?.phase !== "closed") {
+      error.value = "";
+    }
     if (payload.command === "leaveRoom" && leavingRoom) {
       clearLeaveFallbackTimer();
       replaceAfterLeave();
@@ -434,12 +447,22 @@ async function handleRoomMessage(message: ServerMessage): Promise<void> {
     return;
   }
   if (message.type === "roomClosed") {
+    roomClosedByServer = true;
     error.value = "This room has closed";
     return;
   }
   if (message.type === "error") {
-    error.value = (message.payload as { message?: string }).message ?? "Room error";
-    reportActionError(error.value);
+    const payload = message.payload as ServerErrorPayload | undefined;
+    if (payload?.code === "room_closed" || payload?.code === "room_not_found") {
+      roomClosedByServer = true;
+    }
+    const disposition = classifyRoomError(payload, gameReady.value);
+    if (disposition.showBanner && disposition.bannerMessage) {
+      error.value = disposition.bannerMessage;
+    }
+    if (disposition.forwardActionError) {
+      reportActionError(disposition.actionErrorMessage);
+    }
   }
 }
 
